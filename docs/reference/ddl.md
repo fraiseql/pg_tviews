@@ -750,19 +750,22 @@ COMMIT;
 
 ## Privileges
 
-A TVIEW's table is an ordinary table: grant on it as on any other. Its backing view,
-in `tviews`, follows it:
+A TVIEW's table is an ordinary table: grant on it as on any other, and row-level
+security on it applies to its readers. Its backing view, in `tviews`, is its owner's
+alone, because it reads the base tables with the owner's privileges (a reader granted
+it would read every row the definition yields, whatever a policy on `tv_<entity>`
+hides):
 
-- whoever can `SELECT` from `tv_<entity>` (a role, or `PUBLIC`) can `SELECT` from its
-  backing view, so a role granted `SELECT ON ALL TABLES IN SCHEMA app`, or reading
-  `app` through default privileges, reads `tviews.app__tv_<entity>` too;
-- the view's grants are made its table's when the TVIEW is created or rebuilt, and
-  after every `GRANT` or `REVOKE` on tables, including `ON ALL TABLES IN SCHEMA`;
+- no grant on the table reaches the view (`ON ALL TABLES IN SCHEMA app` and default
+  privileges included); readers read `tv_<entity>`;
+- a privilege granted on the view itself is revoked when the TVIEW is created or
+  rebuilt, and after every `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO` and
+  `REASSIGN OWNED`;
 - `ALTER TABLE tv_<entity> OWNER TO` (and `REASSIGN OWNED`) gives the view the new
   owner, who reads the base tables through it;
-- only `SELECT` is copied, without grant option; `INSERT`, `UPDATE` and the others
-  granted on the table are not. A grant made on the backing view alone is taken back
-  by the next of these.
+- whether a TVIEW is empty while its definition yields rows (a restore that left the
+  data out) is the health check's `contents` component, which reads each backing view
+  as its owner.
 
 `USAGE` on `tviews` is granted to `PUBLIC` by the extension.
 

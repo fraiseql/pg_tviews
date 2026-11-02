@@ -633,6 +633,28 @@ STRICT
 LANGUAGE c /* Rust */
 AS 'MODULE_PATHNAME', 'pg_tviews_plan_of_wrapper';
 
+-- A backing view is its owner's alone: it reads the base tables with the owner's
+-- privileges, so a grant copied from its table handed back the rows row-level
+-- security hid there. Every other role's privileges on it are revoked.
+DO $$
+DECLARE
+    revoke_all text;
+BEGIN
+    FOR revoke_all IN
+        SELECT pg_catalog.format('REVOKE ALL ON %I.%I FROM %s CASCADE', n.nspname, v.relname,
+                   pg_catalog.string_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                       ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END, ', '))
+        FROM @extschema@.pg_tview_meta m
+        JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid
+        JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace,
+             pg_catalog.aclexplode(v.relacl) a
+        WHERE a.grantee <> v.relowner
+        GROUP BY v.oid, n.nspname, v.relname
+    LOOP
+        EXECUTE revoke_all;
+    END LOOP;
+END $$;
+
 -- What registration derives changed (an aggregate's paths come from its query
 -- tree, the plan records the row key, the plan readers of older versions are
 -- gone): every TVIEW is re-derived here, inside the update, as its owner. A TVIEW

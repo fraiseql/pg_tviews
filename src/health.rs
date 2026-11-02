@@ -46,6 +46,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             plan_check(),
             columns_check(),
             seq_scan_check(),
+            contents_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -213,6 +214,57 @@ fn seq_scan_check() -> Check {
             ),
         )
     }
+}
+
+/// TVIEWs whose table is empty while their definition yields rows (a restore
+/// that left the data out, a table emptied by hand). Each is read as its owner,
+/// who alone may read its backing view; a populated table is not read further.
+fn contents_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("contents", format!("could not be checked: {e}")),
+    };
+    let mut empty = Vec::new();
+    for meta in &metas {
+        match empty_with_rows(meta) {
+            Ok(Some(name)) => empty.push(name),
+            Ok(None) => {}
+            Err(e) => {
+                return error(
+                    "contents",
+                    format!("tv_{} could not be checked: {e}", meta.entity_name),
+                );
+            }
+        }
+    }
+    if empty.is_empty() {
+        ok(
+            "contents",
+            "Every TVIEW holds the rows its definition yields",
+        )
+    } else {
+        warning(
+            "contents",
+            format!(
+                "empty while their definition yields rows: {}; refill each with \
+                 SELECT tviews.pg_tviews_refresh(tview)",
+                sample(&empty)
+            ),
+        )
+    }
+}
+
+/// The TVIEW's qualified name when its table is empty and its backing view is
+/// not, read as its owner.
+fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
+    let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
+    let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+    let has_rows = |relation: &str| {
+        crate::utils::spi::one::<bool>(&format!("SELECT EXISTS (SELECT 1 FROM {relation})"), &[])
+            .map(|exists| exists.unwrap_or(false))
+    };
+    Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
 }
 
 /// TVIEWs registered before a release that changed what registration derives.

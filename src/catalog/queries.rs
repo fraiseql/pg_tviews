@@ -296,52 +296,34 @@ pub fn leftover_view(schema: &str, name: &str) -> TViewResult<Option<Oid>> {
     )
 }
 
-// --- Backing view owners and grants ------------------------------------------
+// --- Backing view owners and privileges -------------------------------------
 
-/// For each TVIEW (the one whose table is `$1`, every one when `$1` is NULL), the
-/// statements that give its backing view the `SELECT` grants of its table, as
-/// `(view, statement)`. The view's owner is left out: it has every privilege.
-const SELECT_GRANT_CHANGES: &str = "\
-    WITH tview AS ( \
-        SELECT m.table_oid::pg_catalog.oid AS tab, v.oid AS view, v.relowner AS owner, \
-               pg_catalog.format('%I.%I', n.nspname, v.relname) AS name \
-        FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
-        JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace \
-        WHERE $1 IS NULL OR m.table_oid::pg_catalog.oid = $1 \
-    ), wanted AS ( \
-        SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.tab, \
-               pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner \
-    ), held AS ( \
-        SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.view, \
-               pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner \
-    ), changes AS ( \
-        SELECT view, name, grantee, true AS adds FROM (TABLE wanted EXCEPT TABLE held) g \
-        UNION ALL \
-        SELECT view, name, grantee, false FROM (TABLE held EXCEPT TABLE wanted) r \
-    ) \
-    SELECT view, pg_catalog.format(CASE WHEN adds THEN 'GRANT SELECT ON %s TO %s' \
-                                        ELSE 'REVOKE SELECT ON %s FROM %s CASCADE' END, \
-               name, \
-               pg_catalog.string_agg(CASE WHEN grantee = 0 THEN 'PUBLIC' \
-                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(grantee)) END, \
-                   ', ' ORDER BY grantee)) \
-    FROM changes GROUP BY view, name, adds ORDER BY view, adds";
+/// For each backing view (of the TVIEW whose table is `$1`, of every one when
+/// `$1` is NULL) on which a role other than its owner holds a privilege, the
+/// statement that revokes them all, as `(view, statement)`.
+const GRANT_REVOCATIONS: &str = "\
+    SELECT v.oid, pg_catalog.format('REVOKE ALL ON %I.%I FROM %s CASCADE', n.nspname, v.relname, \
+               pg_catalog.string_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' \
+                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END, ', ')) \
+    FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
+    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace, \
+         pg_catalog.aclexplode(v.relacl) a \
+    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND a.grantee <> v.relowner \
+    GROUP BY v.oid, n.nspname, v.relname ORDER BY v.oid";
 
-/// The `GRANT`/`REVOKE` statements that give the backing view of the TVIEW whose
-/// table is `table` (of every TVIEW when `None`) the `SELECT` grants of that
-/// table, as `(view, statement)`. Read-write: a fresh snapshot, which sees the
-/// statement just run.
+/// The `REVOKE` statements that leave the backing view of the TVIEW whose table
+/// is `table` (of every TVIEW when `None`) to its owner alone, as
+/// `(view, statement)`. Read-write: a fresh snapshot, which sees the statement
+/// just run.
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
-pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
+pub fn grant_revocations(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
     let args = [crate::utils::spi::oid(table)];
     crate::utils::spi::connect_mut(|client| {
         client
             .update(
-                &SELECT_GRANT_CHANGES.replace("{meta}", &super::meta_table()),
+                &GRANT_REVOCATIONS.replace("{meta}", &super::meta_table()),
                 None,
                 &args,
             )?
@@ -349,7 +331,7 @@ pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option
             .collect::<Result<Vec<_>, spi::Error>>()
     })
     .map_err(|e| TViewError::CatalogError {
-        operation: "Compare backing view grants with their tables'".to_string(),
+        operation: "Read the grants on backing views".to_string(),
         pg_error: e.to_string(),
     })
 }

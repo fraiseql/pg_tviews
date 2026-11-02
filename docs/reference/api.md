@@ -513,8 +513,12 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `reregister` (TVIEWs marked
+no longer match the table), `seq_scans`, `contents`, `reregister` (TVIEWs marked
 `needs_reregister`), `triggers` and `tviews`. A check that cannot run is an `ERROR` row.
+
+`contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
+yields rows (a restore that left the data out, a table emptied by hand). It reads each
+empty table's backing view as the TVIEW's owner, the only role that may read it.
 
 `seq_scans` is a `WARNING` listing the TVIEWs whose mapping query (how writes to a base
 table map to TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows.

@@ -586,7 +586,7 @@ impl FollowUps {
         if let Some(PrivilegesChange { owners }) = self.privileges_change
             && let Err(e) = crate::ddl::privileges::follow(None, owners)
         {
-            e.raise_in("pg_tviews: could not give the backing views their tables' privileges");
+            e.raise_in("pg_tviews: could not leave the backing views to their owners");
         }
         if let Some(views) = self.extension_drop
             && let Err(e) = crate::ddl::drop::drop_left_backing_views(&views)

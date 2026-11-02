@@ -255,8 +255,8 @@ pub(super) unsafe fn matview_refresh_of(pstmt: *const pg_sys::PlannedStmt) -> Op
     }
 }
 
-/// A statement after which the backing views must follow their tables' grants,
-/// and their owners when `owners`.
+/// A statement after which the backing views must be left to their owners
+/// (grants revoked), and follow their tables' owners when `owners`.
 pub(super) struct PrivilegesChange {
     pub(super) owners: bool,
 }

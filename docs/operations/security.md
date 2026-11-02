@@ -104,24 +104,19 @@ Reading a TVIEW needs `SELECT` on its `tv_*` table and `USAGE` on its schema, as
 any table.
 
 The definition is stored as a backing view in pg_tviews' schema,
-`tviews.<schema>__tv_<entity>` (`tviews.registry.view`). Its `SELECT` grants follow
-the TVIEW's table: they are copied when the view is created or rebuilt and after
-every `GRANT` or `REVOKE` on a table, and `ALTER TABLE tv_* OWNER TO` gives the view
-the new owner. Only `SELECT` is copied. So whoever may read `tv_user` may read the
-view, and nobody else may; a grant on the application's schema (`GRANT SELECT ON ALL
-TABLES IN SCHEMA app`) still reaches the backing view through the table. Column
-grants are not copied.
-
-The backing view reads the base tables as the TVIEW's owner, and recomputes every row.
-Row-level security on a `tv_*` table therefore does not restrict its backing view:
-keep rows a reader must not see out of the TVIEW (or in a TVIEW of their own) rather
-than relying on a policy on `tv_*`.
+`tviews.<schema>__tv_<entity>` (`tviews.registry.view`). It is the TVIEW owner's
+alone: it reads the base tables as the owner and recomputes every row, so no grant on
+the table is copied to it, and a privilege granted on it directly is revoked by the
+next `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO`, `REASSIGN OWNED`, create or rebuild.
+`ALTER TABLE tv_* OWNER TO` gives the view the new owner. Readers read `tv_*`, where
+row-level security applies as on any table: a policy on `tv_user` hides the same rows
+from every reader, since no other relation hands them back.
 
 ```sql
 SELECT r.view,
        has_table_privilege('docs_sec_reader', r.view, 'SELECT') AS reader_sees_view,
        has_table_privilege('docs_sec_writer', r.view, 'SELECT') AS writer_sees_view
-FROM tviews.registry r WHERE r.entity = 'user';   -- true, false
+FROM tviews.registry r WHERE r.entity = 'user';   -- false, false
 ```
 
 A TVIEW holds whatever its definition selects: leave secrets (`email` above,

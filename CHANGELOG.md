@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Opens 0.1.0-beta.36.
+
+### Security
+- A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone. It
+  reads the base tables with the owner's privileges, so the `SELECT` grants it copied
+  from `tv_<entity>` handed back every row row-level security hid on the table. No
+  grant is copied any more; a privilege granted on a backing view is revoked at the
+  next `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO`, `REASSIGN OWNED`, create or
+  rebuild, and the update revokes the ones existing installs hold.
+
+### Added
+- Health component `contents`: TVIEWs whose table is empty while their definition
+  yields rows, read as each TVIEW's owner (what a deploy probe read through the
+  backing view before).
+
 ## [0.1.0-beta.35] - 2026-11-01
 
 ### Changed (breaking)

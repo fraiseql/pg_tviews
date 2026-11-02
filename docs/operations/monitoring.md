@@ -27,7 +27,8 @@ WHERE severity <> 'info';
 ```
 
 `severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
-`metadata`, `plans`, `columns`, `seq_scans`, `reregister`, `triggers` and `tviews`.
+`metadata`, `plans`, `columns`, `seq_scans`, `contents`, `reregister`, `triggers` and
+`tviews`. `contents` warns about TVIEWs that are empty while their definition yields rows.
 `seq_scans` warns about TVIEWs whose mapping query (how writes to a base table map to
 TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows; it is
 planned again on each call with the current indexes and statistics, so an index
