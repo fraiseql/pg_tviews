@@ -1,6 +1,7 @@
 # ADR 0211: One name for a TVIEW, one function per action, read contract v2
 
-- Status: Accepted
+- Status: Accepted; the naming rule applied to the whole surface in 0.1.0-beta.35 (read
+  contract 3, see [the rule applied](#2026-11-the-rule-applied))
 - Fixes: #211 (one TVIEW name resolver)
 - Amends: [ADR 0136](0136-tool-facing-surface.md) (the tool-facing surface)
 - Related: [ADR 0220](0220-settings.md) (options), #212 Q46 (identifier helpers)
