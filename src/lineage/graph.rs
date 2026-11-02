@@ -505,7 +505,7 @@ impl QueryGraph {
             Kind::Mapped(path) => path.clone(),
             _ => return kind,
         };
-        let key = format!("pk_{inner}");
+        let key = super::plan::key_column(inner);
         let by_key = path
             .first()
             .and_then(|&i| self.conjuncts[i].equality.as_ref())

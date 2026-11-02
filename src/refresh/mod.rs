@@ -165,7 +165,7 @@ pub(crate) fn touched(
     written: Written,
     deleted: Vec<i64>,
 ) -> Touched {
-    if meta.identity.is_pk(&meta.entity_name) {
+    if meta.identity.is_pk(meta.key_column()) {
         return Touched {
             // A key read off a column of another type (a domain, numeric) is text.
             pks: keys
@@ -352,7 +352,7 @@ pub(crate) fn run_counted_upsert(
 ) -> crate::TViewResult<Produced> {
     use crate::queue::affected::{Change, Recorded, record};
     let entity = &meta.entity_name;
-    let qi_pk = ident::quoted(&format!("pk_{entity}"));
+    let qi_pk = ident::quoted(meta.key_column());
     let qi_key = ident::quoted(&meta.identity.column);
     // A UNION view returning several rows for one key is refused (ADR 0216) from
     // the rows the upsert reads, which then writes none: the view is read once.
@@ -482,7 +482,7 @@ pub(crate) fn lock_rows(
     }
     let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
-    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = ident::quoted(meta.key_column());
     // The reference keys the rows hold before the recompute: what the change
     // feed names as the collections a row leaves.
     let references = meta.publishes_collections();
@@ -574,7 +574,7 @@ pub(crate) fn lock_in_key_order(
     let key_type = &meta.key_type;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
-    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = ident::quoted(meta.key_column());
     let mut read = String::new();
     for column in columns {
         let _ = write!(read, ", t.{}::pg_catalog.int8", ident::quoted(column));

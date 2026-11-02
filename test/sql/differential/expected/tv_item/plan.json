@@ -6,6 +6,10 @@
     ]
   ],
   "embeds": [],
+  "key": {
+    "column": "pk_item",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "item",

@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_nbadge",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "nbadge",

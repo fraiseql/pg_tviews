@@ -127,7 +127,7 @@ fn checked_definition(
         .entity
         .clone()
         .ok_or_else(|| TViewError::RequiredColumnMissing {
-            column_name: format!("pk_{named}"),
+            column_name: crate::lineage::plan::key_column(named),
             context: format!(
                 "the definition of tv_{named}: a TVIEW's definition outputs a pk_<entity> \
                  column, the first of which names the entity"

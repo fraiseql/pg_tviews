@@ -14,10 +14,11 @@ impl TviewPlan {
     /// A [`TViewError::CatalogError`] naming the entity when the document does not
     /// decode or is of another version: never read as "no dependencies".
     pub fn decode(entity: &str, json: serde_json::Value) -> TViewResult<Self> {
-        let plan: Self = serde_json::from_value(json).map_err(|e| TViewError::CatalogError {
-            operation: format!("Read the propagation plan of tv_{entity}"),
-            pg_error: e.to_string(),
-        })?;
+        let mut plan: Self =
+            serde_json::from_value(json).map_err(|e| TViewError::CatalogError {
+                operation: format!("Read the propagation plan of tv_{entity}"),
+                pg_error: e.to_string(),
+            })?;
         if !(OLDEST_READ..=PLAN_VERSION).contains(&plan.version) {
             return Err(TViewError::CatalogError {
                 operation: format!("Read the propagation plan of tv_{entity}"),
@@ -27,6 +28,10 @@ impl TviewPlan {
                     plan.version
                 ),
             });
+        }
+        // A plan stored before the key was recorded: the convention names it.
+        if plan.key.column.is_empty() {
+            plan.key.column = crate::lineage::plan::key_column(entity);
         }
         if let Some(table) = plan
             .tables
@@ -176,6 +181,10 @@ mod tests {
                 unique: false,
                 nullable: false,
             }],
+            key: crate::lineage::plan::PlanKey {
+                column: "pk_post".into(),
+                type_name: "bigint".into(),
+            },
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);

@@ -213,7 +213,7 @@ impl Flush {
         // A full refresh may bring rows back: look their parents up in the
         // parents' views too.
         self.queue_parents_to_recompute(entity, &changed, &changed)?;
-        if meta.identity.is_pk(entity) {
+        if meta.identity.is_pk(meta.key_column()) {
             self.processed
                 .extend(changed.into_iter().map(|pk| RefreshKey::pk(entity, pk)));
         }

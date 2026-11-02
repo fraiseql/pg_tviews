@@ -6,6 +6,10 @@
     ]
   ],
   "embeds": [],
+  "key": {
+    "column": "pk_nany",
+    "type": "integer"
+  },
   "paths": [],
   "references": [],
   "set_operation": false,

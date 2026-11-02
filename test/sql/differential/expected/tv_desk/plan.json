@@ -17,6 +17,10 @@
       ]
     }
   ],
+  "key": {
+    "column": "pk_desk",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "desk",

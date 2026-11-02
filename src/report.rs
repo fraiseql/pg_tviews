@@ -115,7 +115,10 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
     let Some(lookup) = LookupKeys::of(pks) else {
         return Ok(HashMap::new());
     };
-    let qi_pk = ident::quoted(&format!("pk_{entity}"));
+    let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? else {
+        return Ok(HashMap::new());
+    };
+    let qi_pk = ident::quoted(meta.key_column());
     let sql = format!(
         "SELECT t.{qi_pk}, t.data FROM {table} t WHERE {}",
         lookup.predicate(&format!("t.{qi_pk}"), 1)

@@ -103,7 +103,8 @@ pub(super) fn decode(
                 parent_table_oid: pgrx::pg_sys::Oid::from(
                     u32::try_from(row.get(2)?.as_u64()?).ok()?,
                 ),
-                parent_keyed_by_pk: parent_column == format!("pk_{parent_entity}"),
+                parent_keyed_by_pk: parent_column
+                    == crate::lineage::plan::key_column(&parent_entity),
                 parent_column,
                 parent_type: text(4)?,
                 parent_id: match row.get(5)?.as_str() {

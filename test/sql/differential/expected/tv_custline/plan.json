@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_custline",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "custline",

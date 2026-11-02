@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_ordcount",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "ordcount",

@@ -79,7 +79,7 @@ fn apply_direct_patch(
     }
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = crate::utils::ident::quoted(meta.key_column());
     let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, shape);
 
@@ -224,7 +224,7 @@ fn write_fanout(
         return Ok(Vec::new());
     };
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = crate::utils::ident::quoted(meta.key_column());
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
     // The rows written, and where each one's values come from: the keys take
     // parameters 1 to `width`, the values the next one, the paths the rest.

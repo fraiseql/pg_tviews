@@ -161,7 +161,7 @@ pub fn check_aggregate(sql: &str, entity: &str) -> TViewResult<()> {
     };
     let c_sql = CString::new(sql).map_err(|_| refuse("it contains a NUL byte".to_string()))?;
     let raw = parse_one_select(sql, &c_sql)?;
-    let pk = format!("pk_{entity}");
+    let pk = crate::lineage::plan::key_column(entity);
     // SAFETY: the Query just analyzed from `raw`, read in the current memory context.
     unsafe {
         let query = analyze_raw(raw, &c_sql);
@@ -357,7 +357,7 @@ fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewR
         "SELECT source.{} AS {}, gen_random_uuid() AS id, jsonb_build_object({}) AS data \
          FROM ({select_sql}) AS source",
         ident::quote_if_needed(&key),
-        ident::quoted(&format!("pk_{entity}")),
+        ident::quoted(&crate::lineage::plan::key_column(entity)),
         fields.join(", ")
     ))
 }

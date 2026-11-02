@@ -448,9 +448,16 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
     refuse_inherit(change)?;
     // SAFETY: a RangeVar of the statement's parse tree.
     let relid = unsafe { resolve_relation_oid(change.relation) };
-    if relid == pg_sys::InvalidOid || crate::catalog::TviewMeta::entity_of_table(relid)?.is_none() {
+    if relid == pg_sys::InvalidOid {
         return Ok(());
     }
+    let Some(entity) = crate::catalog::TviewMeta::entity_of_table(relid)? else {
+        return Ok(());
+    };
+    let key = crate::catalog::TviewMeta::load_by_entity(&entity)?.map_or_else(
+        || crate::lineage::plan::key_column(&entity),
+        |meta| meta.key_column().to_string(),
+    );
     let refused = |what: String| -> TViewResult<()> {
         Err(TViewError::ColumnDdlRefused {
             table: crate::utils::qualified_relname_from_oid(relid)?,
@@ -477,7 +484,7 @@ fn refuse_column_change(change: &ColumnChange) -> TViewResult<()> {
             }
         }
         let from = crate::catalog::queries::view_column_type(relid, column.as_str())?;
-        let fixed = column == "id" || column == "data" || column.starts_with("pk_");
+        let fixed = column == "id" || column == "data" || *column == key;
         // SAFETY: catalog lookups on two type OIDs.
         let writable = !fixed
             && from.is_some_and(|from| unsafe {

@@ -362,7 +362,7 @@ pub fn analyze(
         mapped_by.insert(other.entity, (other.mapped, other.full_refresh));
     }
 
-    let key_column = format!("pk_{entity}");
+    let key_column = super::plan::key_column(entity);
     let graph = walk::analyze(
         view_oid,
         &walk::Context {

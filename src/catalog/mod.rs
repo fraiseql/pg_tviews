@@ -168,10 +168,10 @@ impl RowIdentity {
         }
     }
 
-    /// Whether the identity is `pk_<entity>`, the column parents join on.
+    /// Whether the identity is `key`, the row key parents join on.
     #[must_use]
-    pub fn is_pk(&self, entity: &str) -> bool {
-        self.column == format!("pk_{entity}")
+    pub fn is_pk(&self, key: &str) -> bool {
+        self.column == key
     }
 }
 
@@ -263,6 +263,12 @@ fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
 }
 
 impl TviewMeta {
+    /// The TVIEW's row key column, `pk_<entity>`, as its plan records it.
+    #[must_use]
+    pub fn key_column(&self) -> &str {
+        &self.plan.key.column
+    }
+
     /// The rows' public id as text, read from `table`, its table's name or alias
     /// in a statement; `NULL` for a TVIEW without an `id` column.
     #[must_use]
@@ -693,13 +699,13 @@ mod tests {
         let id = RowIdentity::from_catalog("doc", Some(&doc)).unwrap();
         assert_eq!(id.column, "id");
         assert_eq!(id.kind, IdentityKind::DistinctOn);
-        assert!(!id.is_pk("doc"));
+        assert!(!id.is_pk("pk_doc"));
 
         let pk = serde_json::json!({"kind": "pk", "columns": [{"name": "pk_doc"}]});
         assert!(
             RowIdentity::from_catalog("doc", Some(&pk))
                 .unwrap()
-                .is_pk("doc")
+                .is_pk("pk_doc")
         );
     }
 

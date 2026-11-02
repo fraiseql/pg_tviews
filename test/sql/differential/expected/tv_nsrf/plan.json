@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_nsrf",
+    "type": "integer"
+  },
   "paths": [],
   "references": [],
   "set_operation": false,

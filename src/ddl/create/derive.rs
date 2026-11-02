@@ -81,7 +81,8 @@ pub(crate) fn derive(
             path.root = false;
         }
     }
-    let plan = crate::lineage::plan::assemble(entity_name, &lineage, paths);
+    let key = crate::lineage::plan::view_key(entity_name, view_oid)?;
+    let plan = crate::lineage::plan::assemble(entity_name, &lineage, paths, key);
     Ok(Derivation {
         lineage,
         plan,

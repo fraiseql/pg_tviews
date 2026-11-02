@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_vnote",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "vnote",

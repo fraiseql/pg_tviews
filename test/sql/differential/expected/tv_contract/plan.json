@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_contract",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "contract",

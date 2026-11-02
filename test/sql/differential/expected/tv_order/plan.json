@@ -12,6 +12,10 @@
       ]
     }
   ],
+  "key": {
+    "column": "pk_order",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "order",

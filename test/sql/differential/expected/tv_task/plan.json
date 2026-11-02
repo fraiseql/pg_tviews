@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_task",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "task",

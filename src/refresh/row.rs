@@ -73,7 +73,7 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
     let key_type = &meta.key_type;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
-    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = ident::quoted(meta.key_column());
     let sql = format!(
         "DELETE FROM {qi_tv} WHERE {qi_key} = {} \
          RETURNING {qi_pk}::pg_catalog.int8, {}",

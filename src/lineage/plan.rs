@@ -40,6 +40,28 @@ pub struct TviewPlan {
     /// table's key (`tviews.registry.references` publishes those naming a TVIEW).
     #[serde(default)]
     pub references: Vec<crate::lineage::Reference>,
+    /// The TVIEW's row key, `pk_<entity>`, and its type.
+    #[serde(default)]
+    pub key: PlanKey,
+}
+
+/// A TVIEW's row key: the integer column `pk_<entity>` (ADR 0169; smallint,
+/// integer, bigint or a domain over one), its rows' primary key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanKey {
+    pub column: String,
+    /// The column's type as `format_type` writes it; empty in a plan stored
+    /// before the key was recorded.
+    #[serde(rename = "type", default)]
+    pub type_name: String,
+}
+
+/// The row key column of `entity`'s TVIEW, `pk_<entity>`: the one place the
+/// convention turns an entity name into a column name. What reads a TVIEW's
+/// registered plan reads [`TviewPlan::key`] instead.
+#[must_use]
+pub fn key_column(entity: &str) -> String {
+    format!("pk_{entity}")
 }
 
 /// Another TVIEW this one embeds.
@@ -177,11 +199,30 @@ pub struct KeyMapping {
     pub links: Option<Vec<i16>>,
 }
 
+/// The row key of `entity`'s backing view `view_oid`: `pk_<entity>` with the
+/// type the view gives it.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn view_key(entity: &str, view_oid: Oid) -> crate::TViewResult<PlanKey> {
+    let column = key_column(entity);
+    let type_name = crate::utils::spi::catalog_one::<String>(
+        "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) FROM pg_catalog.pg_attribute a \
+         WHERE a.attrelid = $1 AND a.attname = $2 AND NOT a.attisdropped",
+        &[
+            crate::utils::spi::oid(view_oid),
+            crate::utils::spi::text(column.as_str()),
+        ],
+    )?
+    .unwrap_or_default();
+    Ok(PlanKey { column, type_name })
+}
+
 /// The plan of `entity` from its lineage: its key mappings with their fan-out
 /// patches, its embeds, its direct-patch map and its references, with `paths`,
-/// the tables whose rows carry its key.
+/// the tables whose rows carry its key, and `key`, its row key.
 #[must_use]
-pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>) -> TviewPlan {
+pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>, key: PlanKey) -> TviewPlan {
     TviewPlan {
         version: PLAN_VERSION,
         set_operation: lineage.set_operation,
@@ -199,6 +240,7 @@ pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>) -> Tview
         tables: key_mappings(lineage),
         paths,
         references: lineage.references.clone(),
+        key,
     }
 }
 

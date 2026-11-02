@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_ordsum",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "ordsum",

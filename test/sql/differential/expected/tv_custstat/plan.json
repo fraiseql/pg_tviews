@@ -1,6 +1,10 @@
 {
   "direct": [],
   "embeds": [],
+  "key": {
+    "column": "pk_custstat",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "custstat",

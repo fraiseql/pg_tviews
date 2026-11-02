@@ -196,7 +196,7 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
         crate::utils::column_types(meta.tview_oid)?
             .into_iter()
             .collect();
-    let pk = format!("pk_{entity}");
+    let pk = crate::lineage::plan::key_column(entity);
     let mut retyped = false;
     for (column, view_type) in crate::utils::column_types(meta.view_oid)? {
         if column == pk

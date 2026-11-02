@@ -10,6 +10,10 @@
     ]
   ],
   "embeds": [],
+  "key": {
+    "column": "pk_line",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "line",

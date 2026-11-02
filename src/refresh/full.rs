@@ -160,7 +160,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
         list(&key_columns, "t."),
         list(&key_columns, "v.")
     );
-    let pk = ident::quoted(&format!("pk_{entity}"));
+    let pk = ident::quoted(meta.key_column());
 
     let returned = meta.returned("t", false);
     let mut changed = crate::refresh::run_journaled(

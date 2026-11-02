@@ -61,7 +61,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     // The filter is on the identity, bound with its type, so it reaches the base
     // tables' indexes through the view.
     let qi_key = crate::utils::ident::quoted(key_col);
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{entity}"));
+    let qi_pk = crate::utils::ident::quoted(meta.key_column());
     let any_key = format!("ANY({})", super::key_cast(key_type, "$1", true));
     let conflict = format!(
         "ON CONFLICT ({qi_key}) {}",

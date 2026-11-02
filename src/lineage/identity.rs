@@ -73,7 +73,7 @@ pub fn select_identity(
     equal: &dyn Fn(&Column, &Column) -> bool,
 ) -> Result<SelectedIdentity, IdentityError> {
     let Some(refs) = distinct_on else {
-        let key = format!("pk_{entity}");
+        let key = super::plan::key_column(entity);
         return outputs
             .iter()
             .position(|o| !o.junk && o.name == key)
@@ -189,7 +189,7 @@ pub fn identity_refusal(entity: &str, error: IdentityError, keys: &[String]) -> 
 /// Returns an error if the view cannot be walked, or if no column of it can name
 /// the TVIEW's rows (the refusal names its DISTINCT ON key).
 pub fn view_identity(entity: &str, view_oid: pgrx::pg_sys::Oid) -> crate::TViewResult<Identity> {
-    let key_column = format!("pk_{entity}");
+    let key_column = super::plan::key_column(entity);
     let graph = walk::analyze(
         view_oid,
         &walk::Context {

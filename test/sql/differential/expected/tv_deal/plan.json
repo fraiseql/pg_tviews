@@ -15,6 +15,10 @@
       "path": []
     }
   ],
+  "key": {
+    "column": "pk_deal",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "deal",

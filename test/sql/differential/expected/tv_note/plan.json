@@ -15,6 +15,10 @@
       "path": []
     }
   ],
+  "key": {
+    "column": "pk_note",
+    "type": "integer"
+  },
   "paths": [
     {
       "entity_name": "note",

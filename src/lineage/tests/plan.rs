@@ -1,6 +1,6 @@
 //! The plan assembled from a lineage: key mappings with their fan-out patches.
 
-use super::super::plan::{FanoutPatch, MappingKind, assemble};
+use super::super::plan::{FanoutPatch, MappingKind, PlanKey, assemble, key_column};
 use super::super::*;
 
 fn table(relid: u32, relname: &str, kind: TableKind) -> TableLineage {
@@ -69,9 +69,25 @@ fn post_lineage(kind: IdentityKind) -> Lineage {
     }
 }
 
+fn key() -> PlanKey {
+    PlanKey {
+        column: key_column("post"),
+        type_name: "bigint".into(),
+    }
+}
+
+#[test]
+fn the_plan_carries_its_row_key() {
+    let plan = assemble("post", &post_lineage(IdentityKind::Pk), Vec::new(), key());
+    assert_eq!(
+        (plan.key.column.as_str(), plan.key.type_name.as_str()),
+        ("pk_post", "bigint")
+    );
+}
+
 #[test]
 fn a_mapped_table_one_hop_away_gets_its_fanout_patch() {
-    let plan = assemble("post", &post_lineage(IdentityKind::Pk), Vec::new());
+    let plan = assemble("post", &post_lineage(IdentityKind::Pk), Vec::new(), key());
     let post = &plan.tables[0];
     assert_eq!(
         (post.kind, post.column.as_deref(), post.sql.as_deref()),
@@ -97,7 +113,12 @@ fn a_mapped_table_one_hop_away_gets_its_fanout_patch() {
 
 #[test]
 fn a_distinct_on_tview_gets_no_fanout_patch() {
-    let plan = assemble("post", &post_lineage(IdentityKind::DistinctOn), Vec::new());
+    let plan = assemble(
+        "post",
+        &post_lineage(IdentityKind::DistinctOn),
+        Vec::new(),
+        key(),
+    );
     assert!(
         plan.tables
             .iter()
@@ -109,7 +130,7 @@ fn a_distinct_on_tview_gets_no_fanout_patch() {
 fn a_mapped_table_without_a_query_stores_an_empty_one() {
     let mut lineage = post_lineage(IdentityKind::Pk);
     lineage.tables[1].sql = None;
-    let plan = assemble("post", &lineage, Vec::new());
+    let plan = assemble("post", &lineage, Vec::new(), key());
     assert_eq!(plan.tables[1].sql.as_deref(), Some(""));
 }
 
@@ -145,7 +166,7 @@ fn a_restored_plan_is_rebound_by_relid_and_column_number() {
         root: true,
         initial_attnum: Some(1),
     }];
-    let plan = assemble("post", &post, paths);
+    let plan = assemble("post", &post, paths, key());
     assert!(
         plan.numbered_columns()
             .contains(&(10, 3, "fk_user".to_string()))
