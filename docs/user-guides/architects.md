@@ -57,7 +57,7 @@ The examples below run in order in one database.
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 ```
 
 ### Identity

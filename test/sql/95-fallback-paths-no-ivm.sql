@@ -1,5 +1,5 @@
--- Test fallback path operations WITHOUT jsonb_delta extension
--- This verifies graceful degradation when jsonb_delta is not available
+-- The core jsonb operations the recompute path's documents are built with, next to
+-- the required jsonb_delta.
 \set ECHO none
 \set QUIET 1
 
@@ -8,10 +8,10 @@ SET log_min_messages TO WARNING;
 
 \set ECHO all
 
--- Setup WITHOUT jsonb_delta extension
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+-- Setup (pg_tviews requires jsonb_delta)
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
-\echo '### Test 1: Verify jsonb_delta_set_path is NOT available'
+\echo '### Test 1: jsonb_delta is installed with pg_tviews'
 
 DO $$
 DECLARE
@@ -23,9 +23,7 @@ BEGIN
     ) INTO available;
 
     IF NOT available THEN
-        RAISE NOTICE 'PASS: jsonb_delta_set_path not available (expected)';
-    ELSE
-        RAISE EXCEPTION 'FAIL: jsonb_delta_set_path should not be available for this test';
+        RAISE EXCEPTION 'FAIL: jsonb_delta_set_path is not available: jsonb_delta is required';
     END IF;
 END $$;
 
@@ -178,5 +176,5 @@ END $$;
 -- Cleanup
 DROP TABLE test_fallback_updates;
 
-\echo '### All fallback tests without jsonb_delta passed! ✓'
+\echo '### All core jsonb operation tests passed! ✓'
 \echo 'Note: Performance is slower but functionality works correctly'

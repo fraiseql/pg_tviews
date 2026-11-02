@@ -53,7 +53,7 @@ psql -d your_database -c 'ALTER DATABASE your_database SET search_path = "$user"
 Then, connected to your database, create the extension:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 -- The ALTER DATABASE above applies to new sessions; this one sets it now.
 SET search_path = "$user", public, tviews;
 ```

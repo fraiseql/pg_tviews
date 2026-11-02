@@ -112,8 +112,8 @@ thread_local! {
     pub static COMPUTED: Memo<Oid, Option<String>> = Memo::new();
     /// Table → the root of its partition tree (itself when it is no partition).
     pub static PARTITION_ROOTS: Memo<Oid, Oid> = Memo::new();
-    /// The quoted schema of `jsonb_delta` (`None`: not installed).
-    pub static JSONB_DELTA_SCHEMA: Memo<(), Option<String>> = Memo::new();
+    /// The quoted schema of `jsonb_delta`.
+    pub static JSONB_DELTA_SCHEMA: Memo<(), String> = Memo::new();
 }
 
 /// What a kept statement is found by: its SQL, its argument types, whether it
@@ -192,7 +192,6 @@ pub fn invalidate_all() {
     COMPUTED.with(Memo::clear);
     PARTITION_ROOTS.with(Memo::clear);
     JSONB_DELTA_SCHEMA.with(Memo::clear);
-    crate::utils::forget_logged(crate::jsonb_delta::JSONB_DELTA_MISSING);
     // The catalog may have been dropped and created again under another OID.
     CATALOG_WATCHED.with(|w| w.set(false));
 }

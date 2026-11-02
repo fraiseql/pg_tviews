@@ -9,7 +9,7 @@ BEGIN;
 
     -- Cleanup
     DROP EXTENSION IF EXISTS pg_tviews CASCADE;
-    CREATE EXTENSION pg_tviews;
+    CREATE EXTENSION pg_tviews CASCADE;
 \ir lib/assert_fresh.sql
 
     -- Test Case 1: Array column materialization with UUID arrays

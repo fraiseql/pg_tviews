@@ -137,7 +137,7 @@ SELECT current_setting('work_mem') AS work_mem,
 
 ```sql
 -- What pg_tviews' own checks found (extension, catalog, plans, triggers)
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 SELECT status, component, message FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
 ```
 

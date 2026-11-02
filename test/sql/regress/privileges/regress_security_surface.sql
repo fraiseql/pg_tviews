@@ -98,7 +98,7 @@ BEGIN
        AND p.oid NOT IN (SELECT f::regprocedure FROM unnest(ARRAY[
            -- reads
            'tviews.contract_version()', 'tviews.pg_tviews_version()',
-           'tviews.pg_tviews_catalog_revision()', 'tviews.pg_tviews_check_jsonb_delta()',
+           'tviews.pg_tviews_catalog_revision()',
            'tviews.pg_tviews_health_check()', 'tviews.pg_tviews_profile(text,bigint)',
            'tviews.pg_tviews_queue_stats()', 'tviews.pg_tviews_entity_of(text)',
            'tviews.pg_tviews_stats_rows()', 'tviews.pg_tviews_feed_gaps()',

@@ -8,7 +8,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 \ir lib/assert_fresh.sql
 -- Test jsonb_delta performance impact
--- Compare TVIEW update performance with and without jsonb_delta
+-- TVIEW update performance with jsonb_delta (required)
 
 -- Clean up
 DROP TABLE IF EXISTS tb_perf_test CASCADE;
@@ -52,9 +52,9 @@ END $$;
 
 -- Check current jsonb_delta status
 SELECT 'Current jsonb_delta status:' as status;
-SELECT pg_tviews_check_jsonb_delta();
+SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta');
 DO $$ BEGIN
-    IF pg_tviews_check_jsonb_delta() IS DISTINCT FROM true THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta') THEN
         RAISE EXCEPTION 'FAIL: jsonb_delta not detected; this file measures it enabled';
     END IF;
 END $$;
@@ -85,7 +85,7 @@ BEGIN
     END LOOP;
     
     RETURN QUERY SELECT 
-        'jsonb_delta_' || CASE WHEN pg_tviews_check_jsonb_delta() THEN 'enabled' ELSE 'disabled' END,
+        'jsonb_delta_' || CASE WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta') THEN 'enabled' ELSE 'disabled' END,
         total_time / iterations,
         total_time;
 END;

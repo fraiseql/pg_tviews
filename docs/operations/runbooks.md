@@ -68,36 +68,30 @@ inside the writing statement, so its cost shows up there.
 **Diagnosis**:
 
 ```sql
--- 1. jsonb_delta installed?
-SELECT tviews.pg_tviews_check_jsonb_delta();
-```
-
-```sql
--- 2. Physical health, fan-out and missing indexes per TVIEW
+-- 1. Physical health, fan-out and missing indexes per TVIEW
 SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, fanout, warnings
 FROM tviews.pg_tviews_profile();
 ```
 
 ```sql
--- 3. Dependency chain
+-- 2. Dependency chain
 SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 ```
 
 ```sql
--- 4. Cost of recomputing one row
+-- 3. Cost of recomputing one row
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_user WHERE pk_user = 1;
 ```
 
 **Resolution**:
 
-1. Install jsonb_delta if missing: `CREATE EXTENSION jsonb_delta;`
-2. Create the indexes cascades need:
+1. Create the indexes cascades need:
    ```sql
    SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
    SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
    ```
-3. Index the join and foreign-key columns the view uses in its base tables.
-4. Reduce fan-out or nesting depth in the view definitions.
+2. Index the join and foreign-key columns the view uses in its base tables.
+3. Reduce fan-out or nesting depth in the view definitions.
 
 See [Performance Monitoring](runbooks/01-health-monitoring/performance-monitoring.md).
 

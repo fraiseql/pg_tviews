@@ -18,14 +18,7 @@ fn pg_tviews_entity_of(tview: &str) -> Result<String, ErrorReport> {
     Ok(crate::catalog::resolve::find(tview)?.entity)
 }
 
-/// Whether `jsonb_delta` is installed (cached).
-#[pg_extern]
-fn pg_tviews_check_jsonb_delta() -> bool {
-    let _path = crate::owner::CatalogPath::pin();
-    crate::jsonb_delta::check_jsonb_delta_available()
-}
-
-/// Health of the installation: version, `jsonb_delta`, catalog revision, the
+/// Health of the installation: version, catalog revision, the
 /// catalog's consistency, triggers, TVIEW count.
 #[pg_extern]
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns

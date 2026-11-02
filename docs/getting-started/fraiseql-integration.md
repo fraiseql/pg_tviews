@@ -42,7 +42,7 @@ are `bigint`, `id` is `uuid`, `data` is `jsonb`; `id` and `*_id` columns are ind
 ## Example
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 SET search_path = "$user", public, tviews;
 
 CREATE TABLE tb_user (

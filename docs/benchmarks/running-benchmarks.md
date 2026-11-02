@@ -30,7 +30,7 @@ ways, and times `tb_product` mutations against each:
 | Arm | Approach | Maintenance on a base-table change |
 |-----|----------|------------------------------------|
 | **A** — pg_tviews + jsonb_delta | incremental refresh, surgical JSONB patch | refresh only the affected rows |
-| **B** — pg_tviews + native | incremental refresh, no jsonb_delta (fallback) | refresh only the affected rows |
+| **B** — pg_tviews, recompute | incremental refresh, the patch path off | refresh only the affected rows |
 | **C** — full refresh | `REFRESH MATERIALIZED VIEW` | rebuild every row |
 
 Each arm runs in its own database, seeded from a common template so the base
@@ -133,7 +133,8 @@ For each scale, `run.sh`:
    data with `gen_data.sql` (parameterised by the scale's row counts).
 2. Clones the template into one database per arm:
    - **Arm A** — `CREATE EXTENSION jsonb_delta; CREATE EXTENSION pg_tviews;`
-   - **Arm B** — `CREATE EXTENSION pg_tviews;`
+   - **Arm B** — the same, with `pg_tviews.direct_patch_enabled = off`: every write
+     recomputes rows from the view (jsonb_delta is required since 0.1.0-beta.35)
    - **Arm C** — no extensions.
 3. Arms A/B create the tview with
    `SELECT pg_tviews_create('tv_product', <product_select.sql>, '{"logged": …}')`
@@ -169,7 +170,7 @@ Everything lands in the run directory (`RUN_DIR`, default
 | File | Contents |
 |------|----------|
 | `raw.tsv` | One row per measured statement: `scale⇥arm⇥mode⇥op⇥ms`. |
-| `summary.tsv` | Per `(scale, arm, mode, op)` stats: `n`, `min_ms`, `median_ms`, `mean_ms`. Arms are named `pg_tviews+jsonb_delta`, `pg_tviews+native`, `full_refresh_matview`. |
+| `summary.tsv` | Per `(scale, arm, mode, op)` stats: `n`, `min_ms`, `median_ms`, `mean_ms`. Arms are named `pg_tviews+jsonb_delta`, `pg_tviews+recompute`, `full_refresh_matview`. |
 | `<scale>_<arm>_<mode>.log` | The raw `psql \timing` transcript for that arm (`small_a_unlogged.log`, `large_c_logged.log`, …). Grep these for `RB_OK` / `RB_DIVERGENCE`. |
 | `physical.csv`, `explain/`, `env.tsv`, `report.md` | Physical cost; see below. |
 
@@ -186,7 +187,7 @@ Everything lands in the run directory (`RUN_DIR`, default
 ```
 
 - **`A vs C`** = `full_refresh ÷ pg_tviews+jsonb_delta` — the incremental speedup.
-- **`A vs B`** = `pg_tviews+native ÷ pg_tviews+jsonb_delta` — jsonb_delta's effect
+- **`A vs B`** = `pg_tviews+recompute ÷ pg_tviews+jsonb_delta` — the patch path's effect
   (≈1.0 means parity; see [jsonb-ivm-integration.md](jsonb-ivm-integration.md)).
 
 For how to interpret these — flat vs linear, point vs batch, the one-time build

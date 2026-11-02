@@ -1,7 +1,5 @@
 //! Health checks, diagnostics, and performance monitoring.
 
-use pgrx::prelude::*;
-
 /// One row of `pg_tviews_health_check()`: status, component, message, severity.
 type Check = (String, String, String, String);
 
@@ -31,18 +29,14 @@ fn error(component: &str, message: impl Into<String>) -> Check {
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - `jsonb_delta` availability
 /// - Catalog revision and metadata consistency
 /// - Orphaned and missing triggers
 /// - TVIEW count
 pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
-    let mut results = vec![
-        ok(
-            "extension",
-            format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
-        ),
-        jsonb_delta_check(),
-    ];
+    let mut results = vec![ok(
+        "extension",
+        format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
+    )];
     let (catalog, unversioned) = catalog_check();
     results.push(catalog);
     // A 0.1.0 catalog has none of the tables the other checks read.
@@ -59,39 +53,10 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
     results
 }
 
-/// The count `sql` returns, or the error row of `component` saying it could
-/// not be read.
-fn count_of(component: &str, sql: &str) -> Result<i64, Check> {
-    Spi::get_one::<i64>(sql)
-        .map(Option::unwrap_or_default)
-        .map_err(|e| error(component, format!("could not be checked: {e}")))
-}
-
 /// The catalog's counts ([`crate::catalog::row::counts`]), or the failed check.
 fn registered(component: &str) -> Result<(i64, i64, i64), Check> {
     crate::catalog::row::counts()
         .map_err(|e| error(component, format!("could not be checked: {e}")))
-}
-
-fn jsonb_delta_check() -> Check {
-    let installed = match count_of(
-        "jsonb_delta",
-        "SELECT COUNT(*) FROM pg_extension WHERE extname = 'jsonb_delta'",
-    ) {
-        Ok(n) => n > 0,
-        Err(check) => return check,
-    };
-    if installed {
-        ok(
-            "jsonb_delta",
-            "jsonb_delta extension available (optimized mode)",
-        )
-    } else {
-        warning(
-            "jsonb_delta",
-            "jsonb_delta not installed (falling back to standard JSONB)",
-        )
-    }
 }
 
 /// Whether this library matches the installed SQL, and whether the

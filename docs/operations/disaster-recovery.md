@@ -125,7 +125,7 @@ cargo pgrx install --release
 
 # In PostgreSQL
 DROP EXTENSION pg_tviews CASCADE;
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION pg_tviews CASCADE;
 
 # Recreate TVIEWs from your schema scripts, or from a saved copy of
 # tviews.registry (here a table registry_copy with its schema, name, query, options)
@@ -295,7 +295,7 @@ createdb $DB_NAME
 
 # 2. Create sample TVIEWs
 psql -d $DB_NAME << 'EOF'
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION pg_tviews CASCADE;
 
 CREATE TABLE tb_test (pk_test SERIAL PRIMARY KEY, id UUID DEFAULT gen_random_uuid(), name TEXT);
 INSERT INTO tb_test (name) VALUES ('test1'), ('test2');
@@ -311,7 +311,7 @@ pg_dump -t pg_tview_meta -d $DB_NAME > $BACKUP_FILE
 psql -d $DB_NAME -c "DROP EXTENSION pg_tviews CASCADE;"
 
 # 5. Recover
-psql -d $DB_NAME -c "CREATE EXTENSION pg_tviews;"
+psql -d $DB_NAME -c "CREATE EXTENSION pg_tviews CASCADE;"
 psql -d $DB_NAME < $BACKUP_FILE
 
 # 6. Verify

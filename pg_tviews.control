@@ -4,3 +4,4 @@ module_pathname = '$libdir/pg_tviews'
 relocatable = false
 schema = tviews
 superuser = false
+requires = 'jsonb_delta'

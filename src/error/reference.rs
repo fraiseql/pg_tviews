@@ -30,7 +30,6 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::DepthExceeded { .. } => "DepthExceeded",
         TViewError::InvalidSelectStatement { .. } => "InvalidSelectStatement",
         TViewError::RequiredColumnMissing { .. } => "RequiredColumnMissing",
-        TViewError::JsonbDeltaMissing => "JsonbDeltaMissing",
         TViewError::RefreshLimit { .. } => "RefreshLimit",
         TViewError::WrongState { .. } => "WrongState",
         TViewError::PrepareRefused { .. } => "PrepareRefused",
@@ -88,7 +87,6 @@ fn examples() -> Vec<TViewError> {
             column_name: p("column"),
             context: p("context"),
         },
-        TViewError::JsonbDeltaMissing,
         TViewError::RefreshLimit {
             limit: Limit::Rows {
                 tview: p("table"),
@@ -270,7 +268,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 21, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 20, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

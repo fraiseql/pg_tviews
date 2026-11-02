@@ -5,15 +5,13 @@
 //! view no longer produces is deleted. The upsert's guard skips a row whose
 //! columns are all unchanged, so a no-op refresh writes nothing.
 //!
-//! Patching a document in place, without recomputing it, happens elsewhere and
-//! needs `jsonb_delta`: the direct patch of a TVIEW's own columns
-//! (`refresh/direct.rs`) and the fan-out patch of a mapped table's columns
-//! (`delta.rs`). Parents are found and refreshed by the flush (`src/flush/`).
+//! Patching a document in place, without recomputing it, happens elsewhere: the
+//! direct patch of a TVIEW's own columns (`refresh/direct.rs`) and the fan-out
+//! patch of a mapped table's columns (`delta/mapping.rs`). Parents are found and
+//! refreshed by the flush (`src/flush/`).
 
 use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
-
-use crate::jsonb_delta::jsonb_delta_schema;
 use crate::utils::{ident, qualified_relname_from_oid};
 
 /// Refresh a single TVIEW row when its source data changes.
@@ -88,9 +86,6 @@ fn delete_tview_row(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<Vec<
 /// document would keep keys the view no longer produces, or a NULL it replaced.
 /// Returns what the view produced and what was written.
 ///
-/// Without `jsonb_delta`, writes still refresh every TVIEW, but none is patched
-/// in place: said once per backend, in the server log.
-///
 /// # Errors
 /// What the upsert returns.
 fn write_row(
@@ -98,14 +93,6 @@ fn write_row(
     key: &KeyValue,
     old: Option<&crate::catalog::collections::OldKeys>,
 ) -> crate::TViewResult<super::Produced> {
-    if jsonb_delta_schema().is_none() {
-        crate::utils::log_once(
-            crate::jsonb_delta::JSONB_DELTA_MISSING,
-            "jsonb_delta is not installed: writes recompute TVIEW rows instead of patching \
-             them in place. CREATE EXTENSION jsonb_delta to enable the direct and fan-out \
-             patches.",
-        );
-    }
     let key_type = &meta.key_type;
     let qi_tv = qualified_relname_from_oid(meta.tview_oid)?;
     let key_col = &meta.identity.column;

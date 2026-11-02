@@ -334,10 +334,7 @@ fn try_capture_direct_patch(
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
     let direct = &meta.plan.direct;
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
-    if direct.is_empty()
-        || !changed.iter().all(|c| data_key(c).is_some())
-        || !crate::jsonb_delta::check_jsonb_delta_available()
-    {
+    if direct.is_empty() || !changed.iter().all(|c| data_key(c).is_some()) {
         return None;
     }
     let new_tuple = trigger.new()?;

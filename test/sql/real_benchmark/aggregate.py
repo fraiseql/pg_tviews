@@ -19,7 +19,7 @@ from pathlib import Path
 
 ARM_NAME = {
     "a": "pg_tviews+jsonb_delta",
-    "b": "pg_tviews+native",
+    "b": "pg_tviews+recompute",
     "c": "full_refresh_matview",
 }
 OP_ORDER = ["build", "update_single", "update_batch", "insert_single", "delete_single"]

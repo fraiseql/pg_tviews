@@ -74,11 +74,6 @@ SELECT tviews.pg_tviews_refresh('post');
 ```
 Start: writes to base tables got slow
     ↓
-jsonb_delta installed?
-SELECT tviews.pg_tviews_check_jsonb_delta();
-    ├─ false → CREATE EXTENSION jsonb_delta;
-    └─ true  → continue
-        ↓
 Missing propagation indexes, high fan-out, low HOT ratio?
 SELECT entity, missing_propagation_indexes, fanout, hot_ratio, warnings FROM tviews.pg_tviews_profile();
     ├─ missing indexes → SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();

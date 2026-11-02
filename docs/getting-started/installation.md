@@ -25,7 +25,8 @@ queries over plain views. Why, and what a SQL-only edition would cost:
 - **Rust**: the toolchain pinned in `rust-toolchain.toml` (rustup installs it on the
   first build)
 - **cargo-pgrx** 0.17.0, the version the extension is built with
-- **jsonb_delta** (optional): enables the direct-patch fast path (below)
+- **jsonb_delta** 0.3.0 or later: required (below); `CREATE EXTENSION pg_tviews CASCADE`
+  installs it when its files are on the server
 
 ## 1. Build and install
 
@@ -84,10 +85,9 @@ psql -d your_database
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
 -- Its objects go to the schema tviews
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 SELECT tviews.pg_tviews_version();
-SELECT tviews.pg_tviews_check_jsonb_delta();   -- true when jsonb_delta is installed
 ```
 
 `CREATE EXTENSION pg_tviews` needs `CREATE` on the database. Every object goes to the
@@ -103,14 +103,17 @@ END $$;
 
 ## jsonb_delta
 
-pg_tviews works without other extensions. Without `jsonb_delta`, every TVIEW row a
-write affects is recomputed from its backing view, and `CREATE EXTENSION pg_tviews`
-says so with a WARNING. With it, an eligible single-row `UPDATE` (a changed column
-copied as-is into `data`, a child's document embedded in its parents) patches the
-stored documents in place instead of recomputing them; the result is the same
-document. The conditions and the measured figures are in the
-[README](../../README.md) and [Benchmark results](../benchmarks/results.md).
-A superuser can turn the fast path off with `SET pg_tviews.direct_patch_enabled = off`.
+pg_tviews requires `jsonb_delta` (`requires` in its control file): `CREATE EXTENSION
+pg_tviews` without it fails with PostgreSQL's "required extension is not installed",
+and `jsonb_delta` cannot be dropped while pg_tviews is installed. An eligible
+`UPDATE` (a changed column copied as-is into `data`, a child's document embedded in its
+parents) patches the stored documents in place with it instead of recomputing them;
+the result is the same document. It is required rather than optional because it is
+faster on the large, TOASTed documents fraiseql's TVIEWs hold (a nested merge of a
+23 KB document: 265 µs against 355 µs for core `jsonb_set`, which reads the document
+once per reference to it), and one mode is simpler to keep correct than two. The
+conditions and the measured figures are in the [README](../../README.md) and
+[Benchmark results](../benchmarks/results.md).
 
 ## Verification
 

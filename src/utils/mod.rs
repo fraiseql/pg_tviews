@@ -236,15 +236,9 @@ pub fn log_once(key: &str, message: &str) {
     }
 }
 
-/// True the first time this backend sees the condition `key`, false afterwards
-/// (until [`forget_logged`]).
+/// True the first time this backend sees the condition `key`, false afterwards.
 pub fn first_time(key: &str) -> bool {
     LOGGED_ONCE.with(|seen| seen.borrow_mut().insert(key.to_string()))
-}
-
-/// Let [`log_once`] report `key` again, after the condition may have changed.
-pub fn forget_logged(key: &str) {
-    LOGGED_ONCE.with(|seen| seen.borrow_mut().remove(key));
 }
 
 /// Schema the `pg_tviews` extension is installed in. It needs no quoting.

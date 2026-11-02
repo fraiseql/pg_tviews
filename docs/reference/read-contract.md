@@ -5,7 +5,7 @@ use objects whose behaviour is versioned: views to read, and a function to creat
 replace. To follow the examples, a TVIEW in schema `app`:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 CREATE SCHEMA app;
 CREATE TABLE app.tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                           title text);

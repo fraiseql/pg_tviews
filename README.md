@@ -67,8 +67,7 @@ By Lionel Hamayon • Part of the FraiseQL framework
 **Stack it up:**
 ```bash
 # Install extensions
-CREATE EXTENSION pg_tviews;
-CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB
+CREATE EXTENSION pg_tviews CASCADE;  -- installs jsonb_delta, which it requires
 
 # Create incremental view
 CREATE TABLE tv_post AS SELECT ...;
@@ -128,16 +127,15 @@ COMMIT;  -- tv_post automatically updated with ONLY the affected row!
 
 ### 🚀 Performance Optimization
 
-For **1.5-3× faster JSONB updates**, install the optional `jsonb_delta` extension:
+pg_tviews requires the `jsonb_delta` extension, which patches documents in place:
 
 ```sql
-CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB updates
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;     -- or CREATE EXTENSION pg_tviews CASCADE
 ```
 
-Without `jsonb_delta`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
-`CREATE EXTENSION pg_tviews` says so once, with a WARNING; after that each backend notes it
-once in the server log, and `pg_tviews_health_check()` reports it. Writes send no message.
+It is faster than core `jsonb_set` on the large, TOASTed documents TVIEWs hold (see
+[installation](docs/getting-started/installation.md#jsonb_delta)).
 
 ---
 
@@ -197,7 +195,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **⚡ 100-500× Faster Triggers**: Statement-level triggers for bulk operations
 - **💾 Query Plan Caching**: 10× faster with cached prepared statements
 - **📦 Bulk Optimization**: N rows with just 2 queries instead of N queries
-- **🎨 Smart Patching**: 2× performance boost with optional jsonb_delta integration
+- **🎨 Smart Patching**: documents patched in place with jsonb_delta (required)
 - **🚀 UNLOGGED Tables, opt-in**: faster writes, refilled automatically after a crash
 
 ### Production-Ready
@@ -414,7 +412,7 @@ cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
                                # --no-default-features --features pg16 (or pg17)
 
 # Enable in your database
-psql -d your_database -c "CREATE EXTENSION pg_tviews;"
+psql -d your_database -c "CREATE EXTENSION pg_tviews CASCADE;"
 ```
 
 #### The `tviews` schema

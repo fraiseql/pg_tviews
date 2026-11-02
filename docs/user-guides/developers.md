@@ -30,7 +30,7 @@ The examples on this page run in order in one database. pg_tviews must be in
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 ```
 
 The functions live in the `tviews` schema. This page qualifies them (`tviews.pg_tviews_*`);

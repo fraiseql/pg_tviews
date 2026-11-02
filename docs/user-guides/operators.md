@@ -10,8 +10,8 @@ schema to work on.
 
 - PostgreSQL 16, 17 or 18. `CREATE EXTENSION` refuses older versions.
 - The library preloaded in every server that runs pg_tviews (see below).
-- Optional: the `jsonb_delta` extension, which speeds up patching documents in place.
-  `tviews.pg_tviews_check_jsonb_delta()` reports whether it is installed.
+- The `jsonb_delta` extension, which pg_tviews requires to patch documents in place
+  (`CREATE EXTENSION pg_tviews CASCADE` installs it).
 
 ## Server setup
 
@@ -30,7 +30,7 @@ shared_preload_libraries = 'pg_tviews'          # add to any existing list
 Then, in each database:
 
 ```sql
-CREATE EXTENSION jsonb_delta;   -- optional
+CREATE EXTENSION jsonb_delta;   -- required by pg_tviews
 CREATE EXTENSION pg_tviews;     -- objects go to schema tviews
 SHOW shared_preload_libraries;
 SELECT tviews.pg_tviews_version();

@@ -3,7 +3,7 @@
 \set ON_ERROR_STOP on
 
 BEGIN;
-    CREATE EXTENSION pg_tviews;
+    CREATE EXTENSION pg_tviews CASCADE;
 
     -- Verify extension exists
     SELECT COUNT(*) = 1 AS extension_loaded

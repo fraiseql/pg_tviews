@@ -10,17 +10,15 @@ SET log_min_messages TO WARNING;
 
 \echo '=========================================='
 \echo 'JSONB_IVM Integration Test Suite'
-\echo 'Cascading refresh without jsonb_delta'
+\echo 'Cascading refresh by recompute (the patch path off)'
 \echo '=========================================='
 
-CREATE EXTENSION IF NOT EXISTS pg_tviews;  -- NO CASCADE - testing fallback behavior
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 \ir lib/assert_fresh.sql
 
-DO $$ BEGIN
-    IF pg_tviews_check_jsonb_delta() THEN
-        RAISE EXCEPTION 'FAIL: jsonb_delta is installed; this file tests the fallback without it';
-    END IF;
-END $$;
+-- Every write recomputes TVIEW rows from their views: the path a patch falls
+-- back to.
+SET pg_tviews.direct_patch_enabled = off;
 
 \echo ''
 \echo '### Scenario: E-commerce Order Management System'
@@ -140,7 +138,7 @@ DO $$ BEGIN
 END $$;
 
 -- Test: extract id from the materialized document (plain JSONB — this file
--- deliberately runs without jsonb_delta, so it must not call jsonb_delta helpers).
+-- runs with the patch path off, so it must not depend on jsonb_delta helpers).
 DO $$
 DECLARE
     order_id text;

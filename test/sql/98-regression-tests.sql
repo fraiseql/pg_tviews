@@ -10,19 +10,15 @@ SET log_min_messages TO WARNING;
 
 \echo 'Regression Test Suite: jsonb_delta enhancements'
 
-CREATE EXTENSION IF NOT EXISTS pg_tviews;  -- NO CASCADE for regression testing
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 \ir lib/assert_fresh.sql
 
 \echo ''
-\echo '### Regression 1: Fallback when jsonb_delta not installed'
+\echo '### Regression 1: Refresh by recompute (the patch path off)'
 
--- pg_tviews is installed without jsonb_delta here; a TVIEW must still be
--- created and refreshed (by replacing documents instead of patching them).
-DO $$ BEGIN
-    IF pg_tviews_check_jsonb_delta() THEN
-        RAISE EXCEPTION 'FAIL: jsonb_delta is installed; this regression needs it absent';
-    END IF;
-END $$;
+-- A TVIEW must be created and refreshed by replacing documents instead of
+-- patching them.
+SET pg_tviews.direct_patch_enabled = off;
 
 CREATE TABLE test_fallback (
     pk_test BIGINT PRIMARY KEY,
@@ -31,11 +27,11 @@ CREATE TABLE test_fallback (
 
 INSERT INTO test_fallback VALUES (1, '{"id": "test_123", "items": []}'::jsonb);
 
--- These should work even without jsonb_delta (graceful degradation)
+-- Recompute works on its own
 SELECT pg_tviews_create('fallback', $$
     SELECT pk_test AS pk_fallback, data FROM test_fallback
 $$);
-SELECT assert_fresh('tv_fallback', 'pk_fallback', 'pg_tviews_create without jsonb_delta');
+SELECT assert_fresh('tv_fallback', 'pk_fallback', 'pg_tviews_create, recompute');
 
 UPDATE test_fallback
 SET data = jsonb_set(data, '{items}', data->'items' || '[{"id": "item_1"}]'::jsonb)
@@ -53,7 +49,7 @@ BEGIN
     IF (SELECT data->'items'->0->>'id' FROM tv_fallback WHERE pk_fallback = 1)
        IS DISTINCT FROM 'item_1'
        OR (SELECT count(*) FROM tv_fallback) <> 1 THEN
-        RAISE EXCEPTION 'FAIL: tv_fallback not refreshed without jsonb_delta';
+        RAISE EXCEPTION 'FAIL: tv_fallback not refreshed by recompute';
     END IF;
     RAISE NOTICE 'PASS: Fallback logic works when jsonb_delta unavailable';
 END $$;
@@ -62,6 +58,8 @@ SELECT pg_tviews_drop('fallback');
 DROP TABLE test_fallback;
 
 \echo ''
+RESET pg_tviews.direct_patch_enabled;
+
 \echo '### Regression 2: Existing functionality unchanged'
 
 -- Test that old behavior still works

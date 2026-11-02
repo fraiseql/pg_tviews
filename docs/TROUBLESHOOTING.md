@@ -34,7 +34,7 @@ not on the `search_path`.
 `tviews` to the database's `search_path`, or create the extension:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 ```
 
 ### `relation "tv_product" does not exist`

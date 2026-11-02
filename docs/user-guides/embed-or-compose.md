@@ -71,7 +71,7 @@ post's `pk_post`. pg_tviews gives it what it needs, from the definitions alone:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 CREATE TABLE tb_user (pk_user bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                       id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,

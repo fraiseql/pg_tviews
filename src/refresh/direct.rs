@@ -80,7 +80,7 @@ fn apply_direct_patch(
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_pk = crate::utils::ident::quoted(meta.key_column());
-    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
+    let schema = crate::jsonb_delta::schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, shape);
 
     let sql = format!(

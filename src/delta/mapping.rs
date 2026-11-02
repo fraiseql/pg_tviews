@@ -336,8 +336,7 @@ fn fan_out(
     let (Some(fanout), Some(key_col)) = (&mapping.fanout, &mapping.key_col) else {
         return Ok(false);
     };
-    if !crate::config::direct_patch_enabled() || !crate::jsonb_delta::check_jsonb_delta_available()
-    {
+    if !crate::config::direct_patch_enabled() {
         return Ok(false);
     }
     let Some((same_row, columns)) = row_pairing(table_oid, &mapping.attnums)? else {

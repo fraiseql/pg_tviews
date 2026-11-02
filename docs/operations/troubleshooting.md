@@ -57,7 +57,7 @@ extension control file`)
    ```sql
    SHOW shared_preload_libraries;           -- must include pg_tviews
    CREATE EXTENSION jsonb_delta;
-   CREATE EXTENSION pg_tviews;
+   CREATE EXTENSION pg_tviews CASCADE;
    ```
 
 ### Permission Denied

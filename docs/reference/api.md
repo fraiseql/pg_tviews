@@ -11,7 +11,7 @@ The examples on this page run in order in a fresh database. They use two tables:
 
 ```sql
 CREATE EXTENSION jsonb_delta;
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION pg_tviews CASCADE;
 
 CREATE TABLE tb_user (
     pk_user bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -59,7 +59,6 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_debug_queue()`](#pg_tviews_debug_queue) | `jsonb` | anyone |
 | [`pg_tviews_profile(tview text DEFAULT NULL, fanout_warn bigint DEFAULT 1000)`](#pg_tviews_profile) | `TABLE(…)` | anyone |
 | [`pg_tviews_version()`](#version-and-catalog) | `text` | anyone |
-| [`pg_tviews_check_jsonb_delta()`](#version-and-catalog) | `boolean` | anyone |
 | [`pg_tviews_catalog_revision()`](#version-and-catalog) | `integer` | anyone |
 | [`contract_version()`](#version-and-catalog) | `integer` | anyone |
 
@@ -629,14 +628,13 @@ SELECT entity, persistence, hot_ratio, warnings FROM tviews.pg_tviews_profile();
 
 ```text
 tviews.pg_tviews_version() RETURNS text            -- the library version
-tviews.pg_tviews_check_jsonb_delta() RETURNS boolean -- jsonb_delta installed
 tviews.pg_tviews_catalog_revision() RETURNS integer  -- catalog revision of the installed extension SQL
 tviews.contract_version() RETURNS integer           -- version of the read contract (2)
 ```
 
 ```sql
-SELECT tviews.pg_tviews_version(), tviews.pg_tviews_check_jsonb_delta(),
-       tviews.pg_tviews_catalog_revision(), tviews.contract_version();
+SELECT tviews.pg_tviews_version(), tviews.pg_tviews_catalog_revision(),
+       tviews.contract_version();
 ```
 
 ## Privileges

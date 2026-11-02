@@ -1,28 +1,26 @@
--- This test verifies runtime detection of jsonb_delta extension
+-- pg_tviews requires jsonb_delta: CREATE EXTENSION ... CASCADE installs it, and
+-- TVIEWs refresh with the patch path off (recompute) and on.
 
 \set ON_ERROR_STOP on
 
 BEGIN;
     SET client_min_messages TO WARNING;
 
-    -- Test Case 1: Detection when jsonb_delta NOT installed
+    -- Test Case 1: CASCADE installs the required jsonb_delta
     DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
     DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 
-    -- Create pg_tviews without jsonb_delta
-    CREATE EXTENSION pg_tviews;
+    CREATE EXTENSION pg_tviews CASCADE;
 \ir lib/assert_fresh.sql
 
-    -- Should detect absence of jsonb_delta
-    SELECT pg_tviews_check_jsonb_delta() AS jsonb_delta_available;
-    -- Expected: f (false)
     DO $$ BEGIN
-        IF pg_tviews_check_jsonb_delta() IS DISTINCT FROM false THEN
-            RAISE EXCEPTION 'FAIL: jsonb_delta reported available after DROP EXTENSION';
+        IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta') THEN
+            RAISE EXCEPTION 'FAIL: CREATE EXTENSION pg_tviews CASCADE did not install jsonb_delta';
         END IF;
     END $$;
 
-    -- Verify pg_tviews still works without jsonb_delta
+    -- Verify pg_tviews works with the patch path off (every write recomputes)
+    SET LOCAL pg_tviews.direct_patch_enabled = off;
     CREATE TABLE tb_test (pk_test INT PRIMARY KEY, id UUID, name TEXT);
     INSERT INTO tb_test VALUES (1, gen_random_uuid(), 'Test');
 
@@ -31,7 +29,7 @@ BEGIN;
                jsonb_build_object('id', id, 'name', name) AS data
         FROM tb_test
     $$);
-    SELECT assert_fresh('tv_test', 'pk_test', 'pg_tviews_create without jsonb_delta');
+    SELECT assert_fresh('tv_test', 'pk_test', 'pg_tviews_create, recompute');
 
     -- Verify TVIEW created successfully
     SELECT COUNT(*) = 1 AS tview_created FROM pg_tview_meta WHERE entity = 'test';
@@ -51,9 +49,9 @@ BEGIN;
         END IF;
     END $$;
 
-    -- Writes must still refresh the TVIEW when jsonb_delta is absent.
+    -- Writes refresh the TVIEW by recompute.
     UPDATE tb_test SET name = 'Test renamed' WHERE pk_test = 1;
-    SELECT assert_fresh('tv_test', 'pk_test', 'UPDATE tb_test without jsonb_delta');
+    SELECT assert_fresh('tv_test', 'pk_test', 'UPDATE tb_test, recompute');
     DO $$ BEGIN
         IF (SELECT data->>'name' FROM tv_test WHERE pk_test = 1) IS DISTINCT FROM 'Test renamed' THEN
             RAISE EXCEPTION 'FAIL: tv_test row 1 not refreshed by UPDATE tb_test';
@@ -72,19 +70,10 @@ BEGIN;
         END IF;
     END $$;
 
-    -- Test Case 2: Detection when jsonb_delta IS installed
-    CREATE EXTENSION IF NOT EXISTS jsonb_delta;
+    -- Test Case 2: the patch path on
+    SET LOCAL pg_tviews.direct_patch_enabled = on;
 
-    -- Should detect presence of jsonb_delta
-    SELECT pg_tviews_check_jsonb_delta() AS jsonb_delta_available;
-    -- Expected: t (true)
-    DO $$ BEGIN
-        IF pg_tviews_check_jsonb_delta() IS DISTINCT FROM true THEN
-            RAISE EXCEPTION 'FAIL: jsonb_delta not detected after CREATE EXTENSION';
-        END IF;
-    END $$;
-
-    -- Verify pg_tviews still works with jsonb_delta
+    -- Verify pg_tviews works with patches
     CREATE TABLE tb_test2 (pk_test2 INT PRIMARY KEY, id UUID, title TEXT);
     INSERT INTO tb_test2 VALUES (1, gen_random_uuid(), 'Test 2');
 

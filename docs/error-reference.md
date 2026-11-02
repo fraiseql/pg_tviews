@@ -27,7 +27,6 @@ Placeholders stand for the values each message carries.
 | `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads. |
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |
 | `42703` | `undefined_column` | `RequiredColumnMissing` | Required column '&lt;column&gt;' missing in &lt;context&gt; |  |
-| `42883` | `undefined_function` | `JsonbDeltaMissing` | Required extension 'jsonb_delta' is not installed | CREATE EXTENSION jsonb_delta; |
 | `54000` | `program_limit_exceeded` | `RefreshLimit` | refreshing &lt;table&gt; &lt;how&gt; would write 10001 rows in one statement (max_refresh_rows = 10000) | Don't embed this entity in &lt;table&gt;, batch the change offline, or make it after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt once, at resume or commit. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
 | `25000` | `invalid_transaction_state` | `PrepareRefused` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |

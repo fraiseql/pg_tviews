@@ -7,15 +7,13 @@ rollback, "no breaking changes") are wrong for the current releases. Do not foll
 
 ## What is true today
 
-- jsonb_delta is optional. Without it every TVIEW row is recomputed from its backing
-  view; with it, eligible changes are patched in place.
+- jsonb_delta is required (since 0.1.0-beta.35): eligible changes are patched in place
+  with it.
 - pg_tviews calls two jsonb_delta functions, always qualified with the schema
   jsonb_delta is installed in: `jsonb_smart_patch_scalar` (direct patch of a TVIEW's
   own row, fan-out patch) and `jsonb_smart_patch_nested` (a child's patch under the path
   a parent embeds it at). See [architecture.md](../../architecture.md#patching-with-jsonb_delta).
-- `SELECT tviews.pg_tviews_check_jsonb_delta();` says whether it is found.
-- Installing or dropping jsonb_delta needs no change to the TVIEWs: the session that
-  runs `CREATE`/`DROP EXTENSION jsonb_delta` looks it up again at its next refresh.
+- It cannot be dropped while pg_tviews is installed.
 - Upgrading pg_tviews itself: `ALTER EXTENSION pg_tviews UPDATE` from 0.1.0-beta.20 on
   ([../DEPRECATION_WARNINGS.md](../DEPRECATION_WARNINGS.md),
   [../development/extension-versioning.md](../development/extension-versioning.md)).
