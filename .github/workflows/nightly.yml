@@ -3,7 +3,9 @@ name: Nightly (assertions)
 # The regression, differential and isolation suites on a PostgreSQL 18 built
 # with --enable-cassert --enable-debug (what `cargo pgrx init ... download`
 # builds): an assertion in the server catches what a release build lets pass
-# silently (a lock or memory context misused by the extension).
+# silently (a lock or memory context misused by the extension). Then the
+# concurrent fuzzer, long: staleness it finds is transient, so only a long run
+# with a checker reading throughout catches the rare interleavings.
 
 on:
   schedule:
@@ -18,7 +20,7 @@ env:
 jobs:
   cassert:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
 
@@ -70,11 +72,38 @@ jobs:
       - name: Regression suite
         run: ./test/run_regression_tests.sh
 
-      - name: Differential suite
-        run: ./test/sql/differential/run.sh 120 "1 2 3 4 5 6 7 8"
+      - name: Differential suite (every mode)
+        run: |
+          source test/lib/modes.sh
+          MODES="$MODES_ALL" ./test/sql/differential/run.sh 120 "1 2 3 4 5 6 7 8"
 
       - name: Isolation suite
         run: ./test/isolation/run.sh
+
+      # 30 minutes of mixed transactions (four seeds in every mode), then 10 of
+      # value-only writes. KEEP=1 keeps a failed seed's database for the dump below.
+      - name: Concurrent fuzzer (30 min mixed, 10 min values)
+        if: ${{ !cancelled() }}
+        run: |
+          source test/lib/modes.sh
+          MODES="$MODES_ALL" KEEP=1 ./test/concurrency/fuzz/run.sh 150 "1 2 3 4" 8 mixed
+          KEEP=1 ./test/concurrency/fuzz/run.sh 600 "1" 8 values
+
+      - name: Keep a failed fuzz seed's database
+        if: failure()
+        run: |
+          mkdir -p fuzz-kept
+          for d in $(psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'pg_tviews_fuzz_%_seed%'"); do
+            pg_dump -d "$d" -Fc -f "fuzz-kept/$d.dump"
+          done
+
+      - name: Upload kept fuzz databases
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-kept
+          path: fuzz-kept/
+          if-no-files-found: ignore
 
       - name: Server log
         if: failure()

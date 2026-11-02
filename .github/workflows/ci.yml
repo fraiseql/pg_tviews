@@ -21,6 +21,7 @@ jobs:
   test:
     name: test (pg${{ matrix.pg }}${{ matrix.preload && format(', {0}', matrix.preload) || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       # Supported PostgreSQL versions: every one runs every suite. One more pg18
@@ -132,10 +133,20 @@ jobs:
         run: ./test/run_integration_tests.sh
 
       # Every TVIEW shape equals its backing view after each of a few hundred
-      # seeded random writes.
+      # seeded random writes. The pg18 job runs every mode (test/lib/modes.sh): the
+      # patch path and the caches off as well.
       - name: Differential suite (test/sql/differential/run.sh)
         if: ${{ !cancelled() }}
-        run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+        run: |
+          source test/lib/modes.sh
+          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
+          ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+
+      # What the oracle cannot see: each shape's stored plan and triggers, and the
+      # feed of a fixed script, against test/sql/differential/expected/.
+      - name: Golden files (test/sql/differential/golden.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: ./test/sql/differential/golden.sh
 
       # Random transactions from 8 clients at every isolation level: every TVIEW
       # equals its view in every committed snapshot; single-row writes of values
@@ -144,6 +155,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          source test/lib/modes.sh
+          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
           ./test/concurrency/fuzz/run.sh 60 "1 2 3" 8 mixed
           ./test/concurrency/fuzz/run.sh 30 "1" 8 values
 
@@ -151,6 +164,14 @@ jobs:
       - name: Isolation suite (test/isolation/run.sh)
         if: ${{ !cancelled() }}
         run: PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" ./test/isolation/run.sh
+
+      # Two-phase commit through pgbouncer in transaction pooling mode.
+      - name: pgbouncer suite (test/pgbouncer/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: |
+          sudo apt-get install -y pgbouncer
+          sudo systemctl stop pgbouncer 2>/dev/null || true
+          PGBOUNCER=/usr/sbin/pgbouncer ./test/pgbouncer/run.sh
 
       # The SQL of the user docs, run as written on a fresh database.
       - name: Documentation SQL (test/docs/run_doc_sql.sh)
