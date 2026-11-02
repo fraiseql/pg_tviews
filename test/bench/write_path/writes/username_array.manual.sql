@@ -10,8 +10,7 @@ SET data = jsonb_set(t.data, '{comments}', (
         SELECT jsonb_agg(CASE WHEN e #>> '{author,id}' = u.id::text
                               THEN jsonb_set(e, '{author,username}', to_jsonb(u.username)) ELSE e END
                          ORDER BY o)
-        FROM jsonb_array_elements(t.data -> 'comments') WITH ORDINALITY a(e, o))),
-    updated_at = now()
+        FROM jsonb_array_elements(t.data -> 'comments') WITH ORDINALITY a(e, o)))
 FROM bench.tb_user u
 WHERE u.pk_user = :u
   AND t.pk_post IN (SELECT c.fk_post FROM bench.tb_comment c WHERE c.fk_author = :u);

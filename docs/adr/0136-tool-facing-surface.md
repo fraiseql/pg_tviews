@@ -635,3 +635,13 @@ not own. Since 0.1.0-beta.27:
 
 `regress_security_surface.sql` runs each as a role that owns nothing, an operator and an
 owner, and fails when a new function of the extension is not classified.
+
+## Amendment (0.1.0-beta.35): one trigger set per TVIEW stays
+
+Each TVIEW keeps its own triggers on the tables it reads (the entity as the trigger's
+argument). Measured twice (`test/bench/write_path/triggers.sh`, K = 1, 3, 5 TVIEWs on one
+table): the trigger sets of a TVIEW that has nothing to refresh add 1-11 µs to a write,
+2.4-2.6 % of a lone write on a quiet machine (1.8-5.6 % for ordinary tables under load,
+10.5 % for a partitioned table under load). One trigger set per table would save that and
+nothing more: an extra TVIEW that does refresh costs its refresh (33-45 % of a lone
+write), which stays. Below the 10 % bar set for the change, it is not made.
