@@ -1,6 +1,7 @@
 # ADR 0207: Concurrent maintenance with value locks
 
-- Status: Accepted (implemented in 0.1.0-beta.27; amended in 0.1.0-beta.34, #263)
+- Status: Accepted (implemented in 0.1.0-beta.27; amended in 0.1.0-beta.34, #263, and
+  0.1.0-beta.35, #277)
 - Fixes: #207 (concurrent writes leave TVIEW rows stale), #214 (concurrent first writes
   into a reset UNLOGGED TVIEW)
 - Builds on: [ADR 0157](0157-cascade-key-mapping.md) (mapping queries),
@@ -302,3 +303,96 @@ Specs: `crossed-value-writes` (one statement each, gated between the triggers an
 flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
 unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change
 links, then rename crosswise) still deadlocks.
+
+## Amendment: one sorted pass at capture (0.1.0-beta.35, #277)
+
+The amendment above still let one statement deadlock when it changed a link. The
+writer took its exclusive locks in the delta trigger, one read-set column after
+another, and the refresh took its shared locks at flush. An application schema
+with an embed fan-out showed it: every item's row shows the counts of current
+items in its place and its group, so soft-deleting an item changes a link and
+rewrites the items of its place and its group. Two transactions soft-deleting
+items of one group in two places each held their own place exclusively. One then
+waited for the group, the other at flush for a shared lock on the first one's
+place (`embed-count-soft-deletes`; 40P01 on 0.1.0-beta.33 and 0.1.0-beta.34,
+about half of the link changes at 16 clients).
+
+Moving the writer's exclusive locks to the flush, sorted with the refresh's, is
+not enough. The lookup that finds the rows a write reaches runs at capture,
+because it reads the transition tables, and it must run after the writer's
+locks. Run before them, it misses a row a concurrent transaction is creating.
+That transaction computed the row from the old value, and the writer never
+refreshes it. Four specs went stale that way (`join-parent-vs-write`,
+`repoint-vs-write`, `multihop-vs-write`, `phantom-child-vs-parent`).
+
+The capture now takes the locks of both sides together:
+
+1. **Look up without locks.** For each TVIEW whose delta trigger fires for the
+   statement, find the rows the changed rows reach (`K0`). When the transaction
+   changed a link, also read what those rows read: their read sets and embedded
+   keys, as a refresh would lock them.
+2. **One sorted pass.** Take the writer's exclusive locks on the changed rows'
+   values and, after a link change, the refresh's shared locks on the read set of
+   `K0`, all at once. They are ordered by relation, then by space, relation
+   locks (intent, escalated) before value locks, then by hash. An exclusive lock
+   covers a shared request on the same value. Escalation is decided per
+   relation, space and side over the whole pass, so an escalated lock takes its
+   relation's place in the order. A writer's intent and a refresh's escalated
+   lock on one relation are one `ShareRowExclusiveLock`. Taken as
+   `RowExclusiveLock` and then `ShareLock`, two writers past the threshold would
+   each hold the first and wait for the other's: the report's second form of the
+   deadlock, on the relation lock. Transactions that each take one such pass
+   can't wait for each other in a cycle.
+3. **Look up again.** In a new snapshot, after the pass: this is the lookup the
+   refresh uses, and it runs after the writer's locks, as before. A row found
+   now but not in step 1 was created or re-pointed by a transaction that
+   committed in between, or written by this transaction's own triggers. The
+   flush locks its read set, as it does for every row it computes, before
+   computing it. Locking it here as well would only take those locks earlier:
+   no spec's outcome depends on it. Under REPEATABLE READ both lookups read the
+   transaction's snapshot. A row committed after it fails the lookup's check
+   against the latest snapshot with 40001 (`rr-created-row-vs-lock-pass`).
+
+**Several TVIEWs on one table.** Each TVIEW has its own delta trigger. They fire one
+after the other, so separate passes, even in a fixed order, could wait for each
+other in a cycle. Example: an item TVIEW reading places, and a group TVIEW
+reading places through groups. Each transaction would hold its own place from the
+first pass and wait in the second. The first delta trigger of a statement
+therefore takes step 1 and step 2 for every pg_tviews delta trigger that fires
+for the same table and event, in the order PostgreSQL fires them. The later
+triggers find their locks held and run only step 3. A statement is named
+by its executor frame and its transition tables. A trigger that finds no pass
+recorded for it (a `COPY`, which runs no executor) takes its own pass.
+
+**What can still deadlock.**
+- **Rows found by the second lookup only.** Their read set is locked at the
+  flush, after the pass, so a row created and committed between the two lookups
+  can bring in a value another transaction holds exclusively. That transaction,
+  in a later statement, waits for this one (`created-row-vs-lock-pass`).
+- **Multi-statement transactions.** A transaction's earlier statements' locks are
+  held when a later one takes its pass, as with row locks.
+- **The flush.** It locks the read set of the rows it computes again: values that
+  changed since the capture, and rows queued by the flush itself (the parents
+  of an embedded TVIEW).
+
+40P01 stays retryable.
+
+**Costs.** After a link change the capture runs the lookup twice and the read-set
+query once more, per TVIEW: about 1.4 ms per such statement on the benchmark's
+schema (`test/concurrency/run.sh embed`). A write that changes no link takes the
+same locks as before, in one pass instead of one per read-set column.
+
+The partitioned-table paths (a row trigger per changed row, rows entering with a
+partition) take the same pass, one TVIEW at a time.
+
+Specs: `embed-count-soft-deletes` (also past the escalation threshold),
+`two-tviews-one-table` (a gate between the two delta triggers),
+`created-row-vs-lock-pass` and its REPEATABLE READ twin, and `lock-pass-order`.
+In `lock-pass-order`, a third transaction makes a pass wait part-way, which shows
+the order (shared and exclusive locks by hash, relation locks first) and the single
+relation lock. The four specs above stay fresh.
+
+**Relation to #275.** #275 orders key locks across a flush; this orders value
+locks at the boundary between writer and refresh. Neither depends on the other.
+This change lands first, on its own, for 0.1.0-beta.35, because it fixes the
+reported deadlock and #275 does not.

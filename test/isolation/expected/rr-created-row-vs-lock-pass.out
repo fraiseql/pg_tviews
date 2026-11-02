@@ -1,0 +1,63 @@
+Parsed test spec with 2 sessions
+
+starting permutation: c_begin c_insert w_begin w_delete w_rollback c_commit w_retry w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step c_begin: BEGIN;
+step c_insert: INSERT INTO tb_item (pk_item, fk_place, fk_group, name) VALUES (5, 1, 5, 'i5');
+step w_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1 FROM tb_item LIMIT 0;
+?column?
+--------
+(0 rows)
+
+step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+ERROR:  could not serialize access: a concurrent transaction refreshes TVIEW rows from rows this write changes
+step w_rollback: ROLLBACK;
+step c_commit: COMMIT;
+step w_retry: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+step w_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      3|t    
+      4|t    
+      5|t    
+(4 rows)
+
+
+starting permutation: w_begin c_begin c_insert c_commit w_delete w_rollback w_retry w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step w_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1 FROM tb_item LIMIT 0;
+?column?
+--------
+(0 rows)
+
+step c_begin: BEGIN;
+step c_insert: INSERT INTO tb_item (pk_item, fk_place, fk_group, name) VALUES (5, 1, 5, 'i5');
+step c_commit: COMMIT;
+step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+ERROR:  could not serialize access: a concurrent transaction added rows this write must refresh
+step w_rollback: ROLLBACK;
+step w_retry: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+step w_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      3|t    
+      4|t    
+      5|t    
+(4 rows)
+

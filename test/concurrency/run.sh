@@ -13,6 +13,11 @@
 #   stress   uniform over orgs too (post -> user -> org): inserts, renames of
 #            users and orgs, users moving between orgs, and a rename of every
 #            user in one transaction every 30 s; 40P01 counts as failed
+#   embed    an embed of aggregates (#277, embed.sql): 200 items in 4 places and
+#            8 groups, each showing its place's and its group's counts of current
+#            items; 40% start moves and 20% soft-deletes or restores (link
+#            changes rewriting a place and a group), 40% renames; one statement
+#            per transaction, 40P01 counts as failed
 #
 # Environment: PG_CONFIG (pgbench's pg_config, default the one on PATH),
 # CLIENTS (16), DURATION seconds per run (20), RUNS per workload (1; the median
@@ -42,6 +47,13 @@ work="$(mktemp -d)"
 trap 'psql -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1; rm -rf "$work"' EXIT
 status=0
 
+# fresh_embed_db: a new database with the embed workload's schema instead.
+fresh_embed_db() {
+  psql -d postgres -qc "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null || exit 2
+  psql -d "$db" -qX -v ON_ERROR_STOP=1 -v items=200 -v places=4 -v groups=8 \
+    -f "$here/embed.sql" >/dev/null || exit 2
+}
+
 # fresh_db <users> [extra.sql]: a new database with the harness schema.
 fresh_db() {
   psql -d postgres -qc "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null || exit 2
@@ -64,7 +76,12 @@ report() {
   failed=$(sed -n 's/^number of failed transactions: \([0-9]*\).*/\1/p' "$2")
   retried=$(sed -n 's/^number of transactions retried: \([0-9]*\).*/\1/p' "$2")
   aborted=$(grep -c "aborted in command" "$2")
-  stale=$(psql -d "$db" -AtX -f "$here/stale.sql")
+  if [[ "$1" == embed ]]; then
+    stale=$(psql -d "$db" -AtX -c "SELECT count(*) FROM tv_item t
+      FULL JOIN tviews.public__tv_item v USING (pk_item) WHERE t.data IS DISTINCT FROM v.data")
+  else
+    stale=$(psql -d "$db" -AtX -f "$here/stale.sql")
+  fi
   if [[ "$1" == stress ]]; then
     stale=$(( stale + $(psql -d "$db" -AtX -c "SELECT count(*) FROM tv_feed t
       FULL JOIN tviews.public__tv_feed v USING (pk_feed) WHERE t.data IS DISTINCT FROM v.data") ))
@@ -111,6 +128,20 @@ run_workload() {
       wait "$pid"
       report "$1" "$log" "bulks=$bulks deadlocks=$(sed -n 's/^.*deadlock failures: \([0-9]*\).*/\1/p' "$log" | head -1)"
       grep -v "^$" "$work/bulk.err" 2>/dev/null | head -3 | sed 's/^/    /'
+      ;;
+    embed)
+      fresh_embed_db
+      PGOPTIONS="-c default_transaction_isolation=${ISOLATION// /\\ }" \
+        "$pgbench" -n -c "$CLIENTS" -j "$(( CLIENTS < 4 ? CLIENTS : 4 ))" -T "$DURATION" \
+        --max-tries="$MAX_TRIES" --failures-detailed -D items=200 \
+        -f "$here/embed-move.pgb@4" -f "$here/embed-delete.pgb@2" -f "$here/embed-rename.pgb@4" \
+        "$db" >"$log" 2>&1
+      local processed failed deadlocks
+      processed=$(sed -n 's/^number of transactions actually processed: \([0-9]*\).*/\1/p' "$log")
+      failed=$(sed -n 's/^number of failed transactions: \([0-9]*\).*/\1/p' "$log")
+      deadlocks=$(sed -n 's/^.*deadlock failures: \([0-9]*\).*/\1/p' "$log" | head -1)
+      report "$1" "$log" \
+        "clients=$CLIENTS deadlocks=${deadlocks:-0}/$(( ${processed:-0} + ${failed:-0} ))"
       ;;
     *) echo "unknown workload: $1"; exit 2 ;;
   esac

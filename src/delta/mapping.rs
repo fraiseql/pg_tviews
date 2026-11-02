@@ -2,16 +2,18 @@
 //! query, or written into every row they reach as a fan-out patch.
 
 use super::Event;
+use super::capture::Statement;
 use super::render::{computed_columns, delta_sql, key_sql_type, row_pairing};
 use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
 };
 use crate::catalog::{KeyType, TviewMeta};
-use crate::concurrency::{LockTarget, LockValue};
+use crate::concurrency::{LockTarget, LockValue, Pass};
 use crate::config::UncascadedPolicy;
 use crate::dependency::triggers::{NEW_TABLE, OLD_TABLE};
 use crate::error::{TViewError, TViewResult};
 use crate::lineage::{DELTA, KeyMapping, MappingKind};
+use crate::queue::key::KeyValue;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
@@ -81,22 +83,28 @@ pub(crate) fn read_set_queries(
     Ok(rows)
 }
 
-/// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
-/// them.
-pub(super) fn map_statement(
+/// What a delta trigger does with a statement's rows for one TVIEW.
+enum Route {
+    /// They map to no key.
+    Nothing,
+    /// An `all_keys` table under `full_refresh`: the whole TVIEW, if any row
+    /// changed.
+    FullRefresh,
+    /// A mapping query over the changed rows (`delta`, see [`delta_sql`]).
+    Mapped { delta: String },
+}
+
+/// How the rows a statement changed in `table_oid` reach `meta`'s TVIEW, read
+/// through `mapping`, with the write's links noted
+/// ([`crate::concurrency::note_write`]).
+fn route(
     trigger: &PgTrigger<'_>,
-    entity: &str,
+    meta: &TviewMeta,
+    mapping: &KeyMapping,
     table_oid: Oid,
     event: Event,
-) -> TViewResult<()> {
-    let meta =
-        TviewMeta::load_reaching(entity, table_oid)?.ok_or_else(|| TViewError::TviewNotFound {
-            name: entity.to_string(),
-        })?;
-    let Some(mapping) = meta.key_mapping(table_oid, None) else {
-        refresh_all(entity, "its mapping of a written table is unknown");
-        return Ok(());
-    };
+) -> TViewResult<Route> {
+    let entity = meta.entity_name.as_str();
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     let computed = computed_columns(entity, table_oid)?;
     // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
@@ -113,10 +121,38 @@ pub(super) fn map_statement(
             || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
     });
     if reads_same {
-        return Ok(());
+        return Ok(Route::Nothing);
     }
-    match mapping.kind {
-        MappingKind::AllKeys if full_refresh => {
+    Ok(match mapping.kind {
+        MappingKind::AllKeys if full_refresh => Route::FullRefresh,
+        // An `all_keys` table outside `full_refresh` still maps the reads of it
+        // that can be traced.
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => Route::Mapped {
+            delta: delta_sql(entity, table_oid, event, &mapping.attnums)?,
+        },
+        _ => Route::Nothing,
+    })
+}
+
+/// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
+/// them.
+pub(super) fn map_statement(
+    trigger: &PgTrigger<'_>,
+    entity: &str,
+    table_oid: Oid,
+    event: Event,
+) -> TViewResult<()> {
+    let meta =
+        TviewMeta::load_reaching(entity, table_oid)?.ok_or_else(|| TViewError::TviewNotFound {
+            name: entity.to_string(),
+        })?;
+    let Some(mapping) = meta.key_mapping(table_oid, None) else {
+        refresh_all(entity, "its mapping of a written table is unknown");
+        return Ok(());
+    };
+    match route(trigger, &meta, mapping, table_oid, event)? {
+        Route::Nothing => {}
+        Route::FullRefresh => {
             let table = if event == Event::Delete {
                 OLD_TABLE
             } else {
@@ -127,22 +163,16 @@ pub(super) fn map_statement(
                 entity,
                 &KeyType::Int,
                 &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
+                true,
             )?;
             if !changed.is_empty() {
                 crate::queue::enqueue_refresh_all(entity);
             }
         }
-        // An `all_keys` table outside `full_refresh` still maps the reads of it
-        // that can be traced.
-        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
-            let delta = delta_sql(entity, table_oid, event, &mapping.attnums)?;
+        Route::Mapped { delta } => {
             // Refreshes of the TVIEW rows these rows feed meet this write on the
             // values (ADR 0207): locked before any query finds rows by them.
-            crate::concurrency::lock_changed_rows(mapping, |column| {
-                with_transition_tables(trigger, entity, |client, table| {
-                    texts(client, Some(table), &changed_values(&delta, column), &[])
-                })
-            })?;
+            statement_locks(trigger, entity, table_oid, event)?;
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
@@ -153,23 +183,118 @@ pub(super) fn map_statement(
                 refresh_all(entity, "a relation its mapping reads is gone");
                 return Ok(());
             };
-            let key_type = &meta.key_type;
-            let keys = run_with_transition_tables(
-                trigger,
-                entity,
-                key_type,
-                &format!(
-                    "WITH {DELTA} AS ({delta}) \
-                     SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
-                    key_sql_type(key_type)
-                ),
-            )?;
+            // After the writer's locks, in a new snapshot: a row a concurrent
+            // transaction linked to these values is found. Rows the first
+            // lookup missed have their read set locked by the flush, as every
+            // row it computes.
+            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, true)?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
         }
-        _ => {}
     }
+    Ok(())
+}
+
+/// The keys of `entity`'s rows that the changed rows (`delta`) reach through
+/// the mapping query `keys_sql`, read in a new snapshot as the TVIEW's owner;
+/// under REPEATABLE READ checked against the latest snapshot (`crosscheck`).
+fn lookup(
+    trigger: &PgTrigger<'_>,
+    entity: &str,
+    key_type: &KeyType,
+    delta: &str,
+    keys_sql: &str,
+    crosscheck: bool,
+) -> TViewResult<Vec<KeyValue>> {
+    run_with_transition_tables(
+        trigger,
+        entity,
+        key_type,
+        &format!(
+            "WITH {DELTA} AS ({delta}) \
+             SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
+            key_sql_type(key_type)
+        ),
+        crosscheck,
+    )
+}
+
+/// The value locks of `entity`'s capture of the statement: taken by the
+/// statement's first delta trigger on the table, for every TVIEW whose trigger
+/// fires for it, or now.
+fn statement_locks(
+    trigger: &PgTrigger<'_>,
+    entity: &str,
+    table_oid: Oid,
+    event: Event,
+) -> TViewResult<()> {
+    let statement = Statement::of(trigger, table_oid);
+    if statement.is_some_and(|s| s.recorded(entity)) {
+        return Ok(());
+    }
+    // The first trigger of the statement takes the pass for itself and for the
+    // triggers after it; one no pass covered (a COPY) takes its own.
+    let entities = statement
+        .filter(|s| !s.has_record())
+        .and_then(|_| super::capture::firing_entities(trigger))
+        .map_or_else(
+            || vec![entity.to_string()],
+            |all| {
+                let at = all.iter().position(|e| e == entity).unwrap_or(0);
+                all[at..].to_vec()
+            },
+        );
+    capture_pass(trigger, &entities, table_oid, event)?;
+    if let Some(statement) = statement {
+        statement.record(entities.into_iter().filter(|e| e != entity).collect());
+    }
+    Ok(())
+}
+
+/// One pass of the value locks of the TVIEWs `entities` for the statement's
+/// changed rows: each one's writer locks and, once the transaction changed a
+/// link, the read set of the rows its lookup finds now, unlocked.
+fn capture_pass(
+    trigger: &PgTrigger<'_>,
+    entities: &[String],
+    table_oid: Oid,
+    event: Event,
+) -> TViewResult<()> {
+    // Every write's links first: they decide whether the read sets are locked.
+    let mut mapped = Vec::new();
+    for entity in entities {
+        let Some(meta) = TviewMeta::load_reaching(entity, table_oid)? else {
+            continue;
+        };
+        let Some(mapping) = meta.key_mapping(table_oid, None) else {
+            continue;
+        };
+        if let Route::Mapped { delta } = route(trigger, &meta, mapping, table_oid, event)? {
+            mapped.push((entity, meta.clone(), delta));
+        }
+    }
+    let links = crate::concurrency::links_changed();
+    let mut pass = Pass::default();
+    for (entity, meta, delta) in mapped {
+        let Some(mapping) = meta.key_mapping(table_oid, None) else {
+            continue;
+        };
+        crate::concurrency::changed_rows(mapping, &mut pass, |column| {
+            with_transition_tables(trigger, entity, |client, table| {
+                texts(client, Some(table), &changed_values(&delta, column), &[])
+            })
+        })?;
+        if !links {
+            continue;
+        }
+        let Some(keys_sql) = rendered(entity, mapping)? else {
+            continue;
+        };
+        let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, false)?;
+        super::capture::add_read_set(&meta, &keys, &mut pass)?;
+    }
+    crate::concurrency::take(&pass);
     Ok(())
 }
 

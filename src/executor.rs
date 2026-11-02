@@ -26,9 +26,11 @@ static mut PREV_EXECUTOR_RUN: pg_sys::ExecutorRun_hook_type = None;
 static mut PREV_EXECUTOR_FINISH: pg_sys::ExecutorFinish_hook_type = None;
 
 thread_local! {
-    /// Whether each running query writes a table carrying a flush trigger,
-    /// innermost last.
-    static FRAMES: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    /// Whether each running query writes a table carrying a flush trigger, and
+    /// the frame's number, innermost last.
+    static FRAMES: RefCell<Vec<(bool, u64)>> = const { RefCell::new(Vec::new()) };
+    /// The number of the last frame pushed: each frame of the backend has its own.
+    static LAST_FRAME: Cell<u64> = const { Cell::new(0) };
     /// The OID of `pg_tview_flush_trigger()`, once a trigger calling it was seen.
     static FLUSH_FUNCTION: Cell<pg_sys::Oid> = const { Cell::new(pg_sys::InvalidOid) };
 }
@@ -57,14 +59,21 @@ pub fn flush_deferred() -> bool {
         let frames = f.borrow();
         frames
             .split_last()
-            .is_some_and(|(_, enclosing)| enclosing.iter().any(|&writing| writing))
+            .is_some_and(|(_, enclosing)| enclosing.iter().any(|&(writing, _)| writing))
     })
 }
 
 /// Whether a writing statement is running: work queued now is flushed when
 /// the outermost one finishes.
 pub fn inside_writing_statement() -> bool {
-    FRAMES.with(|f| f.borrow().iter().any(|&writing| writing))
+    FRAMES.with(|f| f.borrow().iter().any(|&(writing, _)| writing))
+}
+
+/// The number of the innermost running query's frame: during its `AFTER`
+/// statement triggers, the same for each of them and for no other statement.
+/// `None` outside the executor (a `COPY` fires its triggers without one).
+pub fn frame() -> Option<u64> {
+    FRAMES.with(|f| f.borrow().last().map(|&(_, number)| number))
 }
 
 /// How many queries are running: a subtransaction records it when it starts.
@@ -89,7 +98,9 @@ struct Frame;
 
 impl Frame {
     fn push(writing: bool) -> Self {
-        FRAMES.with(|f| f.borrow_mut().push(writing));
+        let number = LAST_FRAME.get().wrapping_add(1);
+        LAST_FRAME.set(number);
+        FRAMES.with(|f| f.borrow_mut().push((writing, number)));
         Self
     }
 }
@@ -159,7 +170,7 @@ unsafe extern "C-unwind" fn executor_finish(query_desc: *mut pg_sys::QueryDesc) 
     }
     // The outermost writing statement has run its triggers: refresh what nested
     // statements queued after its flush trigger fired.
-    if writing && !FRAMES.with(|f| f.borrow().iter().any(|&w| w)) {
+    if writing && !FRAMES.with(|f| f.borrow().iter().any(|&(w, _)| w)) {
         crate::trigger::flush_after_statement();
     }
 }
@@ -211,7 +222,7 @@ unsafe fn has_flush_trigger(desc: *const pg_sys::TriggerDesc) -> bool {
 /// Whether a trigger with this `tgenabled` fires in this session, as
 /// `PostgreSQL` decides it (`ALTER TABLE … DISABLE TRIGGER`,
 /// `session_replication_role`).
-fn fires(enabled: u8) -> bool {
+pub(crate) fn fires(enabled: u8) -> bool {
     // SAFETY: a plain backend-global setting.
     let replica = unsafe { pg_sys::SessionReplicationRole }
         == pg_sys::SESSION_REPLICATION_ROLE_REPLICA.cast_signed();

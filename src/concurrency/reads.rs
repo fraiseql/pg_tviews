@@ -48,16 +48,32 @@ pub fn rendered(
 /// on the TVIEW, which a write refreshing the whole TVIEW conflicts with. Run as
 /// the TVIEW's owner, before the rows are locked and computed. The values are
 /// locked only once the transaction changed a link
-/// ([`super::links_changed`]); the intent lock always.
+/// ([`super::links_changed`]); the intent lock always. One pass
+/// ([`super::take`]).
 ///
 /// # Errors
 /// Returns an error if a read-set query fails.
 pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
+    let mut pass = super::Pass::default();
+    read_set(meta, keys, &mut pass)?;
+    super::take(&pass);
+    Ok(())
+}
+
+/// Add to `pass` the locks [`lock_read_set`] takes for `meta`'s rows `keys`.
+///
+/// # Errors
+/// Returns an error if a read-set query fails.
+pub fn read_set(
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+    pass: &mut super::Pass,
+) -> TViewResult<()> {
     use super::{LockTarget, Side};
     let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
         return Ok(());
     };
-    super::lock_intent(meta.tview_oid.to_u32(), Side::Refresh);
+    pass.intent(meta.tview_oid.to_u32(), Side::Refresh);
     // A transaction that changed no link computes rows from links every
     // transaction sees committed: a writer of a value they read finds them, and
     // the row locks order the two refreshes. Locking the values too would only
@@ -79,7 +95,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
             let (Some(sql), Some(value)) = (rendered(entity, mapping, set, &lookup.rhs)?, value)
             else {
                 // No equality to lock by, or a relation or column it reads is gone.
-                super::lock_relation(mapping.relid, Side::Refresh);
+                pass.relation(mapping.relid, Side::Refresh);
                 continue;
             };
             let target = LockTarget {
@@ -120,7 +136,7 @@ pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TVi
         }
     }
     for ((target, _, _), values) in sets.iter().zip(values) {
-        super::lock_values(target, Side::Refresh, &values);
+        pass.values(target, Side::Refresh, &values);
     }
     Ok(())
 }

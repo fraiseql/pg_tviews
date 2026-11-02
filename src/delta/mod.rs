@@ -11,6 +11,7 @@
 //! statements naming a partition. `TRUNCATE` refreshes the whole TVIEW, once per
 //! statement however many truncated partitions fire.
 
+pub mod capture;
 mod mapping;
 mod partition;
 mod render;

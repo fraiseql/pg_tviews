@@ -1,0 +1,55 @@
+Parsed test spec with 3 sessions
+
+starting permutation: c_begin c_insert r_begin r_rename w_delete c_commit r_delete r_commit w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step c_begin: BEGIN;
+step c_insert: INSERT INTO tb_item (pk_item, fk_place, fk_group, name) VALUES (5, 1, 5, 'i5');
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_group SET name = 'g5!' WHERE pk_group = 5; <waiting ...>
+step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1; <waiting ...>
+step c_commit: COMMIT;
+step r_rename: <... completed>
+step r_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 3; <waiting ...>
+step w_delete: <... completed>
+ERROR:  deadlock detected
+step r_delete: <... completed>
+step r_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      3|t    
+      4|t    
+      5|t    
+(4 rows)
+
+
+starting permutation: r_begin r_rename w_delete r_delete r_commit w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_group SET name = 'g5!' WHERE pk_group = 5;
+step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+step r_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 3;
+step r_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_item, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|fresh
+-------+-----
+      1|t    
+      3|t    
+      4|t    
+(3 rows)
+
