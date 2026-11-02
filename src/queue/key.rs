@@ -207,6 +207,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn one_key_is_looked_up_by_equality() {
+        let lookup = key_lookup(&KeyType::Int, &[KeyValue::Int(7)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(lookup.rhs, "$1::pg_catalog.int8");
+        assert_eq!(lookup.args.len(), 1);
+        let two = key_lookup(&KeyType::Int, &[KeyValue::Int(7), KeyValue::Int(8)])
+            .unwrap()
+            .unwrap();
+        assert!(two.rhs.starts_with("ANY (ARRAY["), "{}", two.rhs);
+    }
+
+    #[test]
     fn test_refresh_key_equality() {
         let key1 = RefreshKey::pk("user", 42);
         let key2 = RefreshKey::pk("user", 42);

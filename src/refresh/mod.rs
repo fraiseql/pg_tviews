@@ -1,16 +1,14 @@
-//! Writing TVIEW rows: one row recomputed from its backing view (`row`), many at
-//! once (`bulk`), and the direct patch of a TVIEW's own columns (`direct`).
+//! Writing TVIEW rows: rows recomputed from the backing view by identity
+//! (`recompute`), every row reconciled with it (`full`), and the direct patch of
+//! a TVIEW's own columns (`direct`).
 
-pub mod row;
-
-pub mod bulk;
 pub mod direct;
 pub mod full;
+pub mod recompute;
 
-pub use bulk::refresh_bulk;
-pub use row::refresh_key;
+pub use recompute::recompute;
 
-pub(crate) use crate::queue::key::{key_array, key_cast, key_lookup, key_scalar, produced_keys};
+pub(crate) use crate::queue::key::{key_array, key_cast, key_lookup, produced_keys};
 
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;

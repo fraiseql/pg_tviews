@@ -1,42 +1,39 @@
-//! Bulk Refresh API
+//! Recompute TVIEW rows from their backing view, by identity (ADR 0169).
 //!
-//! Provides efficient refresh of multiple rows in a single operation.
-//! Reduces query count from N queries to 2 queries for N rows.
+//! A queued key is refreshed by an upsert from the backing view: the row the view
+//! produces for it is written whole (its document included), and a row the view
+//! no longer produces is deleted. The upsert's guard skips a row whose columns are
+//! all unchanged, so a no-op refresh writes nothing. One key or many take the same
+//! statements: the keys are looked up by their count's shape (`key_lookup`), a
+//! single one by equality.
+//!
+//! Patching a document in place, without recomputing it, is `direct` (a TVIEW's
+//! own columns) and the fan-out patch (`delta/mapping.rs`); every row at once is
+//! `full`. Parents are found and refreshed by the flush (`src/flush/`).
 
 use crate::TViewResult;
 use crate::catalog::TviewMeta;
 use crate::queue::key::KeyValue;
 
-/// Refresh multiple rows of the same entity in a single operation
-///
-/// This is the bulk refresh API that replaces individual `refresh_key()` calls
-/// for statement-level triggers and other bulk operations. Rows are named by the
-/// TVIEW's identity (ADR 0169).
-///
-/// # Arguments
-///
-/// * `entity` - Entity name (e.g., "post", "user")
-/// * `keys` - Identity values of the rows to refresh
+/// Recompute the rows of `meta`'s TVIEW named by `keys` and write them: one
+/// upsert, and a delete of the keys the view no longer produces, per batch of
+/// [`super::BATCH_KEYS`] keys. Waits for concurrent writers of the rows first.
+/// Does not propagate to parent TVIEWs: the flush does (`src/flush/`).
 ///
 /// # Returns
 ///
 /// The rows refreshed, as parents look them up.
 ///
-/// One upsert statement per batch of [`super::BATCH_KEYS`] keys, instead of one per
-/// key.
-pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touched> {
+/// # Errors
+///
+/// What the lock, the upsert or the delete returns.
+pub fn recompute(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<super::Touched> {
     if keys.is_empty() {
         return Ok(super::Touched::default());
     }
 
     // Count the backing-view recompute of these rows.
-    crate::stats::record_view_recomputes(entity, keys.len() as u64);
-
-    // Load metadata once
-    let meta =
-        TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
-            name: entity.to_string(),
-        })?;
+    crate::stats::record_view_recomputes(&meta.entity_name, keys.len() as u64);
 
     // Resolve the schema-qualified backing view + tview and the authoritative
     // data-column list.
@@ -87,7 +84,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     let mut touched = super::Touched::default();
     for chunk in keys.chunks(crate::refresh::BATCH_KEYS) {
         // Wait for concurrent writers of these rows before reading the view.
-        let locked = super::lock_rows(&meta, &qi_tv, chunk)?;
+        let locked = super::lock_rows(meta, &qi_tv, chunk)?;
         // The keys take their shape (`key_lookup`): the upsert is planned by
         // PostgreSQL's own rule, which settles on its generic plan, and a
         // generic plan of an array parameter reads the view for ten keys.
@@ -99,7 +96,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             lookup.rhs
         );
         let produced = super::run_counted_upsert(
-            &meta,
+            meta,
             &qi_tv,
             &col_list,
             &source_sql,
@@ -113,7 +110,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             Vec::new()
         } else {
             super::run_journaled_delete(
-                &meta,
+                meta,
                 &delete_sql,
                 &[
                     super::key_array(key_type, chunk)?,
@@ -122,7 +119,7 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
             )?
         };
         touched.extend(super::touched(
-            &meta,
+            meta,
             chunk,
             locked.pks,
             produced.written,
@@ -131,15 +128,4 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
     }
 
     Ok(touched)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_refresh_bulk_empty() {
-        // Empty PK list should succeed without doing anything
-        assert!(refresh_bulk("test", &[]).is_ok());
-    }
 }
