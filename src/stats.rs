@@ -124,6 +124,14 @@ impl Table {
         None
     }
 
+    /// Free the slots of database `db`, and the table is no longer full.
+    fn free_database(&mut self, db: u32) {
+        while let Some(i) = self.slots.iter().position(|slot| slot.db == db) {
+            self.free(i);
+        }
+        self.overflowed = false;
+    }
+
     /// Free slot `i`, moving back the slots after it that probed past it.
     fn free(&mut self, mut i: usize) {
         let mut j = i;
@@ -368,10 +376,7 @@ pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
     let (db, now) = unsafe { (pg_sys::MyDatabaseId.to_u32(), pg_sys::GetCurrentTimestamp()) };
     let mut shared = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE).ok_or_else(unavailable)?;
     if whole_database {
-        while let Some(i) = shared.slots.iter().position(|slot| slot.db == db) {
-            shared.free(i);
-        }
-        shared.overflowed = false;
+        shared.free_database(db);
     }
     for table in tables {
         match shared.find_or_take(db, table.to_u32(), now) {
@@ -425,6 +430,15 @@ pub fn feed_gaps() -> crate::TViewResult<u64> {
 pub fn started() -> pg_sys::TimestampTz {
     // SAFETY: reads a backend global, set once by the postmaster.
     unsafe { pg_sys::PgStartTime }
+}
+
+/// Forget the TVIEWs of database `db`, dropped: `DROP DATABASE` drops no table
+/// one by one, and the slots of a cluster that creates and drops databases (test
+/// runs) would fill the table for good.
+pub fn forget_database(db: Oid) {
+    if let Some(mut shared) = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE) {
+        shared.free_database(db.to_u32());
+    }
 }
 
 /// Forget `table`, dropped or replaced by a rebuild.
@@ -528,6 +542,20 @@ mod tests {
         for (n, &k) in keys.iter().enumerate() {
             assert_eq!(t.find(7, k).is_some(), n % 2 == 1, "key {k}");
         }
+    }
+
+    #[test]
+    fn a_dropped_database_frees_its_slots() {
+        let mut t = table();
+        for k in 0..u32::try_from(CAPACITY).unwrap() {
+            t.find_or_take(1 + k % 2, k + 1, 0).unwrap();
+        }
+        assert!(t.find_or_take(3, 1, 0).is_none(), "full");
+        t.free_database(1);
+        assert!(t.slots.iter().all(|s: &Slot| s.db != 1));
+        assert_eq!(t.slots.iter().filter(|s| s.db == 2).count(), CAPACITY / 2);
+        assert!(t.find(2, 2).is_some(), "the other database keeps its slots");
+        assert!(t.find_or_take(3, 1, 0).is_some(), "room again");
     }
 
     #[test]

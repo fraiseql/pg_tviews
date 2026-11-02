@@ -446,8 +446,21 @@ impl QueryGraph {
     /// copy columns of `occ` read nowhere else. A path is a chain of
     /// `jsonb_build_object` keys (`FraiseQL` nests a joined entity as an object):
     /// the data walk follows nothing else to a field.
+    ///
+    /// None when another column of `occ` decides whether its row joins (a
+    /// condition besides the hop's equality, `AND o.deleted_at IS NULL`): the
+    /// patch would write into rows the view leaves without it (#289).
     fn fanout(&self, occ: usize, path: &[usize]) -> Option<(String, CopiedPaths)> {
-        let other = self.hop_columns(occ, path)?.root;
+        let hop = self.hop_columns(occ, path)?;
+        let other = hop.root;
+        if self.links_unknown
+            || self
+                .links
+                .iter()
+                .any(|&(o, attnum)| o == occ && attnum != hop.own.attnum)
+        {
+            return None;
+        }
         let lookup = self.output_equal_to(std::slice::from_ref(other))?;
         let data = self.data.as_ref()?;
         let fields: CopiedPaths = data

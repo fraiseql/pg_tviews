@@ -546,7 +546,8 @@ Refresh statistics per TVIEW of the database, readable from any session by any r
 started or the TVIEW's last reset, and counted when each transaction ends. They live in
 shared memory (4096 TVIEWs per cluster): reading the view without
 `shared_preload_libraries = 'pg_tviews'` fails with a hint, and a TVIEW that finds the
-table full is `untracked`, with NULL counters. The columns are described in the
+table full is `untracked`, with NULL counters (dropping a TVIEW, or its database, frees
+its slot). The columns are described in the
 [contract for tools](read-contract.md#tviewsstats).
 `pg_tviews_reset_stats` zeroes one TVIEW and requires owning it;
 `pg_tviews_reset_stats_all` zeroes every TVIEW of the database and is an operator

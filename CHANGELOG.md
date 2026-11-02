@@ -20,6 +20,20 @@ Opens 0.1.0-beta.36.
   exception handlers; `pg_tviews.max_refresh_rows` counts one such refresh; `CALL` and
   `DO` still refresh after each statement they run.
 
+### Fixed
+- A fan-out patch (a parent's copied columns written into its children) left the
+  children of a parent whose primary key changed with the old parent's values: the
+  update's row images did not pair, which the patch took as nothing to write (#288).
+  Such an update now maps the rows to recompute.
+- A fan-out patch wrote a parent's columns into the children of a parent that a
+  condition of its own excludes (`LEFT JOIN … ON o.pk_org = t.fk_org AND o.deleted_at
+  IS NULL`) (#289). A table read with a condition on another of its columns gets no
+  fan-out: its writes recompute the rows they reach.
+- `DROP DATABASE` left the dropped database's TVIEWs in the cluster's statistics
+  table (4,096 slots): a cluster that creates and drops databases (test runs) ended
+  with every TVIEW untracked until a restart (#290). The slots are freed when the drop
+  succeeds.
+
 ### Security
 - A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone. It
   reads the base tables with the owner's privileges, so the `SELECT` grants it copied

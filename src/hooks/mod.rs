@@ -139,6 +139,19 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         crate::delta::begin_truncate();
     }
 
+    // DROP DATABASE drops no TVIEW table one by one: the database's TVIEWs leave
+    // the cluster's statistics table once it is gone. It runs from another
+    // database, where pg_tviews may not be installed.
+    if call.tag() == Some(pg_sys::NodeTag::T_DropdbStmt) {
+        // SAFETY: the hook's statement.
+        let dropped = unsafe { dropped_database(call.pstmt) };
+        call.pass_through();
+        if let Some(db) = dropped {
+            crate::stats::forget_database(db);
+        }
+        return;
+    }
+
     // A statement that may change the catalog: if the transaction rolls back, the
     // caches forget what they memoized of it.
     if call.tag().is_some_and(may_change_catalog) {
@@ -172,6 +185,23 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         let _internal = crate::internal_ddl::InternalDdl::begin();
         let _path = crate::owner::CatalogPath::pin();
         follow_ups.run();
+    }
+}
+
+/// The database a `DROP DATABASE` names, when it exists.
+///
+/// SAFETY: `pstmt` must be the hook's valid `DropdbStmt` statement.
+unsafe fn dropped_database(pstmt: *mut pg_sys::PlannedStmt) -> Option<pg_sys::Oid> {
+    // SAFETY: the caller's statement, whose tag is checked; a catalog lookup by
+    // name that returns InvalidOid when it is missing.
+    unsafe {
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        let stmt = (*pstmt).utilityStmt.cast::<pg_sys::DropdbStmt>();
+        if stmt.is_null() || (*stmt).dbname.is_null() {
+            return None;
+        }
+        let db = pg_sys::get_database_oid((*stmt).dbname, true);
+        (db != pg_sys::InvalidOid).then_some(db)
     }
 }
 

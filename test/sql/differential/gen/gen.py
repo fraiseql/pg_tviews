@@ -60,16 +60,9 @@ MAXABLE = ("text", "int", "numeric", "timestamptz")
 SUMMABLE = ("int", "numeric")
 # Writes left out unless named in the optional fifth argument, each for an open
 # defect: the run stays green while it is open, and naming it reproduces it.
-OPT_IN = {
-    # UPDATE of the pk_<entity> of a table other rows reference: a TVIEW joining
-    # it and projecting the child's fk_<entity> keeps the old parent's columns
-    # when the patch path is on (repro in README.md)
-    "parent-rekey",
-    # a LEFT JOIN whose ON clause also filters the parent (deleted_at IS NULL),
-    # the child's fk_<entity> projected: an UPDATE of a filtered-out parent writes
-    # its columns into the child rows when the patch path is on (repro in README.md)
-    "filtered-left-join-fk",
-}
+# None is open: #288 (a referenced pk_<entity> changed) and #289 (a LEFT JOIN
+# filtering its parent) were found this way and are in the default run.
+OPT_IN: set[str] = set()
 # the share of the writes made by a mutation function, and in a transaction
 MUTATION_SHARE = 0.2
 TRANSACTION_SHARE = 0.1
@@ -304,7 +297,6 @@ class Case:
         frontier = [("t", t)]
         depth = r.randint(1, 3)
         n = 0
-        filtered_left = False
         while n < depth and frontier:
             alias, cur = r.choice(frontier)
             free = [
@@ -323,7 +315,6 @@ class Case:
             s = self.soft(pa, fk.parent)
             if s and left:
                 on += f" AND {s}"
-                filtered_left = True
             elif s:
                 conds.append(s)
             joins.append(
@@ -340,8 +331,6 @@ class Case:
                 parts.append(f"{lit(fk.parent.entity + '_' + c)}, {pa}.{c}")
             frontier.append((pa, fk.parent))
         extra = self.extra_cols("t", t)
-        if filtered_left and "filtered-left-join-fk" not in self.features:
-            extra = ""
         sql = (
             f"SELECT t.{t.pk} AS {key}, t.id{extra}, "
             f"jsonb_build_object({', '.join(parts)}) AS data\n  FROM {t.name} t\n  "
@@ -610,9 +599,7 @@ class Case:
             ops += ["move"] * 5
         if t.soft:
             ops += ["soft"] * 2
-        if not self.has_incoming_constraint(t) and (
-            not self.children(t) or "parent-rekey" in self.features
-        ):
+        if not self.has_incoming_constraint(t):
             ops += ["rekey"]
         op = r.choice(ops)
         if op == "insert":

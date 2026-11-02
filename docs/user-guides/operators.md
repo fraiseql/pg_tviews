@@ -127,7 +127,8 @@ SELECT * FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild OR NOT rep
 Alert on any health row whose `status` is not `OK`, on `needs_rebuild`, and on
 `tviews.registry.needs_reregister`. `tviews.stats` needs
 `shared_preload_libraries = 'pg_tviews'`; a TVIEW whose `untracked` is true found the
-shared table (4096 TVIEWs per cluster) full and has NULL counters.
+shared table (4096 TVIEWs per cluster) full and has NULL counters. A TVIEW frees its
+slot when it is dropped, and a database its TVIEWs' when it is dropped.
 `tviews.pg_tviews_reset_stats(tview)` zeroes one TVIEW's counters (its owner may run
 it); `tviews.pg_tviews_reset_stats_all()` zeroes every TVIEW's (an operator function,
 see below). See [Monitoring](../operations/monitoring.md) for

@@ -43,46 +43,10 @@ a TVIEW back: the read must see fresh rows).
   trigger fires: every case must then diverge. It proves the oracle sees a refresh
   that does not happen.
 - `GEN_FEATURES` turns on writes left out of the default run while their defect is
-  open (`OPT_IN` in `gen.py`):
-  - `parent-rekey`: an `UPDATE` of a referenced `pk_<entity>`. With the patch path
-    on, a TVIEW projecting the child's `fk_<entity>` keeps the old parent's columns
-    (an inner join keeps the row):
-
-    ```sql
-    CREATE TABLE tb_org (pk_org bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
-      amount numeric);
-    CREATE TABLE tb_project (pk_project bigint PRIMARY KEY,
-      id uuid NOT NULL DEFAULT gen_random_uuid(), name text, fk_org bigint);
-    INSERT INTO tb_org VALUES (1, DEFAULT, 10), (2, DEFAULT, 20);
-    INSERT INTO tb_project VALUES (1, DEFAULT, 'a', 1), (2, DEFAULT, 'b', 2);
-    SELECT tviews.pg_tviews_create('tv_project', $$
-      SELECT t.pk_project, t.id, t.fk_org, jsonb_build_object('name', t.name, 'amount', o.amount) AS data
-      FROM tb_project t LEFT JOIN tb_org o ON o.pk_org = t.fk_org $$);
-    UPDATE tb_org SET pk_org = 1002 WHERE pk_org = 2;
-    -- tv_project row 2 still holds amount 20; its view holds null
-    ```
-
-  - `filtered-left-join-fk`: a LEFT JOIN whose `ON` also filters the parent, the
-    child's `fk_<entity>` projected. With the patch path on, an `UPDATE` of a parent
-    the filter excludes is written into the child rows:
-
-    ```sql
-    CREATE TABLE tb_org (pk_org bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
-      amount numeric, deleted_at timestamptz);
-    CREATE TABLE tb_project (pk_project bigint PRIMARY KEY,
-      id uuid NOT NULL DEFAULT gen_random_uuid(), name text, fk_org bigint);
-    INSERT INTO tb_org VALUES (1, DEFAULT, 10, NULL), (2, DEFAULT, 20, now());
-    INSERT INTO tb_project VALUES (1, DEFAULT, 'a', 1), (2, DEFAULT, 'b', 2);
-    SELECT tviews.pg_tviews_create('tv_project', $$
-      SELECT t.pk_project, t.id, t.fk_org, jsonb_build_object('name', t.name, 'amount', o.amount) AS data
-      FROM tb_project t LEFT JOIN tb_org o ON o.pk_org = t.fk_org AND o.deleted_at IS NULL $$);
-    UPDATE tb_org SET amount = 21 WHERE pk_org = 2;
-    -- tv_project row 2 holds amount 21; its view holds null
-    ```
-
-  Both pass with `pg_tviews.direct_patch_enabled = off`, and without `t.fk_org` in
-  the select list. Fix the defect, then remove its entry from `OPT_IN` so the
-  default run covers it.
+  open (`OPT_IN` in `gen.py`); none is. The generator found #288 (an `UPDATE` of a
+  referenced `pk_<entity>` left its children's fan-out unwritten) and #289 (a fan-out
+  into the children of a parent a LEFT JOIN's `ON` filters out), both now in the
+  default grammar and in `regress/cascade/regress_fanout_patch_soundness.sql`.
 
 CI's pg18 job runs 5 shapes on seed 1; the nightly run 20 shapes on three new seeds
 (the date and 1 to 3), in every mode.

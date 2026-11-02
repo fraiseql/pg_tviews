@@ -351,21 +351,19 @@ fn fan_out(
     let Some((same_row, columns)) = row_pairing(table_oid, &mapping.attnums)? else {
         return Ok(false);
     };
-    // Both images of each updated row; an image without its pair moved its key.
+    // Both images of each updated row. An image without its pair is a row whose
+    // primary key changed: the children of its old key no longer join it, which
+    // no patch of its new key writes (#288), so the rows are mapped instead.
     let sql = format!(
-        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n), \
-                (SELECT pg_catalog.count(*) FROM {OLD_TABLE}) = (SELECT pg_catalog.count(*) FROM {NEW_TABLE}) \
-         FROM {OLD_TABLE} o JOIN {NEW_TABLE} n ON {same_row}"
+        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n) \
+         FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
     );
     let pairs = with_transition_tables(trigger, entity, |client, table| {
         let mut pairs = Vec::new();
         for row in crate::utils::spi::kept_update_over(client, table, &sql, &[])? {
-            if row.get::<bool>(3)? != Some(true) {
-                return Ok(None);
-            }
-            if let (Some(old), Some(new)) = (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?)
-            {
-                pairs.push((old.0, new.0));
+            match (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?) {
+                (Some(old), Some(new)) => pairs.push((old.0, new.0)),
+                _ => return Ok(None),
             }
         }
         Ok(Some(pairs))
