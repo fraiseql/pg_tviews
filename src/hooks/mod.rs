@@ -563,9 +563,9 @@ impl FollowUps {
             e.raise_in("pg_tviews: could not follow the column rename");
         }
         // The rows that left with the statement: refreshed now (no flush trigger
-        // follows DDL), or by the writing statement this one is nested in.
+        // follows DDL), or by the statement this one is nested in.
         if !self.leaving_partitions.is_empty()
-            && !crate::executor::inside_writing_statement()
+            && !crate::executor::defers_flush()
             && let Err(e) = crate::flush::flush_refresh_queue()
         {
             e.raise_in(

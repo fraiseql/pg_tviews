@@ -1,0 +1,60 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_mutate b_mutate a_commit b_check
+step a_begin: BEGIN;
+step a_mutate: SELECT rename3('a');
+rename3
+-------
+a      
+(1 row)
+
+step b_mutate: SELECT rename3('b'); <waiting ...>
+step a_commit: COMMIT;
+step b_mutate: <... completed>
+rename3
+-------
+b      
+(1 row)
+
+step b_check: 
+  SELECT 'parent' AS tv, t.pk_parent AS pk, t.data->>'name' AS name, t.data = v.data AS fresh
+  FROM tv_parent t FULL JOIN tviews.public__tv_parent v USING (pk_parent)
+  UNION ALL
+  SELECT 'child', t.pk_child, t.data->'parent'->>'name', t.data = v.data
+  FROM tv_child t FULL JOIN tviews.public__tv_child v USING (pk_child)
+  ORDER BY 1, 2;
+
+tv    |pk|name|fresh
+------+--+----+-----
+child | 1|b   |t    
+child | 2|b   |t    
+parent| 1|b   |t    
+(3 rows)
+
+
+starting permutation: a_begin a_mutate b_child a_commit b_check
+step a_begin: BEGIN;
+step a_mutate: SELECT rename3('a');
+rename3
+-------
+a      
+(1 row)
+
+step b_child: UPDATE tb_child SET note = 'b' WHERE pk_child = 2; <waiting ...>
+step a_commit: COMMIT;
+step b_child: <... completed>
+step b_check: 
+  SELECT 'parent' AS tv, t.pk_parent AS pk, t.data->>'name' AS name, t.data = v.data AS fresh
+  FROM tv_parent t FULL JOIN tviews.public__tv_parent v USING (pk_parent)
+  UNION ALL
+  SELECT 'child', t.pk_child, t.data->'parent'->>'name', t.data = v.data
+  FROM tv_child t FULL JOIN tviews.public__tv_child v USING (pk_child)
+  ORDER BY 1, 2;
+
+tv    |pk|name|fresh
+------+--+----+-----
+child | 1|a   |t    
+child | 2|a   |t    
+parent| 1|a   |t    
+(3 rows)
+

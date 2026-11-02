@@ -214,6 +214,12 @@ impl Drop for CatalogPath {
     }
 }
 
+/// Whether `pg_tviews` is doing work on a caller's behalf (a [`CatalogPath`] or
+/// an [`AsOwner`] is open): the queries running now are its own.
+pub fn in_extension_work() -> bool {
+    REPLACED_PATHS.with(|paths| !paths.borrow().is_empty())
+}
+
 thread_local! {
     /// The `search_path` each open [`CatalogPath`] replaced: the caller's.
     /// `None` for an [`AsOwner`], under which nothing the caller wrote is resolved.

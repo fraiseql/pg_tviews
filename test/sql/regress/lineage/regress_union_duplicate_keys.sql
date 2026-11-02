@@ -22,7 +22,12 @@ CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'union_duplicate_keys FAIL: %', what; END IF; END $$;
 -- The SQLSTATE and the message of a statement's error, or 'ok'.
 CREATE FUNCTION outcome(stmt text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN EXECUTE stmt; RETURN 'ok';
+BEGIN
+    EXECUTE stmt;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
+    RETURN 'ok';
 EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM; END $$;
 CREATE FUNCTION refused(stmt text, what text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE o text := outcome(stmt);

@@ -65,6 +65,9 @@ DECLARE before bigint;
 BEGIN
     SELECT seq_scan INTO before FROM pg_stat_xact_user_tables WHERE relid = rel;
     EXECUTE write;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
     RETURN (SELECT seq_scan FROM pg_stat_xact_user_tables WHERE relid = rel) - before;
 END $$;
 
@@ -128,6 +131,9 @@ CREATE FUNCTION patched_during(write text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE before bigint := (tviews.pg_tviews_show_queue()->>'direct_patches_applied')::bigint;
 BEGIN
     EXECUTE write;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
     RETURN (tviews.pg_tviews_show_queue()->>'direct_patches_applied')::bigint - before;
 END $$;
 DELETE FROM tb_item WHERE fk_cat IN (5, 6);

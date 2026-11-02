@@ -48,3 +48,5 @@ test: lock-pass-order
 test: savepoint-after-escalation
 test: prepared-holds-value-locks
 test: mixed-plan-versions
+test: deferred-mutations
+test: deferred-savepoint-rollback

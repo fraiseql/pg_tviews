@@ -471,9 +471,9 @@ fn capture_value(
 /// finds an empty queue and returns immediately.
 ///
 /// A refresh error fails the statement. If triggers are suspended, this trigger
-/// skips the flush. Inside an enclosing statement that writes a TVIEW's base
-/// table (a trigger writing its own table), it leaves the queue to that
-/// statement's flush.
+/// skips the flush. Inside an enclosing statement (a mutation function's
+/// statement, a trigger writing its own table) it leaves the queue to that
+/// statement's end, or to a read of a TVIEW before it ([`crate::executor`]).
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(

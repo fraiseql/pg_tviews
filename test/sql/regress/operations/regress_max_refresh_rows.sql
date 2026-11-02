@@ -26,7 +26,12 @@ BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'max_refresh_rows FAIL: %', what; E
 
 -- The SQLSTATE and message `stmt` fails with, NULL when it succeeds.
 CREATE FUNCTION failure(stmt text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN EXECUTE stmt; RETURN NULL;
+BEGIN
+    EXECUTE stmt;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
+    RETURN NULL;
 EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM; END $$;
 
 -- Category 1 embedded in 1,000 items, categories 2 to 11 in 50 each.

@@ -246,8 +246,9 @@ table: project such a value as a column, or index the expression.
 
 ### Bulk writes
 
-Each statement refreshes the rows it affected once, at its end: an `UPDATE` of 10,000
-rows refreshes each affected TVIEW row once, not 10,000 times. For a large load, see
+Each top-level statement refreshes the rows it affected once, at its end: an `UPDATE`
+of 10,000 rows refreshes each affected TVIEW row once, not 10,000 times, and so does a
+function that writes them in a loop. For a large load, see
 `tviews.pg_tviews_suspend_triggers()` in the [API reference](../reference/api.md).
 
 ### Refresh cost
@@ -387,10 +388,9 @@ A write that is slow usually reaches many TVIEW rows (a user embedded in every p
   time; embed only value arrays ([Embed or compose](embed-or-compose.md)).
 - Index for the queries you run, not for every field.
 - Write only to the write tables; do not refresh TVIEWs by hand after writes.
-- Write each row once per mutation: one `UPDATE` with every changed column,
-  identifiers set in the `INSERT`. Each statement refreshes what it reaches, so a
-  second statement on the same row refreshes it again ([Write each row once per
-  mutation](../getting-started/fraiseql-integration.md#write-each-row-once-per-mutation)).
+- Read a mutation's result back from its TVIEW once, after its last write: the
+  mutation is refreshed once, at that read or when its statement ends ([One refresh
+  per mutation](../getting-started/fraiseql-integration.md#one-refresh-per-mutation)).
 - Keep chains of TVIEWs embedding TVIEWs short: each level adds a refresh on writes.
 
 ## See also

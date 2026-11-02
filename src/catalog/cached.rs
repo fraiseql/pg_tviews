@@ -15,6 +15,30 @@ thread_local! {
     static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
     /// Table → the local paths starting at it.
     static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
+    /// Every TVIEW's table (one entry, keyed by `()`).
+    static TVIEW_TABLES: Memo<(), std::rc::Rc<std::collections::HashSet<Oid>>> = Memo::new();
+}
+
+/// The OIDs of every TVIEW's table (cached for the backend).
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn tview_tables() -> crate::TViewResult<std::rc::Rc<std::collections::HashSet<Oid>>> {
+    TVIEW_TABLES.with(|m| {
+        m.get_or_load((), || {
+            let _path = crate::owner::CatalogPath::pin();
+            Ok(crate::utils::spi::oids(
+                &format!(
+                    "SELECT table_oid::pg_catalog.oid FROM {}",
+                    super::meta_table()
+                ),
+                &[],
+            )?
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .into())
+        })
+    })
 }
 
 /// The entity dependency graph (cached per backend).

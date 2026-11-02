@@ -340,7 +340,7 @@ impl PartitionDdl {
         for oid in attached {
             crate::delta::map_entering_partition(oid)?;
         }
-        if mapped && !crate::executor::inside_writing_statement() {
+        if mapped && !crate::executor::defers_flush() {
             crate::flush::flush_refresh_queue()?;
         }
         // The rows a concurrent detach takes out across its two transactions:

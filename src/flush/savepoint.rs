@@ -2,8 +2,9 @@
 //!
 //! When a subtransaction starts, [`start`] records where the session state
 //! stands: the pending refresh work, the rows to publish, the value locks held,
-//! how many queries are running, and the suspension. Rolling it back ([`abort`])
-//! restores all five; committing it
+//! the executor's (the queries running, whether work is deferred to them, the
+//! last refresh), and the suspension. Rolling it back ([`abort`]) restores all
+//! five; committing it
 //! ([`commit`]) keeps what it did. The subtransaction callback is the only
 //! caller, so the stack depth always equals the number of open subtransactions.
 
@@ -14,7 +15,7 @@ use std::cell::RefCell;
 struct Savepoint {
     pending: state::Mark,
     locks: crate::concurrency::Mark,
-    frames: usize,
+    executor: crate::executor::Mark,
     suspension: crate::suspend::Suspension,
 }
 
@@ -27,7 +28,7 @@ pub fn start() {
     let savepoint = Savepoint {
         pending: state::mark(),
         locks: crate::concurrency::mark(),
-        frames: crate::executor::depth(),
+        executor: crate::executor::mark(),
         suspension: crate::suspend::snapshot(),
     };
     SAVEPOINTS.with_borrow_mut(|s| s.push(savepoint));
@@ -42,15 +43,15 @@ pub fn commit() {
 }
 
 /// The innermost subtransaction rolled back: the pending work, the value locks
-/// (the lock manager released those it took), the running queries (an error may
-/// have skipped their frames) and the suspension are what they were when it
-/// started.
+/// (the lock manager released those it took), the executor's state (an error may
+/// have skipped frames; a flush it ran is undone) and the suspension are what
+/// they were when it started.
 pub fn abort() {
     if let Some(savepoint) = SAVEPOINTS.with_borrow_mut(Vec::pop) {
         state::rollback(savepoint.pending);
         crate::concurrency::rollback(savepoint.locks);
         crate::delta::capture::clear();
-        crate::executor::truncate_to(savepoint.frames);
+        crate::executor::rollback(&savepoint.executor);
         crate::suspend::restore(savepoint.suspension);
     }
 }

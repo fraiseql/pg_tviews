@@ -16,12 +16,18 @@ functions keep rules that span rows with constraints (`UNIQUE`, `CHECK`, exclusi
 
 A write to a base table is refreshed **inside the writer's transaction**:
 
-- at the end of each statement (a statement-level flush trigger), so an autocommit
-  statement is refreshed before it returns. A statement run from a trigger of a write
-  to a TVIEW's base table (a trigger that writes its own table, level by level) leaves
-  its work to that write, which refreshes once at its end: each TVIEW row is computed
-  once, from the final state. A query that only reads defers nothing: in `SELECT f()`,
-  each statement of `f` that writes is refreshed before the next one reads;
+- once per top-level statement, at its end, so an autocommit statement is refreshed
+  before it returns. Statements run inside it (by a function it calls, as a fraiseql
+  mutation `SELECT app.fn(…)` runs its writes, or by a trigger of its write) leave
+  their work to it: each TVIEW row is computed once, from the final state, however many
+  statements wrote its sources ([ADR 0286](adr/0286-refresh-once-per-statement.md));
+- earlier, when a query inside that statement reads a TVIEW's table (directly or
+  through a view, from any function, a cursor or `RETURN QUERY`): what was queued is
+  refreshed first, and the query sees it. A mutation that reads its result back before
+  it returns reads it fresh. A refresh that fails raises there, or at the end of the
+  top-level statement, where a function's own exception handler no longer catches it;
+  `pg_tviews.max_refresh_rows` counts the rows of one such refresh. `CALL` and `DO`
+  are not statements of their own here: each statement they run is top-level;
 - before `COMMIT` and before `PREPARE TRANSACTION` (the `ProcessUtility` hook), so the
   refresh writes belong to the transaction.
 

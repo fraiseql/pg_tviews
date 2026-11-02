@@ -180,9 +180,9 @@ fn pg_tview_truncate_trigger<'a>(
         return Ok(None);
     }
     crate::concurrency::enqueue_refresh_all(&entity);
-    // A TRUNCATE run inside a writing statement (by one of its triggers) leaves
-    // the flush to that statement, as its other nested statements do.
-    if crate::executor::inside_writing_statement() {
+    // A TRUNCATE run inside a statement (by a function it calls, or by one of its
+    // triggers) leaves the flush to that statement, as other nested statements do.
+    if crate::executor::defers_flush() {
         return Ok(None);
     }
     if let Err(e) = crate::flush::flush_refresh_queue() {

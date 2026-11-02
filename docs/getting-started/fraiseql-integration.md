@@ -157,31 +157,26 @@ SELECT data FROM tv_post WHERE id = (SELECT id FROM tb_post WHERE identifier = '
 SELECT data FROM tv_post WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice');
 ```
 
-### Write each row once per mutation
+### One refresh per mutation
 
-A mutation writes each row once: one `UPDATE` with every column it changes, and the
-identifiers set in the `INSERT`, not by a second `UPDATE` after it. Each statement
-refreshes the TVIEW rows it reaches when it ends (the statement-level flush), so two
-statements on one row refresh that row, and every TVIEW row embedding it, twice.
+A mutation is one statement, `SELECT app.fn(…)`, however many statements `fn` runs:
+its TVIEWs are refreshed once, when it ends, from the final state
+([ADR 0286](../adr/0286-refresh-once-per-statement.md)). Writing a row in several
+statements costs no extra refresh:
 
 ```sql fragment
--- Before: the post is refreshed twice
-INSERT INTO tb_post (title, fk_user) VALUES ($1, $2) RETURNING pk_post INTO v_pk;
-UPDATE tb_post SET identifier = slugify($1) WHERE pk_post = v_pk;
-
--- After: once
-INSERT INTO tb_post (title, identifier, fk_user) VALUES ($1, slugify($1), $2);
-
--- Before: the post, and every TVIEW row embedding it, are refreshed twice
+-- One refresh of the post, and of every TVIEW row embedding it
 UPDATE tb_post SET title = $2 WHERE id = $1;
 UPDATE tb_post SET content = $3 WHERE id = $1;
-
--- After: once
-UPDATE tb_post SET title = $2, content = $3 WHERE id = $1;
 ```
 
-Deferring the refresh to the end of the mutation, so that several statements on one
-row refresh it once, is future work.
+A query in `fn` that reads a TVIEW refreshes what was queued before it, so a mutation
+that returns its result from `tv_*` returns it fresh; each such read between writes
+adds a refresh, so read the result back once, after the last write. A refresh that
+fails (`54000` past `pg_tviews.max_refresh_rows`, a value too large for a column)
+raises at that read, or when the mutation's statement ends, outside `fn`'s exception
+handlers: a handler that turns errors into a mutation result catches refresh errors
+only around the read.
 
 ## What a write refreshes
 

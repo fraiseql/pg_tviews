@@ -6,13 +6,16 @@
 joins and through embedded TVIEWs) into a fresh database per seed, then runs pgbench
 clients against it while a checker compares every TVIEW with its backing view.
 
-- **`mixed`**: each transaction runs 1 to 4 random statements (`fuzz_txn`), each in a
+- **`mixed`**: each transaction runs 1 to 4 random statements inside one outer statement
+  (`fuzz_txn`, as a mutation function runs them: refreshed once at its end), each in a
   subtransaction that one time in five is rolled back on purpose. A constraint error
   (rows another client changed meanwhile) only undoes its statement; `40001` and
   `40P01` fail the transaction, which pgbench counts; any other error aborts the client
   and fails the run. One transaction in ten runs at `REPEATABLE READ` or `SERIALIZABLE`
   (`fuzz_refused`): a write pg_tviews maintains must be refused with `0A000`. `MIX` is
   the share of statements drawn from the differential suite (the rest from `fuzz.sql`).
+  One statement in four is followed by a read of a random TVIEW, which must equal its
+  view inside the transaction (`fuzz_read_back`: a read refreshes what was queued).
 - **`values`**: autocommit single-row writes of columns no TVIEW joins, filters or
   groups by, at `READ COMMITTED`. None may fail: such writes never wait for each other
   in a cycle (#263).

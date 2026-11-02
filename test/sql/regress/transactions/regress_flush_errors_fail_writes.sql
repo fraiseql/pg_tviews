@@ -21,7 +21,12 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'flush errors FAIL: %', what; END IF; END $$;
 CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN EXECUTE stmt; RETURN 'committed';
+BEGIN
+    EXECUTE stmt;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
+    RETURN 'committed';
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 
 CREATE TABLE tb_user (pk_user bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);

@@ -48,7 +48,12 @@ CREATE TRIGGER touch_author AFTER UPDATE ON tv_post
     FOR EACH ROW WHEN (OLD.data IS DISTINCT FROM NEW.data) EXECUTE FUNCTION public.touch_author();
 
 CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN EXECUTE stmt; RETURN 'committed';
+BEGIN
+    EXECUTE stmt;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
+    RETURN 'committed';
 EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM; END $$;
 SELECT error_of($$UPDATE tb_user SET name = 'grace' WHERE pk_user = 1$$) AS outcome \gset
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$

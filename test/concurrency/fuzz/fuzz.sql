@@ -86,9 +86,37 @@ EXCEPTION
     WHEN integrity_constraint_violation OR assert_failure THEN NULL;
 END $$;
 
+-- A read of one TVIEW in the middle of a mutation (#286): the TVIEW refreshes
+-- what the transaction queued before the read, so the read sees its table equal
+-- to its definition. A TVIEW over a materialized view is left out, as in
+-- fuzz_check. A difference fails the run (P0042: not a statement fuzz_exec undoes).
+CREATE FUNCTION fuzz_read_back() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    s record;
+    diff text;
+BEGIN
+    SELECT h.tv, h.key INTO s FROM harness_shape h
+    WHERE NOT EXISTS (
+        SELECT 1 FROM tviews.pg_tview_meta m, pg_catalog.pg_depend d
+        JOIN pg_catalog.pg_rewrite rw ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND rw.oid = d.objid
+        JOIN pg_catalog.pg_class c ON c.oid = d.refobjid
+        WHERE m.table_oid::oid = h.tv::oid AND rw.ev_class = m.view_oid::oid AND c.relkind = 'm')
+    ORDER BY random() LIMIT 1;
+    IF s.tv IS NULL THEN
+        RETURN;
+    END IF;
+    diff := fresh_diff(s.tv, s.key);
+    IF diff IS NOT NULL THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0042',
+            MESSAGE = 'stale read inside a mutation: ' || diff || fuzz_rows(s.tv, s.key);
+    END IF;
+END $$;
+
 -- One transaction's statements, seeded by `seed`: 1 to 4 of the differential
 -- harness's (`harness` percent of them) or the #263 schema's, one in five rolled
--- back to its savepoint.
+-- back to its savepoint, each followed one time in four by a read of a TVIEW.
+-- They run inside one outer statement, as a mutation function's do: the TVIEWs
+-- are refreshed at those reads and when it ends.
 CREATE FUNCTION fuzz_txn(seed int, harness int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM setseed(seed / 2147483648.0);
@@ -96,6 +124,9 @@ BEGIN
         PERFORM fuzz_exec(CASE WHEN random() * 100 < harness THEN harness_statement(seed % 100000)
                                ELSE fuzz_crossed(true) END,
                           random() < 0.2);
+        IF random() < 0.25 THEN
+            PERFORM fuzz_read_back();
+        END IF;
     END LOOP;
 END $$;
 

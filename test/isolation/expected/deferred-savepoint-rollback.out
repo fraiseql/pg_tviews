@@ -1,0 +1,22 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_mutate b_parent2 a_commit b_check
+step a_begin: BEGIN;
+step a_mutate: SELECT keep_one();
+keep_one
+--------
+        
+(1 row)
+
+step b_parent2: UPDATE tb_parent SET name = 'b' WHERE pk_parent = 2;
+step a_commit: COMMIT;
+step b_check: 
+  SELECT t.pk_child, t.data->'parent'->>'name' AS parent, t.data = v.data AS fresh
+  FROM tv_child t FULL JOIN tviews.public__tv_child v USING (pk_child) ORDER BY 1;
+
+pk_child|parent|fresh
+--------+------+-----
+       1|kept  |t    
+       2|b     |t    
+(2 rows)
+

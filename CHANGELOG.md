@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Opens 0.1.0-beta.36.
 
+### Changed (breaking)
+- A mutation refreshes its TVIEWs once (#286, ADR 0286). Statements run inside a
+  top-level statement (a function's, as fraiseql's `SELECT app.fn(…)` runs them, or a
+  trigger's) leave their refresh to it: the TVIEWs are refreshed when it ends, or earlier,
+  at the first query inside it that reads a TVIEW's table, which then reads on a snapshot
+  taken after that refresh. A function writing one row in 13 statements refreshed it,
+  and every TVIEW row embedding it, 13 times; now once. Consequences: a refresh error
+  raises at that read or at the end of the top-level statement, outside the function's
+  exception handlers; `pg_tviews.max_refresh_rows` counts one such refresh; `CALL` and
+  `DO` still refresh after each statement they run.
+
 ### Security
 - A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone. It
   reads the base tables with the owner's privileges, so the `SELECT` grants it copied

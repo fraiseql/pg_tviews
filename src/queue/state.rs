@@ -110,6 +110,13 @@ pub fn queue_insert(key: RefreshKey) -> bool {
     })
 }
 
+/// Whether refresh work is pending (keys, patches or fan-out fields). `false`
+/// while the queue is being changed: a query run from inside that change is
+/// `pg_tviews`' own.
+pub fn has_pending() -> bool {
+    TXN.with(|t| t.try_borrow().is_ok_and(|t| !t.pending.is_empty()))
+}
+
 /// Whether `key` is queued.
 pub fn queue_contains(key: &RefreshKey) -> bool {
     TXN.with(|t| t.borrow().pending.queue.contains(key))

@@ -22,7 +22,12 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#188 FAIL: %', what; END IF; END $$;
 CREATE FUNCTION error_of(stmt text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN EXECUTE stmt; RETURN 'created';
+BEGIN
+    EXECUTE stmt;
+    -- A write run inside a function is refreshed when the outer statement ends
+    -- (#286): flush it here.
+    PERFORM tviews.pg_tviews_flush_and_report(include_data => false);
+    RETURN 'created';
 EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$;
 CREATE FUNCTION kinds() RETURNS text LANGUAGE sql AS $$
     SELECT cascade_kinds::text || ' uncascaded=' || uncascaded_tables::text
