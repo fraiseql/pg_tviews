@@ -408,8 +408,10 @@ tviews.pg_tviews_suspended_entities() RETURNS text[]
 back with a savepoint. When the outermost `pg_tviews_resume_triggers()` runs, every
 TVIEW changed while suspended, and every TVIEW reading one of them, is rebuilt.
 Resume without suspend is `55000`. Suspension ends with the transaction: an explicit
-`COMMIT` catches up the same way, an implicit commit logs a WARNING naming the stale
-TVIEWs. `pg_tviews_suspended_entities()` lists the TVIEWs changed so far.
+`COMMIT` statement catches up the same way. An implicit commit cannot (several
+statements sent as one query string, a `COMMIT` inside a procedure): while writes are
+suspended it fails with `55000` and the transaction rolls back, so a procedure resumes
+before it commits. `pg_tviews_suspended_entities()` lists the TVIEWs changed so far.
 
 ```sql
 BEGIN;
@@ -714,7 +716,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | propagation or view nesting deeper than `pg_tviews.max_propagation_depth` / `max_dependency_depth` |
 | `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
-| `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued |
+| `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
 | `22023` | `invalid_parameter_value` | an invalid argument or option |

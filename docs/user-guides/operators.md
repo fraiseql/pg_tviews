@@ -93,7 +93,9 @@ session, `log_min_messages = debug1` in the server log.
 
 pg_tviews keeps its refresh queue per transaction, so PgBouncer and Pgpool-II work in
 transaction pooling mode. Keep a bulk load that suspends refresh
-(`pg_tviews_suspend_triggers()` … `pg_tviews_resume_triggers()`) inside one transaction.
+(`pg_tviews_suspend_triggers()` … `pg_tviews_resume_triggers()`) inside one transaction,
+and resume before it commits: an implicit commit (a procedure's `COMMIT`, a multi-statement
+query string) of suspended writes fails with `55000`.
 `pg_tviews_queue_stats()` reports the counters of the backend it runs on: behind a
 pooler, read it in the same transaction as the writes. `tviews.stats` holds the
 per-TVIEW counters of every session.

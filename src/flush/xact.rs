@@ -137,22 +137,10 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
             // transaction's snapshot, and dropping it would leave TVIEWs stale.
             if xact_event == XactEvent::PreCommit {
                 fail_unflushed();
+                fail_suspended();
                 crate::publish::at_pre_commit();
             }
-            // Suspended without resuming: the hook caught up before an explicit
-            // COMMIT; an implicit commit ends here, where no SPI is allowed.
-            if crate::suspend::is_suspended() {
-                let stale = crate::suspend::get_changed_entities();
-                if !stale.is_empty() {
-                    warning!(
-                        "pg_tviews: transaction committed with refresh suspended; TVIEWs {:?} \
-                         are stale until pg_tviews_refresh() is run for each",
-                        stale
-                    );
-                }
-                crate::suspend::clear_changed_entities();
-            }
-
+            crate::suspend::clear_changed_entities();
             crate::suspend::force_resume();
             if xact_event == XactEvent::Commit {
                 crate::publish::at_commit();
@@ -192,20 +180,50 @@ fn fail_unflushed() {
     }
     let entities: std::collections::BTreeSet<&str> =
         queued.iter().map(|k| k.entity.as_str()).collect();
-    pg_sys::panic::ErrorReport::new(
-        PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
-        format!(
-            "pg_tviews: cannot commit with {} queued refreshes for {:?}: they were never \
-             applied (missing flush trigger?)",
+    fail_pending(
+        &format!(
+            "cannot commit with {} queued refreshes for {:?}: they were never applied \
+             (missing flush trigger?)",
             queued.len(),
             entities
         ),
-        function_name!(),
-    )
-    .set_hint(
         "Run tviews.pg_tviews_health_check() to find missing triggers, and \
          tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",
+    );
+}
+
+/// Fail the commit of a transaction that suspended refresh and changed TVIEWs'
+/// tables without resuming. An explicit `COMMIT` catches up in the
+/// `ProcessUtility` hook first; an implicit one (several statements in one query
+/// string, a `COMMIT` inside a procedure) reaches no hook, and refreshing here
+/// would need SPI.
+fn fail_suspended() {
+    if !crate::suspend::is_suspended() {
+        return;
+    }
+    let stale = crate::suspend::get_changed_entities();
+    if stale.is_empty() {
+        return;
+    }
+    fail_pending(
+        &format!(
+            "cannot commit with refresh suspended: the writes to {stale:?} were never \
+             refreshed"
+        ),
+        "Call tviews.pg_tviews_resume_triggers() before committing, also inside a \
+         procedure, or commit with an explicit COMMIT statement.",
+    );
+}
+
+/// Raise 55000 with `message` and `hint` at `PRE_COMMIT`: the transaction rolls
+/// back.
+fn fail_pending(message: &str, hint: &str) {
+    pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+        format!("pg_tviews: {message}"),
+        function_name!(),
     )
+    .set_hint(hint)
     .report(PgLogLevel::ERROR);
 }
 
