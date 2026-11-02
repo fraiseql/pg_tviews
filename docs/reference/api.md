@@ -715,7 +715,8 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42704` | `undefined_object` | a `tview` argument names no TVIEW (`pg_tviews_drop` without `if_exists`, …) |
 | `42P07` | `duplicate_table` | the TVIEW already exists (`pg_tviews_create`, `CREATE TABLE tv_* AS`) |
 | `42601` | `syntax_error` | the definition does not parse, or is more than one `SELECT` |
-| `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain (incl. refusals by the `error` uncascaded policy) |
+| `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
+| `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |
 | `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
@@ -724,7 +725,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `55000` | `object_not_in_prerequisite_state` | the library is not in `shared_preload_libraries`, resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
-| `22023` | `invalid_parameter_value` | an invalid argument or option |
+| `22023` | `invalid_parameter_value` | an invalid argument or option; a definition reading a table no cascade reaches, a function that may read tables or the current time, without declaring what to do about it |
 | `21000` | `cardinality_violation` | two rows for one key of a UNION TVIEW (ADR 0216) |
 | `XX000` | `internal_error` | internal failures |
 
@@ -812,6 +813,7 @@ functions `pg_tview_trigger_handler`, `pg_tview_delta_trigger`,
 ## See also
 
 - [DDL reference](ddl.md)
+- [Supported shapes](shapes.md)
 - [Contract for tools](read-contract.md)
 - [Operator guide](../user-guides/operators.md)
 - [Monitoring](../operations/monitoring.md)

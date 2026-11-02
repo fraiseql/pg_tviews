@@ -387,6 +387,10 @@ A write that is slow usually reaches many TVIEW rows (a user embedded in every p
   time; embed only value arrays ([Embed or compose](embed-or-compose.md)).
 - Index for the queries you run, not for every field.
 - Write only to the write tables; do not refresh TVIEWs by hand after writes.
+- Write each row once per mutation: one `UPDATE` with every changed column,
+  identifiers set in the `INSERT`. Each statement refreshes what it reaches, so a
+  second statement on the same row refreshes it again ([Write each row once per
+  mutation](../getting-started/fraiseql-integration.md#write-each-row-once-per-mutation)).
 - Keep chains of TVIEWs embedding TVIEWs short: each level adds a refresh on writes.
 
 ## See also

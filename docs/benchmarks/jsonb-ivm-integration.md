@@ -11,30 +11,27 @@ called `jsonb_ivm`; this page keeps the historical filename.)
 
 jsonb_delta is a separate Rust/pgrx extension providing surgical JSONB patch
 functions — it rewrites only the changed path of a JSONB document instead of
-replacing the whole value. pg_tviews uses it as an **optional** accelerator on
-the refresh hot path. It is not required: without it, pg_tviews falls back to a
-native path built on standard PostgreSQL JSONB functions.
+replacing the whole value. pg_tviews requires it (`requires = 'jsonb_delta'` in
+its control file) for the nested merges of the direct patch, where it is faster than
+core JSONB operators on large documents (23 KB: 5.02 µs against 6.37 µs). The fan-out
+patch of one copied value uses core `jsonb_set`, which is faster there (23 KB: 4.14 µs
+against 4.81 µs).
 
 ## How pg_tviews uses it
 
-At refresh time pg_tviews computes each affected tview row's desired JSON and
-writes the difference into the stored document. When jsonb_delta is installed,
-that write goes through its presence-detected scalar patch function
-(`jsonb_smart_patch_scalar`); otherwise the native fallback does the same job
-with in-core JSONB operations.
+A direct patch writes the changed values into the stored document through
+`jsonb_smart_patch_scalar` (top-level keys) and `jsonb_smart_patch_nested` (a path),
+qualified with jsonb_delta's schema; a recompute replaces the document.
 
-The runtime coupling is deliberately narrow: **the only jsonb_delta function
-pg_tviews calls on the hot path is the scalar patch**. That keeps the dependency
-surface small and the fallback faithful — arm A and arm B produce byte-identical
-tview rows (both are gated on the same row-for-row divergence check against the
-backing view).
+Both functions' contract is pinned by `regress_jsonb_delta_semantics.sql`.
 
 ## What the benchmark shows: parity
 
-The [real benchmark](running-benchmarks.md) runs two pg_tviews arms:
+Measured on 0.1.0, when jsonb_delta was optional, the [real benchmark](running-benchmarks.md)
+ran two pg_tviews arms (arm B now runs pg_tviews in recompute mode instead):
 
 - **Arm A** — pg_tviews **with** jsonb_delta (surgical scalar patch)
-- **Arm B** — pg_tviews **without** it (native fallback)
+- **Arm B** — pg_tviews **without** it (native fallback, since removed)
 
 For the product-catalogue workload, the two arms are **at parity**
 (A-vs-B ≈ 0.92–1.05× across all scales and operations — see
@@ -44,9 +41,7 @@ indistinguishable.
 
 This is an honest, measured result, not a disappointment: jsonb_delta's win
 shows up on **large nested / array-valued documents**, which this single-JSONB-per-product
-catalogue does not stress. Its value here is having a stable, presence-detected
-patch path — not a headline speed-up on this workload. Install it, but do not
-expect it to move these numbers.
+catalogue does not stress. On this workload it is not a speed-up.
 
 ## Where jsonb_delta *would* help: arrays
 
@@ -85,8 +80,8 @@ SELECT default_version FROM pg_available_extensions WHERE name = 'jsonb_delta';
 -- expect: 0.3.0
 ```
 
-pg_tviews detects jsonb_delta at refresh time; no configuration is needed. If it
-is absent, the native fallback is used automatically.
+`CREATE EXTENSION pg_tviews` fails without it (`CASCADE` installs it), and `DROP
+EXTENSION jsonb_delta` is refused while pg_tviews is installed.
 
 ## See also
 

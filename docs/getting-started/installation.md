@@ -110,13 +110,22 @@ pg_tviews requires `jsonb_delta` (`requires` in its control file): `CREATE EXTEN
 pg_tviews` without it fails with PostgreSQL's "required extension is not installed",
 and `jsonb_delta` cannot be dropped while pg_tviews is installed. An eligible
 `UPDATE` (a changed column copied as-is into `data`, a child's document embedded in its
-parents) patches the stored documents in place with it instead of recomputing them;
-the result is the same document. It is required rather than optional because it is
-faster on the large, TOASTed documents fraiseql's TVIEWs hold (a nested merge of a
-23 KB document: 265 µs against 355 µs for core `jsonb_set`, which reads the document
-once per reference to it), and one mode is simpler to keep correct than two. The
-conditions and the measured figures are in the [README](../../README.md) and
-[Benchmark results](../benchmarks/results.md).
+parents) patches the stored documents in place instead of recomputing them; the result
+is the same document.
+
+The patches use two functions, measured per call:
+
+| Patch | Function | 23 KB document | 490 B document |
+|---|---|---|---|
+| A row's own document, nested merge (a child's document into its parent) | `jsonb_delta` | 5.02 µs (core JSONB: 6.37 µs) | |
+| One value written into many rows (a copied parent column, fan-out) | core `jsonb_set` | 4.14 µs (`jsonb_delta`: 4.81 µs) | 0.48 µs (`jsonb_delta`: 1.15 µs) |
+
+`jsonb_delta` wins the nested merge, where core JSONB names the document twice; core
+`jsonb_set` is faster for a one-value write, so the fan-out keeps it. A row's own
+top-level merge also goes through `jsonb_delta`, which is not faster there (23 KB:
+4.48 µs against 4.20 µs for core `||`). It is required rather than optional because one
+mode is simpler to keep correct than two. Its contract with pg_tviews is tested by
+`test/sql/regress/direct_patch/regress_jsonb_delta_semantics.sql`.
 
 ## Verification
 

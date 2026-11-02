@@ -40,9 +40,9 @@ SHOW shared_preload_libraries;
 SELECT tviews.pg_tviews_version();
 ```
 
-To call the functions unqualified, add `tviews` to the database's `search_path`
-(`ALTER DATABASE app SET search_path = "$user", public, tviews;`). This page qualifies
-them.
+This page qualifies the functions (`tviews.pg_tviews_…`), as scripts and application
+code should: a `search_path` that reaches `tviews` also lets objects there shadow
+unqualified names.
 
 The example schema used below:
 

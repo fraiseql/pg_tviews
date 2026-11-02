@@ -32,11 +32,14 @@ FraiseQL names its columns by role (the "trinity" identifiers):
 | `fk_<parent>` | `bigint` | foreign key to the parent's `pk_<parent>` |
 | `<parent>_id` | `uuid` | the parent's public id, for filtering (optional) |
 
-These names fit pg_tviews, but only one is required: the definition outputs a
-`pk_<entity>` column named after the TVIEW. pg_tviews reads the definition from
-PostgreSQL's query tree, so it follows joins whatever the tables and columns are
-called. In a TVIEW's table, some names fix the column type: `pk_<entity>` and `fk_*`
-are `bigint`, `id` is `uuid`, `data` is `jsonb`; `id` and `*_id` columns are indexed
+`pk_<entity>`, `id` and `fk_<parent>` are pg_tviews' key contract ([Keys](../reference/ddl.md#keys)): the
+definition outputs `pk_<entity>`, an integer named after the TVIEW, which is the row
+key and the TVIEW table's primary key (another type is refused, `42804`); `id` is a
+`uuid`, the public identifier `pg_tviews_flush_and_report()` and the change feed
+carry; `fk_<entity>` holds the referenced row's `pk_<entity>`. pg_tviews reads the
+definition from PostgreSQL's query tree, so it follows joins whatever the tables and
+columns are called. In a TVIEW's table, `pk_<entity>` is `bigint`, `id` is `uuid` and
+`data` is `jsonb`; `id` and `*_id` columns are indexed
 ([DDL Reference](../reference/ddl.md#columns)).
 
 ## Example
@@ -154,6 +157,32 @@ SELECT data FROM tv_post WHERE id = (SELECT id FROM tb_post WHERE identifier = '
 SELECT data FROM tv_post WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice');
 ```
 
+### Write each row once per mutation
+
+A mutation writes each row once: one `UPDATE` with every column it changes, and the
+identifiers set in the `INSERT`, not by a second `UPDATE` after it. Each statement
+refreshes the TVIEW rows it reaches when it ends (the statement-level flush), so two
+statements on one row refresh that row, and every TVIEW row embedding it, twice.
+
+```sql fragment
+-- Before: the post is refreshed twice
+INSERT INTO tb_post (title, fk_user) VALUES ($1, $2) RETURNING pk_post INTO v_pk;
+UPDATE tb_post SET identifier = slugify($1) WHERE pk_post = v_pk;
+
+-- After: once
+INSERT INTO tb_post (title, identifier, fk_user) VALUES ($1, slugify($1), $2);
+
+-- Before: the post, and every TVIEW row embedding it, are refreshed twice
+UPDATE tb_post SET title = $2 WHERE id = $1;
+UPDATE tb_post SET content = $3 WHERE id = $1;
+
+-- After: once
+UPDATE tb_post SET title = $2, content = $3 WHERE id = $1;
+```
+
+Deferring the refresh to the end of the mutation, so that several statements on one
+row refresh it once, is future work.
+
 ## What a write refreshes
 
 ```sql
@@ -178,9 +207,9 @@ a materialized view) is refused unless it declares what a write to that table do
 
 - Every TVIEW gets a statement-level trigger: a bulk statement refreshes the rows it
   affected once, at its end.
-- With the `jsonb_delta` extension installed, eligible single-row updates patch the
-  stored documents instead of recomputing them
-  ([Installation](installation.md#jsonb_delta)).
+- An update that only changes columns copied into `data` as they are patches the
+  stored documents instead of recomputing them; `jsonb_delta`, which pg_tviews
+  requires, does the nested merges ([Installation](installation.md#jsonb_delta)).
 - `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes_all()` find the
   indexes a TVIEW's lookups need ([Profile](../reference/profile.md)).
 
