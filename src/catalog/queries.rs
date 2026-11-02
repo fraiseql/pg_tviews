@@ -501,16 +501,13 @@ pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Ve
 pub fn column_readers_of(table: Oid, columns: &[String]) -> TViewResult<Vec<String>> {
     entities(
         &format!(
-            "SELECT DISTINCT m.entity::text FROM {} m, \
-                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
-             WHERE (t->>'relid')::pg_catalog.oid = $1 \
-               AND (pg_catalog.jsonb_array_length(COALESCE(t->'attnums', '[]')) = 0 \
-                    OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements_text(t->'attnums') n \
-                               JOIN pg_catalog.pg_attribute a \
-                                 ON a.attrelid = $1 AND a.attnum = n::pg_catalog.int2 \
-                               WHERE a.attname::pg_catalog.text = ANY ($2))) \
+            "SELECT DISTINCT m.entity::text FROM {} m, {}.pg_tviews_plan_tables(m.plan) t \
+             WHERE t.relid = $1 \
+               AND (pg_catalog.cardinality(t.columns) = 0 \
+                    OR t.columns OPERATOR(pg_catalog.&&) $2::pg_catalog.text[]) \
              ORDER BY 1",
-            super::meta_table()
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[
             crate::utils::spi::oid(table),
@@ -540,13 +537,13 @@ pub fn type_readers_of(enum_type: Oid) -> TViewResult<Vec<String>> {
                              AND r.ev_class = m.view_oid::pg_catalog.oid \
                              AND d.refclassid = 'pg_catalog.pg_type'::pg_catalog.regclass \
                              AND d.refobjid IN (SELECT oid FROM types)) \
-                OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(m.plan->'tables') t \
+                OR EXISTS (SELECT 1 FROM {}.pg_tviews_plan_tables(m.plan) t \
                            JOIN pg_catalog.pg_attribute a \
-                             ON a.attrelid = (t->>'relid')::pg_catalog.oid \
-                            AND a.attnum > 0 AND NOT a.attisdropped \
+                             ON a.attrelid = t.relid AND a.attnum > 0 AND NOT a.attisdropped \
                            WHERE a.atttypid IN (SELECT oid FROM types)) \
              ORDER BY 1",
-            super::meta_table()
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[crate::utils::spi::oid(enum_type)],
         "Find the TVIEWs showing an enum",
@@ -571,10 +568,10 @@ fn entities(
 pub fn table_readers_of(table: Oid) -> TViewResult<Vec<String>> {
     entities(
         &format!(
-            "SELECT DISTINCT m.entity::text FROM {} m, \
-                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
-             WHERE (t->>'relid')::pg_catalog.oid = $1 ORDER BY 1",
-            super::meta_table()
+            "SELECT DISTINCT m.entity::text FROM {} m, {}.pg_tviews_plan_tables(m.plan) t \
+             WHERE t.relid = $1 ORDER BY 1",
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[crate::utils::spi::oid(table)],
         "Find the TVIEWs reading a table",

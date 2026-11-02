@@ -236,6 +236,87 @@ GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
 // contract_version() covers the view's columns, the `options` keys and the
 // behaviour of pg_tviews_create_or_replace(): additions keep it, anything else
 // bumps it (docs/reference/read-contract.md).
+// The one reader of a stored plan's document in the extension's SQL (ADR 0203):
+// every view and function reads plans through these, never through raw jsonb
+// paths (scripts/check-plan-readers.sh). Plain SQL, so the read contract calls no
+// function of the library (#133). A plan that does not decode reads as empty
+// here; the health check's `plans` component reports it.
+extension_sql!(
+    r"
+-- The tables a plan maps, each with how a write to it maps to the TVIEW's keys
+-- and the columns of it the TVIEW reads (none: unknown).
+CREATE FUNCTION @extschema@.pg_tviews_plan_tables(plan jsonb)
+RETURNS TABLE (relid oid, kind text, columns text[])
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT (e->>'relid')::pg_catalog.oid, e->>'kind',
+           ARRAY(SELECT pg_catalog.jsonb_array_elements_text(
+                     CASE pg_catalog.jsonb_typeof(e->'columns') WHEN 'array' THEN e->'columns'
+                                                                ELSE '[]'::pg_catalog.jsonb END))
+      FROM pg_catalog.jsonb_array_elements(CASE pg_catalog.jsonb_typeof(plan->'tables')
+                                           WHEN 'array' THEN plan->'tables'
+                                           ELSE '[]'::pg_catalog.jsonb END) e
+     WHERE pg_catalog.jsonb_typeof(e) = 'object'
+$$;
+
+-- The output columns a plan's foreign keys prove to hold another table's key.
+CREATE FUNCTION @extschema@.pg_tviews_plan_references(plan jsonb)
+RETURNS TABLE (column_name text, table_name text, key text, is_unique boolean,
+               is_nullable boolean)
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT r->>'column', r->>'table', r->>'key', (r->>'unique')::boolean,
+           (r->>'nullable')::boolean
+      FROM pg_catalog.jsonb_array_elements(CASE pg_catalog.jsonb_typeof(plan->'references')
+                                           WHEN 'array' THEN plan->'references'
+                                           ELSE '[]'::pg_catalog.jsonb END) r
+     WHERE pg_catalog.jsonb_typeof(r) = 'object'
+$$;
+
+-- The tables holding a plan's identity, with the column it is read off: none for
+-- a TVIEW whose rows come from a set operation.
+CREATE FUNCTION @extschema@.pg_tviews_plan_roots(plan jsonb)
+RETURNS TABLE (relid oid, key text)
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT (p->>'source_oid')::pg_catalog.oid, p->>'initial_col'
+      FROM pg_catalog.jsonb_array_elements(CASE pg_catalog.jsonb_typeof(plan->'paths')
+                                           WHEN 'array' THEN plan->'paths'
+                                           ELSE '[]'::pg_catalog.jsonb END) p
+     WHERE pg_catalog.jsonb_typeof(p) = 'object'
+       AND COALESCE((p->>'root')::boolean, false)
+       AND NOT COALESCE((plan->>'set_operation')::boolean, false)
+$$;
+
+-- The columns of a TVIEW's table its rows are looked up by: those holding an
+-- embedded TVIEW's key, those a fan-out patch writes through, and its references.
+CREATE FUNCTION @extschema@.pg_tviews_plan_lookups(plan jsonb)
+RETURNS SETOF text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+AS $$
+    SELECT pg_catalog.jsonb_array_elements_text(e->'lookups')
+      FROM pg_catalog.jsonb_array_elements(CASE pg_catalog.jsonb_typeof(plan->'embeds')
+                                           WHEN 'array' THEN plan->'embeds'
+                                           ELSE '[]'::pg_catalog.jsonb END) e
+     WHERE pg_catalog.jsonb_typeof(e->'lookups') = 'array'
+    UNION
+    SELECT t->'fanout'->>'lookup_col'
+      FROM pg_catalog.jsonb_array_elements(CASE pg_catalog.jsonb_typeof(plan->'tables')
+                                           WHEN 'array' THEN plan->'tables'
+                                           ELSE '[]'::pg_catalog.jsonb END) t
+     WHERE pg_catalog.jsonb_typeof(t->'fanout') = 'object'
+    UNION
+    SELECT column_name FROM @extschema@.pg_tviews_plan_references(plan)
+$$;
+    ",
+    name = "plan_decoder",
+    requires = ["create_metadata_tables"],
+);
+
 extension_sql!(
     r"
 CREATE FUNCTION @extschema@.contract_version()
@@ -262,18 +343,18 @@ SELECT x.*,
                                      ORDER BY x.preferred DESC NULLS LAST, x.parent) = 1
        AS chosen
 FROM (SELECT m.entity,
-             r.value->>'column' AS column_name,
+             r.column_name,
              p.entity AS parent,
              p.identity->'columns'->0->>'name' AS parent_column,
              p.table_oid::pg_catalog.oid AS parent_table,
-             (r.value->>'unique')::boolean AS is_unique,
-             (r.value->>'nullable')::boolean AS is_nullable,
+             r.is_unique,
+             r.is_nullable,
              (SELECT pg_catalog.format('%I.%I', inn.nspname, ic.relname)
               FROM pg_catalog.pg_index i
               JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
               JOIN pg_catalog.pg_namespace inn ON inn.oid = ic.relnamespace
               JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
-              WHERE i.indrelid = m.table_oid::pg_catalog.oid AND a.attname = r.value->>'column'
+              WHERE i.indrelid = m.table_oid::pg_catalog.oid AND a.attname = r.column_name
                 AND i.indisvalid AND i.indpred IS NULL
                 AND (ic.relname = ANY (m.managed_index_names)
                      OR EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
@@ -282,20 +363,17 @@ FROM (SELECT m.entity,
               LIMIT 1) AS index_name,
              ARRAY(SELECT c->>'name'
                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) AS order_by,
-             p.identity->'columns'->0->>'name' = r.value->>'key' AS preferred
+             p.identity->'columns'->0->>'name' = r.key AS preferred
       FROM @extschema@.pg_tview_meta m
-      CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(
-          COALESCE(m.plan->'references', '[]'::pg_catalog.jsonb)) r
+      CROSS JOIN LATERAL @extschema@.pg_tviews_plan_references(m.plan) r
       JOIN @extschema@.pg_tview_meta p
-        ON NOT COALESCE((p.plan->>'set_operation')::boolean, false)
-       AND EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(p.plan->'paths') pp
-                   WHERE COALESCE((pp->>'root')::boolean, false)
-                     AND pp->>'initial_col' = r.value->>'key'
+        ON EXISTS (SELECT 1 FROM @extschema@.pg_tviews_plan_roots(p.plan) pr
+                   WHERE pr.key = r.key
                      AND EXISTS (SELECT 1 FROM pg_catalog.pg_class sc
                                  JOIN pg_catalog.pg_namespace sn ON sn.oid = sc.relnamespace
-                                 WHERE sc.oid = (pp->>'source_oid')::pg_catalog.oid
+                                 WHERE sc.oid = pr.relid
                                    AND pg_catalog.format('%I.%I', sn.nspname, sc.relname)
-                                       = r.value->>'table'))) x;
+                                       = r.table_name))) x;
 
 COMMENT ON VIEW @extschema@.pg_tview_references IS
 'Internal: the references tviews.registry publishes; may change in any release';
@@ -372,10 +450,8 @@ SELECT
          JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
         '{}') AS base_tables,
     COALESCE(
-        (SELECT pg_catalog.jsonb_object_agg(
-                    (e->>'relid')::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text,
-                    e->>'kind')
-         FROM pg_catalog.jsonb_array_elements(m.plan->'tables') e),
+        (SELECT pg_catalog.jsonb_object_agg(e.relid::pg_catalog.regclass::pg_catalog.text, e.kind)
+         FROM @extschema@.pg_tviews_plan_tables(m.plan) e),
         '{}') AS cascade_kinds,
     m.uncascaded_oids AS uncascaded_tables,
     m.time_dependent,
@@ -421,7 +497,7 @@ COMMENT ON VIEW @extschema@.registry IS
 GRANT SELECT ON @extschema@.registry TO PUBLIC;
     ",
     name = "read_contract",
-    requires = ["create_metadata_tables", "tview_reads"],
+    requires = ["create_metadata_tables", "tview_reads", "plan_decoder"],
 );
 
 // The event trigger that reports a `CREATE TABLE tv_* AS` the ProcessUtility hook did
@@ -542,163 +618,17 @@ EXCEPTION WHEN syntax_error_or_access_rule_violation THEN
 END;
 $$;
 
--- Catalog rows loaded by pg_restore carry the source database's OIDs inside
--- plan (view_oid / table_oid are regclass and re-resolve on their own). Rebind
--- them to the restored relations, found by their qualified names, as each row is
--- inserted; a table that no longer resolves fails the insert. The plan also
--- numbers the columns it reads, and a table dumped with dropped columns comes
--- back without their holes: each number is rebound by the column's name, which
--- the plan stores beside it, and a name that no longer resolves fails the insert.
--- For a row written by pg_tviews itself the rebind is the identity.
+-- Catalog rows loaded by pg_restore carry the source database's OIDs and column
+-- numbers inside plan (view_oid / table_oid are regclass and re-resolve on their
+-- own): each row inserted is rebound to the restored relations, found by their
+-- qualified names, and columns, found by their names (pg_tviews_plan_rebind).
 CREATE FUNCTION @extschema@.pg_tviews_meta_rebind()
 RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
-DECLARE
-    olds TEXT[];
-    news TEXT[];
-    old_cols TEXT[];
-    new_cols TEXT[];
-    missing TEXT;
-    e JSONB;
-    q TEXT;
-    r TEXT;
-    i INT;
-    tables JSONB := '[]';
-    paths JSONB := '[]';
 BEGIN
-    -- Each table's relid in the source database, and here (found by name).
-    SELECT pg_catalog.array_agg(x.e->>'relid' ORDER BY x.n),
-           pg_catalog.array_agg(
-               pg_catalog.to_regclass(x.e->>'table')::pg_catalog.oid::pg_catalog.text
-               ORDER BY x.n),
-           pg_catalog.string_agg(x.e->>'table', ', ' ORDER BY x.n)
-               FILTER (WHERE pg_catalog.to_regclass(x.e->>'table') IS NULL)
-      INTO olds, news, missing
-      FROM pg_catalog.jsonb_array_elements(NEW.plan->'tables') WITH ORDINALITY AS x(e, n);
-    IF missing IS NOT NULL THEN
-        RAISE EXCEPTION 'the plan of TVIEW tv_% names tables that do not exist: %',
-            NEW.entity, missing
-            USING ERRCODE = 'undefined_table',
-                  HINT = 'Restore the tables the TVIEW reads before its catalog row.';
-    END IF;
-    -- Each numbered column as '<relid>:<attnum>', in the source database (old_cols)
-    -- and here (new_cols): a table's `attnums` beside its `columns`, a path's
-    -- `initial_attnum` beside its `initial_col`.
-    WITH named AS (
-        SELECT x.e->>'relid' AS rel, a.v AS attnum, c.v AS name
-          FROM pg_catalog.jsonb_array_elements(NEW.plan->'tables') AS x(e),
-               pg_catalog.jsonb_array_elements_text(x.e->'attnums') WITH ORDINALITY AS a(v, k)
-               JOIN pg_catalog.jsonb_array_elements_text(x.e->'columns')
-                    WITH ORDINALITY AS c(v, k) USING (k)
-        UNION
-        SELECT x.e->>'source_oid', x.e->>'initial_attnum', x.e->>'initial_col'
-          FROM pg_catalog.jsonb_array_elements(NEW.plan->'paths') AS x(e)
-         WHERE x.e->>'initial_attnum' IS NOT NULL AND x.e->>'source_oid' = ANY (olds)
-    ), resolved AS (
-        SELECT n.rel, n.attnum, n.name, t.rel_here,
-               (SELECT a.attnum FROM pg_catalog.pg_attribute a
-                 WHERE a.attrelid = t.rel_here::pg_catalog.oid AND a.attname = n.name
-                   AND a.attnum > 0 AND NOT a.attisdropped) AS attnum_here
-          FROM named n,
-               LATERAL (SELECT news[pg_catalog.array_position(olds, n.rel)] AS rel_here) t
-    )
-    SELECT pg_catalog.array_agg(v.rel || ':' || v.attnum),
-           pg_catalog.array_agg(v.rel_here || ':' || v.attnum_here),
-           pg_catalog.string_agg(pg_catalog.format('%s.%I',
-               v.rel_here::pg_catalog.oid::pg_catalog.regclass, v.name), ', ')
-               FILTER (WHERE v.attnum_here IS NULL)
-      INTO old_cols, new_cols, missing
-      FROM resolved v;
-    IF missing IS NOT NULL THEN
-        RAISE EXCEPTION 'the plan of TVIEW tv_% names columns that do not exist: %',
-            NEW.entity, missing
-            USING ERRCODE = 'undefined_column',
-                  HINT = 'Restore the tables the TVIEW reads, with the columns it reads, '
-                         'before its catalog row.';
-    END IF;
-    FOR e IN SELECT value FROM pg_catalog.jsonb_array_elements(NEW.plan->'tables') LOOP
-        r := e->>'relid';
-        -- The table's own numbered columns: `links` and the read sets' `attnum` (0:
-        -- the table itself) must be among them.
-        IF EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements_text(
-                                     COALESCE(e->'links', '[]')) AS l(v)
-                    WHERE pg_catalog.array_position(old_cols, r || ':' || l.v) IS NULL)
-           OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(
-                                     COALESCE(e->'reads', '[]')) AS s(v)
-                       WHERE s.v->>'attnum' <> '0'
-                         AND pg_catalog.array_position(old_cols, r || ':' || (s.v->>'attnum')) IS NULL)
-        THEN
-            RAISE EXCEPTION 'the plan of TVIEW tv_% numbers a column of % it does not name',
-                NEW.entity, e->>'table'
-                USING ERRCODE = 'data_corrupted',
-                      HINT = 'SELECT tviews.pg_tviews_reregister(''' || NEW.entity
-                             || ''') re-derives it.';
-        END IF;
-        IF e ? 'attnums' THEN
-            e := pg_catalog.jsonb_set(e, '{attnums}', (SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.split_part(
-                            new_cols[pg_catalog.array_position(old_cols, r || ':' || a.v)], ':', 2
-                        )::pg_catalog.int2 ORDER BY a.k), '[]')
-                          FROM pg_catalog.jsonb_array_elements_text(e->'attnums')
-                               WITH ORDINALITY AS a(v, k)));
-        END IF;
-        IF e ? 'reads' THEN
-            e := pg_catalog.jsonb_set(e, '{reads}', (SELECT COALESCE(pg_catalog.jsonb_agg(s.v || pg_catalog.jsonb_build_object(
-                          'attnum', CASE s.v->>'attnum' WHEN '0' THEN 0 ELSE pg_catalog.split_part(
-                              new_cols[pg_catalog.array_position(old_cols, r || ':' || (s.v->>'attnum'))],
-                              ':', 2)::pg_catalog.int2 END) ORDER BY s.k), '[]')
-                        FROM pg_catalog.jsonb_array_elements(e->'reads') WITH ORDINALITY AS s(v, k)));
-        END IF;
-        IF pg_catalog.jsonb_typeof(e->'links') = 'array' THEN
-            e := pg_catalog.jsonb_set(e, '{links}',
-                     (SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.split_part(
-                                 new_cols[pg_catalog.array_position(old_cols, r || ':' || l.v)], ':', 2
-                             )::pg_catalog.int2 ORDER BY l.k), '[]')
-                        FROM pg_catalog.jsonb_array_elements_text(e->'links') WITH ORDINALITY AS l(v, k)));
-        END IF;
-        -- The mapping query and the read-set queries name relations and columns
-        -- by number: {r:<relid>}, {c:<relid>:<attnum>}. Marked first, so a new
-        -- number equal to another's old one is not rebound twice.
-        q := e::pg_catalog.text;
-        FOR i IN 1 .. COALESCE(pg_catalog.array_length(old_cols, 1), 0) LOOP
-            q := pg_catalog.replace(q, '{c:' || old_cols[i] || '}', '{c:#' || new_cols[i] || '}');
-        END LOOP;
-        IF q ~ '\{c:[0-9]' THEN
-            RAISE EXCEPTION 'the plan of TVIEW tv_% numbers a column it does not name in the '
-                            'mapping of %', NEW.entity, e->>'table'
-                USING ERRCODE = 'data_corrupted',
-                      HINT = 'SELECT tviews.pg_tviews_reregister(''' || NEW.entity
-                             || ''') re-derives it.';
-        END IF;
-        FOR i IN 1 .. pg_catalog.array_length(olds, 1) LOOP
-            q := pg_catalog.replace(q, '{r:' || olds[i] || '}', '{r:#' || news[i] || '}');
-        END LOOP;
-        e := pg_catalog.replace(pg_catalog.replace(q, '{r:#', '{r:'), '{c:#', '{c:')::pg_catalog.jsonb;
-        i := pg_catalog.array_position(olds, r);
-        e := pg_catalog.jsonb_set(e, '{relid}', pg_catalog.to_jsonb(news[i]::pg_catalog.int8));
-        tables := tables || pg_catalog.jsonb_build_array(e);
-    END LOOP;
-    FOR e IN SELECT value FROM pg_catalog.jsonb_array_elements(NEW.plan->'paths') LOOP
-        i := pg_catalog.array_position(olds, e->>'source_oid');
-        IF i IS NULL THEN
-            RAISE EXCEPTION 'the plan of TVIEW tv_% has a path from %, which it maps no '
-                            'write of', NEW.entity, e->>'source_table'
-                USING ERRCODE = 'data_corrupted',
-                      HINT = 'SELECT tviews.pg_tviews_reregister(''' || NEW.entity
-                             || ''') re-derives it.';
-        END IF;
-        IF e->>'initial_attnum' IS NOT NULL THEN
-            e := pg_catalog.jsonb_set(e, '{initial_attnum}', pg_catalog.to_jsonb(
-                     pg_catalog.split_part(new_cols[pg_catalog.array_position(old_cols,
-                         (e->>'source_oid') || ':' || (e->>'initial_attnum'))], ':', 2)::pg_catalog.int2));
-        END IF;
-        e := pg_catalog.jsonb_set(e, '{source_oid}',
-                                  pg_catalog.to_jsonb(news[i]::pg_catalog.int8));
-        paths := paths || pg_catalog.jsonb_build_array(e);
-    END LOOP;
-    NEW.plan := pg_catalog.jsonb_set(pg_catalog.jsonb_set(NEW.plan,
-                    '{tables}', tables), '{paths}', paths);
+    NEW.plan := @extschema@.pg_tviews_plan_rebind(NEW.entity, NEW.plan);
     RETURN NEW;
 END;
 $$;
@@ -856,13 +786,9 @@ BEGIN
                c.relpersistence AS pers, c.reltuples, c.relpages, c.reltoastrelid,
                c.reloptions,
                -- The columns its rows are looked up by: those holding an
-               -- embedded TVIEW's key, and those a fan-out patch writes through.
-               ARRAY(SELECT jsonb_array_elements_text(e->'lookups')
-                     FROM jsonb_array_elements(m.plan->'embeds') e
-                     UNION
-                     SELECT t->'fanout'->>'lookup_col'
-                     FROM jsonb_array_elements(m.plan->'tables') t
-                     WHERE t ? 'fanout') AS lookups
+               -- embedded TVIEW's key, those a fan-out patch writes through, and
+               -- its references.
+               ARRAY(SELECT @extschema@.pg_tviews_plan_lookups(m.plan)) AS lookups
         FROM @extschema@.pg_tview_meta m
         JOIN pg_class c ON c.oid = m.table_oid
         JOIN pg_namespace n ON n.oid = c.relnamespace

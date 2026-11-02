@@ -239,41 +239,50 @@ pub fn counts() -> TViewResult<(i64, i64, i64)> {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn stale_column_numbers() -> TViewResult<Option<String>> {
-    // A plan that does not decode is plan_check's: read here as numbering nothing.
-    let array = |expr: &str| {
-        format!(
-            "CASE pg_catalog.jsonb_typeof({expr}) WHEN 'array' THEN {expr} \
-             ELSE '[]'::pg_catalog.jsonb END"
-        )
-    };
-    let sql = format!(
-        "WITH numbered AS (
-             SELECT m.entity, (t.e->>'relid')::pg_catalog.oid AS rel, a.v::pg_catalog.int2 AS attnum,
-                    c.v AS name
-               FROM {meta} m,
-                    pg_catalog.jsonb_array_elements({tables}) AS t(e),
-                    pg_catalog.jsonb_array_elements_text({attnums}) WITH ORDINALITY AS a(v, k)
-                    JOIN pg_catalog.jsonb_array_elements_text({columns}) WITH ORDINALITY AS c(v, k)
-                         USING (k)
-             UNION ALL
-             SELECT m.entity, (p.e->>'source_oid')::pg_catalog.oid,
-                    (p.e->>'initial_attnum')::pg_catalog.int2, p.e->>'initial_col'
-               FROM {meta} m, pg_catalog.jsonb_array_elements({paths}) AS p(e)
-              WHERE p.e->>'initial_attnum' IS NOT NULL)
-         SELECT pg_catalog.string_agg(DISTINCT pg_catalog.format('tv_%s (%s.%I)', n.entity,
-                    n.rel::pg_catalog.regclass, n.name), ', ')
-           FROM numbered n
-          WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
-                             WHERE a.attrelid = n.rel AND a.attnum = n.attnum
+    let rows = crate::utils::spi::catalog_rows(
+        &format!(
+            "SELECT entity::text, plan FROM {} ORDER BY entity",
+            super::meta_table()
+        ),
+        &[],
+        |row| Ok((row.get::<String>(1)?, row.get::<pgrx::JsonB>(2)?)),
+    )?;
+    let (mut entities, mut relids, mut attnums, mut names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (entity, plan) in rows {
+        let (Some(entity), Some(plan)) = (entity, plan) else {
+            continue;
+        };
+        let Ok(plan) = crate::lineage::plan::TviewPlan::decode(&entity, plan.0) else {
+            continue;
+        };
+        for (relid, attnum, name) in plan.numbered_columns() {
+            entities.push(entity.clone());
+            relids.push(Oid::from(relid));
+            attnums.push(attnum);
+            names.push(name);
+        }
+    }
+    if entities.is_empty() {
+        return Ok(None);
+    }
+    crate::utils::spi::catalog_one::<String>(
+        "SELECT pg_catalog.string_agg(DISTINCT pg_catalog.format('tv_%s (%s.%I)', n.entity, \
+                    n.rel::pg_catalog.regclass, n.name), ', ') \
+           FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.text[]), \
+                           pg_catalog.unnest($2::pg_catalog.oid[]), \
+                           pg_catalog.unnest($3::pg_catalog.int2[]), \
+                           pg_catalog.unnest($4::pg_catalog.text[])) AS n(entity, rel, attnum, name) \
+          WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                             WHERE a.attrelid = n.rel AND a.attnum = n.attnum \
                                AND a.attname = n.name AND NOT a.attisdropped)",
-        meta = super::meta_table(),
-        tables = array("m.plan->'tables'"),
-        attnums = array("t.e->'attnums'"),
-        columns = array("t.e->'columns'"),
-        paths = array("m.plan->'paths'"),
-    );
-    Spi::get_one::<String>(&sql)
-        .map_err(|e| crate::utils::spi::catalog_error("Check the plans' column numbers", &e))
+        &[
+            crate::utils::spi::text_array_of(&entities),
+            crate::utils::spi::oid_array(relids),
+            crate::utils::spi::int2_array(attnums),
+            crate::utils::spi::text_array_of(&names),
+        ],
+    )
 }
 
 /// A TVIEW as [`relations`] lists it.

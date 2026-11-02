@@ -106,6 +106,9 @@ BEGIN
            'tviews.pg_tviews_mapping_query(text,oid)',
            'tviews.pg_tviews_read_set_queries(text,oid)',
            'tviews.pg_tviews_show_cascade_path(text)', 'tviews.pg_tviews_defines_view(oid,text)',
+           'tviews.pg_tviews_plan_tables(jsonb)', 'tviews.pg_tviews_plan_references(jsonb)',
+           'tviews.pg_tviews_plan_roots(jsonb)', 'tviews.pg_tviews_plan_lookups(jsonb)',
+           'tviews.pg_tviews_plan_rebind(text,jsonb)',
            -- the caller's session
            'tviews.pg_tviews_flush_and_report(integer,boolean,boolean,text[])',
            'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',

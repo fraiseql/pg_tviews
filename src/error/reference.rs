@@ -126,6 +126,24 @@ fn examples() -> Vec<TViewError> {
 /// (source file, condition, when). A test checks every such site is listed.
 const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_TABLE,
+        "A restore loads a TVIEW's catalog row before a table its plan reads: restore the \
+         tables first.",
+    ),
+    (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_COLUMN,
+        "A restore loads a TVIEW's catalog row whose plan reads a column the restored table \
+         lacks.",
+    ),
+    (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_DATA_CORRUPTED,
+        "A restored TVIEW's plan numbers a column it does not name, or has a path from a \
+         table it maps no write of: `pg_tviews_reregister(entity)` re-derives it.",
+    ),
+    (
         "src/concurrency/mod.rs",
         PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
         "A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, \

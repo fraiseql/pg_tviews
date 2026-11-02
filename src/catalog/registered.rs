@@ -10,7 +10,7 @@ use pgrx::pg_sys::Oid;
 /// Returns an error if the catalog cannot be read.
 pub fn all() -> TViewResult<Vec<Registered>> {
     let sql = format!(
-        "SELECT entity::text, table_oid::oid, view_oid::oid, plan->'tables', \
+        "SELECT entity::text, table_oid::oid, view_oid::oid, plan, \
                 ARRAY(SELECT u::pg_catalog.oid FROM pg_catalog.unnest(uncascaded_oids) u \
                       WHERE COALESCE(uncascaded_table_policies[pg_catalog.array_position( \
                                 uncascaded_table_oids, u)], uncascaded_policy) \
@@ -28,14 +28,19 @@ pub fn all() -> TViewResult<Vec<Registered>> {
         ) else {
             return Ok(None);
         };
+        // A plan that does not decode maps nothing here (the health check reports
+        // it; re-registering that TVIEW derives it again).
         let mapped = row
             .get::<pgrx::JsonB>(4)?
-            .and_then(|j| j.0.as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter(|e| e["kind"] != "all_keys")
-            .filter_map(|e| e["relid"].as_u64().and_then(|r| u32::try_from(r).ok()))
-            .collect();
+            .and_then(|j| crate::lineage::plan::TviewPlan::decode(&entity, j.0).ok())
+            .map(|plan| {
+                plan.tables
+                    .iter()
+                    .filter(|t| t.kind != crate::lineage::MappingKind::AllKeys)
+                    .map(|t| t.relid)
+                    .collect()
+            })
+            .unwrap_or_default();
         let full_refresh = row
             .get::<Vec<Oid>>(5)?
             .unwrap_or_default()
@@ -60,8 +65,9 @@ pub fn all() -> TViewResult<Vec<Registered>> {
 #[must_use]
 pub fn mapping_kind_sql(meta: &str, relid: &str) -> String {
     format!(
-        "(SELECT e->>'kind' FROM pg_catalog.jsonb_array_elements({meta}.plan->'tables') e \
-          WHERE (e->>'relid')::pg_catalog.oid = {relid} LIMIT 1)"
+        "(SELECT e.kind FROM {schema}.pg_tviews_plan_tables({meta}.plan) e \
+          WHERE e.relid = {relid} LIMIT 1)",
+        schema = crate::utils::ext_schema(),
     )
 }
 

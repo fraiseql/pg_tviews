@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # Allowed sites, `file|text on the line|reason`: DDL, restore and install time,
 # which run as the role doing them, and the extension's own catalog.
 allowed=(
-  "src/install_sql.rs|pg_catalog.to_regclass(x.e->>'table')|restore trigger: runs as the restorer"
+  "src/catalog/plan.rs|\"SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid \\|restore: runs as the restorer"
   "src/install_sql.rs|'pg_temp.pg_tviews_rename_check'::regclass|rename check: DDL, own temp view"
   "src/ddl/replace/options.rs|pg_catalog.to_regclass(\$1)|options: DDL, names the creator passed"
   "src/ddl/replace/options.rs|pg_catalog.to_regprocedure(\$1)|options: DDL, names the creator passed"

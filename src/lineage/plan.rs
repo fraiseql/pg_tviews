@@ -291,3 +291,111 @@ fn fanout_patch(lineage: &Lineage, table: &super::TableLineage) -> Option<(Strin
         },
     ))
 }
+
+/// What a plan names that a restored database lacks, or numbers without naming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unbound {
+    /// A table, by its qualified name.
+    Table(String),
+    /// A column of a table, by name.
+    Column(String, String),
+    /// A column number of a table that the plan stores no name for.
+    Unnamed(String, i16),
+    /// A path from a table the plan maps no write of.
+    Path(String),
+}
+
+impl TviewPlan {
+    /// Every column the plan numbers, `(relid, attnum, name)`: each table's
+    /// `attnums` beside its `columns`, each path's `initial_attnum` beside its
+    /// `initial_col`.
+    #[must_use]
+    pub fn numbered_columns(&self) -> Vec<(u32, i16, String)> {
+        let mut out: Vec<(u32, i16, String)> = self
+            .tables
+            .iter()
+            .flat_map(|t| {
+                t.attnums
+                    .iter()
+                    .zip(&t.columns)
+                    .map(|(&attnum, name)| (t.relid, attnum, name.clone()))
+            })
+            .chain(self.paths.iter().filter_map(|p| {
+                p.initial_attnum
+                    .map(|attnum| (p.source_oid.to_u32(), attnum, p.initial_col.clone()))
+            }))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The plan with its relations and column numbers rebound: `relid` gives a
+    /// table's new relid, `attnum` a column's new number from its old relid and
+    /// number. Templates (`{r:…}`, `{c:…:…}`), `attnums`, `links`, the read sets'
+    /// `attnum` (0, the table itself, stays) and the paths are rewritten.
+    ///
+    /// # Errors
+    /// What has no new value: a column number the plan does not name, a path
+    /// from a table it maps no write of.
+    pub fn rebound(
+        &self,
+        relid: &dyn Fn(u32) -> Option<u32>,
+        attnum: &dyn Fn(u32, i16) -> Option<i16>,
+    ) -> Result<Self, Unbound> {
+        let mut plan = self.clone();
+        for table in &mut plan.tables {
+            let old = table.relid;
+            let name = table.table.clone();
+            let number = |a: i16| attnum(old, a).ok_or_else(|| Unbound::Unnamed(name.clone(), a));
+            let template = |sql: &str| {
+                super::rewrite_template(sql, &|p| match p {
+                    super::Placeholder::Relation(r) => relid(r).map(super::Placeholder::Relation),
+                    super::Placeholder::Column(r, a) => {
+                        Some(super::Placeholder::Column(relid(r)?, attnum(r, a)?))
+                    }
+                })
+                .ok_or_else(|| Unbound::Unnamed(name.clone(), 0))
+            };
+            table.relid = relid(old).ok_or_else(|| Unbound::Table(name.clone()))?;
+            table.attnums = table
+                .attnums
+                .iter()
+                .map(|&a| number(a))
+                .collect::<Result<_, _>>()?;
+            if let Some(links) = &table.links {
+                table.links = Some(links.iter().map(|&a| number(a)).collect::<Result<_, _>>()?);
+            }
+            for read in &mut table.reads {
+                if read.attnum != 0 {
+                    read.attnum = number(read.attnum)?;
+                }
+                if let Some(sql) = &read.sql {
+                    read.sql = Some(template(sql)?);
+                }
+            }
+            if let Some(sql) = &table.sql {
+                table.sql = Some(template(sql)?);
+            }
+            if let Some(fanout) = &mut table.fanout
+                && let Some(via) = &fanout.via
+            {
+                fanout.via = Some(template(via)?);
+            }
+        }
+        for path in &mut plan.paths {
+            let old = path.source_oid.to_u32();
+            if !self.tables.iter().any(|t| t.relid == old) {
+                return Err(Unbound::Path(path.source_table.clone()));
+            }
+            path.source_oid =
+                Oid::from(relid(old).ok_or_else(|| Unbound::Table(path.source_table.clone()))?);
+            if let Some(a) = path.initial_attnum {
+                path.initial_attnum = Some(
+                    attnum(old, a).ok_or_else(|| Unbound::Unnamed(path.source_table.clone(), a))?,
+                );
+            }
+        }
+        Ok(plan)
+    }
+}

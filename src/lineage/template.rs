@@ -1,5 +1,7 @@
 //! SQL templates: generated SQL with relations and columns named by OID.
 
+use std::fmt::Write as _;
+
 /// A piece of generated SQL: text, or a column of a table occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
@@ -76,6 +78,41 @@ pub fn fill_template(
             _ => return None,
         };
         out.push_str(&name(placeholder)?);
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Rewrite the placeholders of a template with `map`, keeping the rest as it is
+/// (escaped braces included); `None` if a placeholder is malformed or `map` has
+/// nothing for it.
+pub fn rewrite_template(
+    template: &str,
+    map: &dyn Fn(Placeholder) -> Option<Placeholder>,
+) -> Option<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(i) = rest.find(['{', '}']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        if tail.starts_with("{{") || tail.starts_with("}}") {
+            out.push_str(&tail[..2]);
+            rest = &tail[2..];
+            continue;
+        }
+        let end = tail.find('}')?;
+        let one = std::cell::Cell::new(None);
+        fill_template(&tail[..=end], &|p| {
+            one.set(Some(p));
+            Some(String::new())
+        })?;
+        let placeholder = map(one.get()?)?;
+        // Writing to a String cannot fail.
+        let _ = match placeholder {
+            Placeholder::Relation(relid) => write!(out, "{{r:{relid}}}"),
+            Placeholder::Column(relid, attnum) => write!(out, "{{c:{relid}:{attnum}}}"),
+        };
         rest = &tail[end + 1..];
     }
     out.push_str(rest);

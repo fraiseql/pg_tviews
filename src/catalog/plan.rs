@@ -68,6 +68,77 @@ impl TviewPlan {
     }
 }
 
+/// `plan` as it reads in this database, after a restore: its tables bound to the
+/// relations of the same qualified names, its column numbers to the columns of
+/// the same names (a table dumped with dropped columns comes back without their
+/// holes). Run as each restored catalog row is inserted, never re-deriving: the
+/// restore has not created the triggers yet. For a row written by `pg_tviews`
+/// itself the rebind is the identity.
+///
+/// # Errors
+/// The catalog cannot be read; `Ok(Err(_))` names what the plan names that this
+/// database lacks, or numbers without naming.
+pub fn rebind_restored(
+    plan: &TviewPlan,
+) -> TViewResult<Result<TviewPlan, crate::lineage::plan::Unbound>> {
+    use crate::lineage::plan::Unbound;
+    use std::collections::HashMap;
+    let names: Vec<String> = plan.tables.iter().map(|t| t.table.clone()).collect();
+    let mut relids: HashMap<u32, u32> = HashMap::with_capacity(names.len());
+    let mut missing: Vec<String> = Vec::new();
+    let found = crate::utils::spi::catalog_rows(
+        "SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid \
+           FROM pg_catalog.unnest($1::pg_catalog.text[]) WITH ORDINALITY AS t(q, n) ORDER BY t.n",
+        &[crate::utils::spi::text_array_of(&names)],
+        |row| row.get::<pgrx::pg_sys::Oid>(1),
+    )?;
+    for (table, oid) in plan.tables.iter().zip(found) {
+        match oid {
+            Some(oid) => {
+                relids.insert(table.relid, oid.to_u32());
+            }
+            None => missing.push(table.table.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        return Ok(Err(Unbound::Table(missing.join(", "))));
+    }
+    let numbered = plan.numbered_columns();
+    let mut attnums: HashMap<(u32, i16), i16> = HashMap::with_capacity(numbered.len());
+    let here: Vec<pgrx::pg_sys::Oid> = numbered
+        .iter()
+        .map(|(r, _, _)| pgrx::pg_sys::Oid::from(relids.get(r).copied().unwrap_or(0)))
+        .collect();
+    let columns: Vec<String> = numbered.iter().map(|(_, _, n)| n.clone()).collect();
+    let found = crate::utils::spi::catalog_rows(
+        "SELECT (SELECT a.attnum FROM pg_catalog.pg_attribute a \
+                  WHERE a.attrelid = k.relid AND a.attname = k.name \
+                    AND a.attnum > 0 AND NOT a.attisdropped) \
+           FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.oid[]), \
+                           pg_catalog.unnest($2::pg_catalog.text[])) WITH ORDINALITY AS k(relid, name, n) \
+          ORDER BY k.n",
+        &[
+            crate::utils::spi::oid_array(here),
+            crate::utils::spi::text_array_of(&columns),
+        ],
+        |row| row.get::<i16>(1),
+    )?;
+    for ((relid, attnum, name), new) in numbered.iter().zip(found) {
+        let Some(new) = new else {
+            let table = plan
+                .tables
+                .iter()
+                .find(|t| t.relid == *relid)
+                .map_or_else(|| relid.to_string(), |t| t.table.clone());
+            return Ok(Err(Unbound::Column(table, name.clone())));
+        };
+        attnums.insert((*relid, *attnum), new);
+    }
+    Ok(plan.rebound(&|r| relids.get(&r).copied(), &|r, a| {
+        attnums.get(&(r, a)).copied()
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
