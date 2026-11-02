@@ -49,7 +49,7 @@ jobs:
 
       - name: Build and install pg_tviews and jsonb_delta
         run: |
-          cargo pgrx install --release --no-default-features --features pg18 --pg-config "$PG_CONFIG"
+          cargo pgrx install --release --no-default-features --features "pg18 test-hooks" --pg-config "$PG_CONFIG"
           git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
           (cd /tmp/jsonb_delta && cargo pgrx install --release --no-default-features \
              --features pg18 --pg-config "$PG_CONFIG")
