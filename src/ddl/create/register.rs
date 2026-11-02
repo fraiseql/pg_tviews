@@ -4,10 +4,10 @@ use super::ViewColumns;
 use super::derive::{Derivation, uncascaded_tables};
 use super::indexes::{create_embed_lookup_indexes, key_index};
 use super::relations::relation_oid;
-use crate::catalog::plan::TviewPlan;
 use crate::ddl::uncascaded::{Declarations, Uncascaded};
 use crate::error::TViewResult;
 use crate::lineage::Identity;
+use crate::lineage::plan::TviewPlan;
 use pgrx::pg_sys;
 
 /// What creating and re-registering a TVIEW both write once its relations exist:

@@ -311,7 +311,7 @@ mod tests {
             ..crate::catalog::PlanEntry::default()
         };
         for (child, kind, lookup) in embeds {
-            meta.plan.embeds.push(crate::catalog::plan::PlanEmbed {
+            meta.plan.embeds.push(crate::lineage::plan::PlanEmbed {
                 entity: (*child).to_string(),
                 lookups: vec![(*lookup).to_string()],
                 kind: *kind,

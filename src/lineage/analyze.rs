@@ -39,6 +39,22 @@ pub struct Lineage {
     pub references: Vec<super::Reference>,
 }
 
+/// What another TVIEW's registration says to the analysis of a new one.
+#[derive(Debug, Clone)]
+pub struct Registered {
+    pub entity: String,
+    pub table_oid: pgrx::pg_sys::Oid,
+    pub view_oid: pgrx::pg_sys::Oid,
+    /// The base tables a write to which is mapped to its keys (not `all_keys`).
+    pub mapped: std::collections::HashSet<u32>,
+    /// The base tables a write to which refreshes it in full.
+    pub full_refresh: std::collections::HashSet<u32>,
+    /// An aggregate TVIEW (declared group keys).
+    pub aggregate: bool,
+    /// Its rows are named by a column other than `pk_<entity>` (DISTINCT ON).
+    pub keyed_otherwise: bool,
+}
+
 /// How a TVIEW embeds another one's rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EmbedKind {
@@ -233,56 +249,6 @@ impl Lineage {
             })
             .collect()
     }
-
-    /// `pg_tview_meta.key_mappings`: one object per base table.
-    #[must_use]
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(
-            self.tables
-                .iter()
-                .map(|t| {
-                    let mut entry = serde_json::json!({
-                        "table": t.qualified,
-                        "relid": t.relid,
-                        "kind": t.kind.name(),
-                    });
-                    match &t.kind {
-                        TableKind::Local(column) => entry["column"] = column.clone().into(),
-                        TableKind::Propagated(entity) => entry["entity"] = entity.clone().into(),
-                        TableKind::AllKeys(reason) => {
-                            entry["reason"] = reason.clone().into();
-                            if let Some(sql) = &t.sql {
-                                entry["sql"] = sql.clone().into();
-                            }
-                        }
-                        TableKind::Mapped => {
-                            entry["sql"] = t.sql.clone().unwrap_or_default().into();
-                            if let Some((own, root)) = &t.hop {
-                                entry["hop"] = serde_json::json!([own, root]);
-                            }
-                        }
-                    }
-                    if let Some(inner) = &t.tview {
-                        entry["tview"] = inner.clone().into();
-                    }
-                    if !t.reads.is_empty() {
-                        entry["reads"] = serde_json::to_value(&t.reads).unwrap_or_default();
-                    }
-                    entry["columns"] = t
-                        .columns
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect::<Vec<_>>()
-                        .into();
-                    entry["attnums"] = t.columns.iter().map(|(_, n)| *n).collect::<Vec<_>>().into();
-                    if let Some(links) = &t.links {
-                        entry["links"] = links.clone().into();
-                    }
-                    entry
-                })
-                .collect(),
-        )
-    }
 }
 
 /// A table read with its inheritance children (no `ONLY`) is refused: the
@@ -366,6 +332,7 @@ pub fn analyze(
     entity: &str,
     view_oid: pgrx::pg_sys::Oid,
     base_tables: &[pgrx::pg_sys::Oid],
+    others: &[Registered],
 ) -> crate::TViewResult<Lineage> {
     use std::collections::{HashMap, HashSet};
 
@@ -380,7 +347,7 @@ pub fn analyze(
     let mut mapped_by: HashMap<String, (HashSet<u32>, HashSet<u32>)> = HashMap::new();
     let mut aggregates: Vec<String> = Vec::new();
     let mut keyed_otherwise: BTreeSet<String> = BTreeSet::new();
-    for other in crate::catalog::registered::all()? {
+    for other in others.iter().cloned() {
         if other.keyed_otherwise {
             keyed_otherwise.insert(other.entity.clone());
         }
@@ -524,68 +491,6 @@ pub const FUNCTION_SIGNATURE: &str = "pg_catalog.format('%s.%s(%s)', \
       WHERE n.oid = p.pronamespace), \
      pg_catalog.quote_ident(p.proname::pg_catalog.text), \
      pg_catalog.oidvectortypes(p.proargtypes))";
-
-/// How writes to a table map to a registered TVIEW's keys: the stored form of a
-/// [`TableKind`]. Any other name fails to decode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MappingKind {
-    /// The key is a column of the changed row (row trigger).
-    #[default]
-    Local,
-    /// A mapping query over the transition table (`sql`).
-    Mapped,
-    /// Reached only through an embed: no trigger.
-    Propagated,
-    /// No cascade maps the table: the policy applies.
-    AllKeys,
-}
-
-/// One table of a registered TVIEW's `key_mappings`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct KeyMapping {
-    pub relid: u32,
-    /// The table's qualified name: what a restore rebinds `relid` from.
-    pub table: String,
-    pub kind: MappingKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub column: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entity: Option<String>,
-    /// `all_keys`: why no cascade maps the table.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    /// `mapped` (and `all_keys` for its traceable reads): the query template (see
-    /// [`render_template`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sql: Option<String>,
-    /// Columns of the table the TVIEW reads; empty when unknown.
-    #[serde(default)]
-    pub attnums: Vec<i16>,
-    #[serde(default)]
-    pub columns: Vec<String>,
-    /// `mapped` through one equality onto a column of the root: `(this table's
-    /// column, the root's column)`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hop: Option<(String, String)>,
-    /// The column of this table whose value the fan-out patch looks up.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_col: Option<String>,
-    /// How an UPDATE is written into every TVIEW row it reaches.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fanout: Option<crate::catalog::plan::FanoutPatch>,
-    /// The table of another TVIEW, of that entity: refreshed first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tview: Option<String>,
-    /// What a refresh reads of the table, for value locks (ADR 0207).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reads: Vec<super::ReadSet>,
-    /// The columns of the table the TVIEW's rows are linked by (joins, filters,
-    /// groupings…): a write that changes none of them, and inserts or deletes no
-    /// row, changes no link (#263). `None` when unknown: every write does.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<Vec<i16>>,
-}
 
 /// Rows above which a sequential scan in a mapping query is worth an index.
 pub(super) const LARGE_TABLE_ROWS: f64 = 1000.0;
@@ -765,5 +670,5 @@ pub(super) fn referenced_columns(
     view_oid: pgrx::pg_sys::Oid,
     relid: u32,
 ) -> crate::TViewResult<Vec<(String, i16)>> {
-    crate::catalog::reads::view_columns_read(view_oid, pgrx::pg_sys::Oid::from(relid))
+    crate::lineage::reads::view_columns_read(view_oid, pgrx::pg_sys::Oid::from(relid))
 }

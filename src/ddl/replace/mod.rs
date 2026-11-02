@@ -375,7 +375,7 @@ fn compare_definition(
     let base_tables = crate::utils::spi::oids(
         &format!(
             "{} SELECT DISTINCT r.relid FROM reads r WHERE r.relkind IN ('r', 'p')",
-            crate::catalog::reads::view_reads_cte(
+            crate::lineage::reads::view_reads_cte(
                 "SELECT $1::pg_catalog.regclass::pg_catalog.oid, \
                         $1::pg_catalog.regclass::pg_catalog.oid, 0"
             )

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys::Oid>> {
     let view_oid = get_view_oid(view_name, schema)?;
     let max_depth = crate::config::max_dependency_depth();
-    let depth = crate::catalog::reads::view_nesting(view_oid)?;
+    let depth = crate::lineage::reads::view_nesting(view_oid)?;
     if depth > max_depth {
         return Err(TViewError::DepthExceeded {
             what: "dependency",
@@ -24,7 +24,7 @@ pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys
         });
     }
     let tview_tables = load_tview_table_oids()?;
-    Ok(crate::catalog::reads::view_relations_read(view_oid)?
+    Ok(crate::lineage::reads::view_relations_read(view_oid)?
         .into_iter()
         .filter_map(|(oid, relkind)| match relkind {
             // A TVIEW's table is followed through the TVIEW's own refresh.

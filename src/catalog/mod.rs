@@ -4,7 +4,6 @@ pub(crate) mod indexes;
 mod partition;
 pub mod plan;
 pub mod queries;
-pub mod reads;
 pub mod registered;
 pub mod resolve;
 pub mod row;
@@ -30,7 +29,7 @@ pub struct TviewMeta {
     pub entity_name: String,
 
     /// What registration derived from the backing view's query tree (ADR 0203).
-    pub plan: plan::TviewPlan,
+    pub plan: crate::lineage::plan::TviewPlan,
 
     /// What a write to a base table no cascade maps to its keys does: the policy
     /// stored when the TVIEW was created.
@@ -77,7 +76,7 @@ pub struct PlanEntry {
     /// The TVIEW's entity.
     pub entity: String,
     /// Its propagation plan.
-    pub plan: plan::TviewPlan,
+    pub plan: crate::lineage::plan::TviewPlan,
 }
 
 /// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
@@ -412,7 +411,7 @@ impl TviewMeta {
             &[],
             |row| {
                 let entity = row.named::<String>("entity")?.unwrap_or_default();
-                let plan = plan::TviewPlan::decode(
+                let plan = crate::lineage::plan::TviewPlan::decode(
                     &entity,
                     row.named::<pgrx::JsonB>("plan")?
                         .map_or(serde_json::Value::Null, |j| j.0),
@@ -528,14 +527,14 @@ impl TviewMeta {
             (Err(_), Derived::Rederive) => RowIdentity::unknown(),
             (Err(e), Derived::Strict) => return Err(e),
         };
-        let plan = plan::TviewPlan::decode(
+        let plan = crate::lineage::plan::TviewPlan::decode(
             &entity_name,
             row.named::<pgrx::JsonB>("plan")?
                 .map_or(serde_json::Value::Null, |j| j.0),
         );
         let plan = match (plan, derived) {
             (Ok(plan), _) => plan,
-            (Err(_), Derived::Rederive) => plan::TviewPlan::default(),
+            (Err(_), Derived::Rederive) => crate::lineage::plan::TviewPlan::default(),
             (Err(e), Derived::Strict) => return Err(e),
         };
 
@@ -606,7 +605,7 @@ impl Default for TviewMeta {
             view_oid: pg_sys::Oid::INVALID,
             entity_name: String::new(),
 
-            plan: plan::TviewPlan::default(),
+            plan: crate::lineage::plan::TviewPlan::default(),
             uncascaded_policy: crate::config::UncascadedPolicy::Warn,
             table_policies: Vec::new(),
             function_reads: Vec::new(),

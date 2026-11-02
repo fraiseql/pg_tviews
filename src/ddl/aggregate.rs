@@ -7,8 +7,8 @@
 //! the new group when a row moves) and the ordinary pk refresh recomputes them from
 //! the backing view: a new group is inserted, an emptied one deleted.
 
-use crate::catalog::plan::LocalPath;
 use crate::error::{TViewError, TViewResult};
+use crate::lineage::plan::LocalPath;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 use std::collections::BTreeMap;

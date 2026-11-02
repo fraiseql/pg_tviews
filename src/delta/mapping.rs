@@ -583,7 +583,7 @@ pub(super) fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option
 }
 
 /// The lookup through the table in between of `mapping`'s fan-out
-/// ([`crate::catalog::plan::FanoutPatch::via`]), with the current names of what
+/// ([`crate::lineage::plan::FanoutPatch::via`]), with the current names of what
 /// it reads (cached until one of them changes).
 fn rendered_via(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);

@@ -1,24 +1,8 @@
 //! Typed reads of every registered TVIEW at once.
 
 use crate::error::TViewResult;
+use crate::lineage::Registered;
 use pgrx::pg_sys::Oid;
-use std::collections::HashSet;
-
-/// What another TVIEW's registration says to the analysis of a new one.
-#[derive(Debug, Clone)]
-pub struct Registered {
-    pub entity: String,
-    pub table_oid: Oid,
-    pub view_oid: Oid,
-    /// The base tables a write to which is mapped to its keys (not `all_keys`).
-    pub mapped: HashSet<u32>,
-    /// The base tables a write to which refreshes it in full.
-    pub full_refresh: HashSet<u32>,
-    /// An aggregate TVIEW (declared group keys).
-    pub aggregate: bool,
-    /// Its rows are named by a column other than `pk_<entity>` (DISTINCT ON).
-    pub keyed_otherwise: bool,
-}
 
 /// Every registered TVIEW, by entity.
 ///

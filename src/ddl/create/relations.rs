@@ -122,7 +122,7 @@ pub(crate) fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_s
 /// Empty when they cannot be read; the caller treats an empty result as "unknown
 /// ⇒ always refresh", so a miss is never unsafe.
 pub(crate) fn view_source_columns(view_oid: Oid, source_oid: Oid) -> Vec<String> {
-    match crate::catalog::reads::view_columns_read(view_oid, source_oid) {
+    match crate::lineage::reads::view_columns_read(view_oid, source_oid) {
         Ok(columns) => columns.into_iter().map(|(name, _)| name).collect(),
         Err(e) => {
             notice!(

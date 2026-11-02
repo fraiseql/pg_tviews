@@ -1,121 +1,11 @@
-//! A TVIEW's propagation plan (ADR 0203): everything registration derives from
-//! its backing view's query tree, stored as one versioned document in
-//! `pg_tview_meta.plan` and read back by the triggers and the flush.
+//! Storing and loading a TVIEW's propagation plan (ADR 0203): the version check
+//! of a stored document. The plan's types are [`crate::lineage::plan`]'s.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::pg_sys::Oid;
-use serde::{Deserialize, Serialize};
-
-/// The version this library writes. It also reads version 1, a plan without
-/// references, and version 2, one without the columns its rows are linked by
-/// (what the upgrade scripts of earlier releases write before they re-derive);
-/// a plan of any other version is re-derived by `ALTER EXTENSION pg_tviews
-/// UPDATE`, never read.
-pub const PLAN_VERSION: u32 = 3;
+use crate::lineage::plan::{PLAN_VERSION, PlanEmbed, TviewPlan};
 
 /// The oldest version this library reads.
 const OLDEST_READ: u32 = 1;
-
-/// What a TVIEW's definition says about propagating writes to its rows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TviewPlan {
-    pub version: u32,
-    /// The rows come from the branches of a set operation (UNION, INTERSECT,
-    /// EXCEPT): they are recomputed, never patched.
-    #[serde(default)]
-    pub set_operation: bool,
-    /// The TVIEWs it embeds.
-    #[serde(default)]
-    pub embeds: Vec<PlanEmbed>,
-    /// The direct-patch map: `(column of the table holding the identity, data
-    /// key)` for the columns copied into `data` and read nowhere else.
-    #[serde(default)]
-    pub direct: Vec<(String, String)>,
-    /// How a write to each base table maps to its keys (ADR 0157): what the
-    /// statement trigger runs.
-    #[serde(default)]
-    pub tables: Vec<crate::lineage::KeyMapping>,
-    /// The tables whose rows carry the key: what the row trigger reads.
-    #[serde(default)]
-    pub paths: Vec<LocalPath>,
-    /// The output columns a foreign key of the root table proves to hold another
-    /// table's key (`tviews.registry.references` publishes those naming a TVIEW).
-    #[serde(default)]
-    pub references: Vec<crate::lineage::Reference>,
-}
-
-/// Another TVIEW this one embeds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEmbed {
-    pub entity: String,
-    /// The output columns of this TVIEW equal to the child's `pk_<child>`, one
-    /// per read of the child: the parents of a refreshed child row are the rows
-    /// holding its key in one of them.
-    pub lookups: Vec<String>,
-    pub kind: crate::lineage::EmbedKind,
-    /// Where the child's document lands in `data` (empty for a scalar embed).
-    #[serde(default)]
-    pub path: Vec<String>,
-}
-
-/// A table whose changed row holds a key of the TVIEW in `initial_col`: the
-/// table holding the identity (`root`), a table joined on the key, or a source of
-/// an aggregate TVIEW's group key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalPath {
-    pub source_oid: Oid,
-    pub source_table: String,
-    pub entity_name: String,
-    pub initial_col: String,
-    /// The columns of the table the TVIEW reads: an UPDATE touching none of
-    /// them changes no row. Empty means unknown: every UPDATE refreshes.
-    #[serde(default)]
-    pub source_columns: Vec<String>,
-    /// The table holds the TVIEW's identity: its own rows are the TVIEW's rows.
-    #[serde(default)]
-    pub root: bool,
-    /// The attribute number of `initial_col` when registered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_attnum: Option<i16>,
-}
-
-/// How an UPDATE of a mapped table is written into every TVIEW row it reaches
-/// in one statement: the rows whose `lookup_col` holds the changed
-/// row's key, each changed column in `fields` written at its path in `data`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FanoutPatch {
-    pub lookup_col: String,
-    /// `(source column, path in data)` pairs copied unchanged; a column copied
-    /// to several paths has a pair for each.
-    #[serde(deserialize_with = "fanout_fields")]
-    pub fields: Vec<(String, Vec<String>)>,
-    /// For a table two equalities away, through a table in between: the query
-    /// template from the changed rows' key values (`$1`, `int8[]`) to the
-    /// `lookup_col` values they reach, as `(key, lookup value)` pairs (#228).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<String>,
-}
-
-/// The fields of a fan-out patch. A plan written before nested paths holds a
-/// top-level key where a path now is: it reads as that one-key path.
-fn fanout_fields<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<(String, Vec<String>)>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Path {
-        Keys(Vec<String>),
-        Key(String),
-    }
-    let fields: Vec<(String, Path)> = Vec::deserialize(deserializer)?;
-    Ok(fields
-        .into_iter()
-        .map(|(column, path)| match path {
-            Path::Keys(keys) => (column, keys),
-            Path::Key(key) => (column, vec![key]),
-        })
-        .collect())
-}
 
 impl TviewPlan {
     /// Decode `entity`'s stored plan.
@@ -181,6 +71,8 @@ impl TviewPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lineage::plan::{FanoutPatch, LocalPath};
+    use pgrx::pg_sys::Oid;
 
     #[test]
     fn a_plan_round_trips() {

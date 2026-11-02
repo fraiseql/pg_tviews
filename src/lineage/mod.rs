@@ -27,6 +27,8 @@
 mod analyze;
 mod graph;
 mod identity;
+pub mod plan;
+pub mod reads;
 mod references;
 mod template;
 pub mod walk;
@@ -34,6 +36,7 @@ pub mod walk;
 pub use analyze::*;
 pub use graph::*;
 pub use identity::*;
+pub use plan::{KeyMapping, MappingKind};
 pub use references::*;
 pub use template::*;
 

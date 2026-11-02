@@ -9,8 +9,8 @@
 //! it must neither take a lock nor call SPI.
 
 use crate::catalog::EntityDepGraph;
-use crate::catalog::plan::LocalPath;
 use crate::catalog::{PlanEntry, TviewMeta};
+use crate::lineage::plan::LocalPath;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};

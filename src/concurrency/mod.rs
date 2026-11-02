@@ -158,10 +158,7 @@ pub fn take(pass: &Pass) {
     for op in ops {
         match op {
             pass::Op::Relation { relid, space, mode } => {
-                acquire(
-                    &relation_tag(database, relid, space),
-                    mode.lockmode(),
-                );
+                acquire(&relation_tag(database, relid, space), mode.lockmode());
                 REGISTRY.with_borrow_mut(|r| {
                     for held in mode.held(relid, space) {
                         r.record(held);
@@ -174,10 +171,7 @@ pub fn take(pass: &Pass) {
                 hash,
                 side,
             } => {
-                acquire(
-                    &value_tag(database, relid, hash),
-                    value_mode(side),
-                );
+                acquire(&value_tag(database, relid, hash), value_mode(side));
                 REGISTRY.with_borrow_mut(|r| {
                     r.record(Held::Value {
                         relid,

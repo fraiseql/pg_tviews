@@ -424,7 +424,7 @@ pub fn reading_column(relid: Oid, column: &str) -> TViewResult<Vec<(String, Stri
          JOIN pg_catalog.pg_attribute a ON a.attrelid = r.relid AND a.attnum = r.attnum \
          WHERE r.depth = 0 AND r.relid = $1 AND a.attname = $2 \
          ORDER BY m.entity",
-        super::reads::view_reads_cte(&format!(
+        crate::lineage::reads::view_reads_cte(&format!(
             "SELECT m.view_oid::pg_catalog.oid, m.view_oid::pg_catalog.oid, 0 FROM {} m",
             super::meta_table()
         )),

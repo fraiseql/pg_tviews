@@ -137,7 +137,7 @@ fn pg_tview_trigger_handler<'a>(
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
     let all_paths = crate::cache::cascade_paths(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
-    let paths: Vec<&crate::catalog::plan::LocalPath> = all_paths
+    let paths: Vec<&crate::lineage::plan::LocalPath> = all_paths
         .iter()
         .filter(|p| p.entity_name == served)
         .collect();
@@ -219,7 +219,7 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 /// both.
 fn enqueue_local_keys(
     trigger: &PgTrigger,
-    paths: &[&crate::catalog::plan::LocalPath],
+    paths: &[&crate::lineage::plan::LocalPath],
     changed: Option<&[String]>,
 ) {
     if paths.is_empty() {
@@ -276,7 +276,7 @@ fn enqueue_local_keys(
 /// Enqueue the key a local path reads off one image of the changed row (its
 /// `initial_col`).
 fn follow_local_path(
-    path: &crate::catalog::plan::LocalPath,
+    path: &crate::lineage::plan::LocalPath,
     image: *mut pg_sys::HeapTupleData,
     tupdesc: &PgTupleDesc<'_>,
 ) {
@@ -310,7 +310,7 @@ fn follow_local_path(
 /// cached plan, a raw datum diff, and typed value extraction — no SPI.
 fn try_capture_direct_patch(
     trigger: &PgTrigger,
-    path: &crate::catalog::plan::LocalPath,
+    path: &crate::lineage::plan::LocalPath,
     changed: Option<&[String]>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     if !crate::config::direct_patch_enabled() {

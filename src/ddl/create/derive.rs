@@ -1,10 +1,10 @@
 //! What registration derives from a TVIEW's lineage: its propagation plan (ADR
 //! 0203) and the tables no cascade reaches.
 
-use crate::catalog::plan::{LocalPath, PLAN_VERSION, PlanEmbed, TviewPlan};
 use crate::ddl::uncascaded::Declarations;
 use crate::error::TViewError;
 use crate::error::TViewResult;
+use crate::lineage::plan::{LocalPath, TviewPlan};
 use pgrx::pg_sys;
 
 /// What registration derives from a definition: its lineage, and the plan stored
@@ -62,7 +62,8 @@ pub(crate) fn derive(
     view_oid: pg_sys::Oid,
     declarations: &Declarations,
 ) -> TViewResult<Derivation> {
-    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables)?;
+    let others = crate::catalog::registered::all()?;
+    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &others)?;
     aggregate_embeds(&lineage, entity_name)?;
     let (function_tables, undeclared_functions) =
         crate::ddl::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;
@@ -76,79 +77,13 @@ pub(crate) fn derive(
         Some(keys) => crate::ddl::aggregate::local_paths(entity_name, keys, base_tables, view_oid)?,
         None => local_paths(entity_name, &lineage),
     };
-    let mut key_mappings = lineage.to_json();
-    add_fanout_patches(&mut key_mappings, &lineage);
-    let tables = serde_json::from_value(key_mappings).map_err(|e| TViewError::CatalogError {
-        operation: format!("Derive the key mappings of tv_{entity_name}"),
-        pg_error: e.to_string(),
-    })?;
-    let plan = TviewPlan {
-        version: PLAN_VERSION,
-        set_operation: lineage.set_operation,
-        embeds: lineage
-            .embeds(entity_name)
-            .into_iter()
-            .map(|e| PlanEmbed {
-                entity: e.entity,
-                lookups: e.lookups,
-                kind: e.kind,
-                path: e.path,
-            })
-            .collect(),
-        direct: lineage.direct_fields(),
-        tables,
-        paths,
-        references: lineage.references.clone(),
-    };
+    let plan = crate::lineage::plan::assemble(entity_name, &lineage, paths);
     Ok(Derivation {
         lineage,
         plan,
         base_tables: all_base_tables,
         undeclared_functions,
     })
-}
-
-/// A `mapped` table one equality away from a column of the table holding the
-/// identity, which the TVIEW projects, or two through a table in between, gets a
-/// fan-out patch: an
-/// UPDATE of its columns copied into `data` is written into every TVIEW row with
-/// that column's value. Not for a DISTINCT ON TVIEW, whose row shows its group's
-/// winner, nor for the virtual generated columns a trigger sees as NULL.
-pub(crate) fn add_fanout_patches(
-    key_mappings: &mut serde_json::Value,
-    lineage: &crate::lineage::Lineage,
-) {
-    if lineage.identity.kind == crate::lineage::IdentityKind::DistinctOn || lineage.set_operation {
-        return;
-    }
-    let Some(entries) = key_mappings.as_array_mut() else {
-        return;
-    };
-    for table in &lineage.tables {
-        let (Some((own, _)), Some((lookup_col, fields))) = (&table.hop, &table.fanout) else {
-            continue;
-        };
-        let fields: Vec<(String, Vec<String>)> = fields
-            .iter()
-            .filter(|(col, _)| !table.virtual_reads.contains(col))
-            .cloned()
-            .collect();
-        if fields.is_empty() {
-            continue;
-        }
-        let fanout = crate::catalog::plan::FanoutPatch {
-            lookup_col: lookup_col.clone(),
-            fields,
-            via: table.via.clone(),
-        };
-        if let Some(entry) = entries
-            .iter_mut()
-            .find(|e| e["relid"].as_u64() == Some(u64::from(table.relid)))
-        {
-            entry["key_col"] = own.clone().into();
-            entry["fanout"] = serde_json::to_value(&fanout).unwrap_or_default();
-        }
-    }
 }
 
 /// One local path per local table: the key is the table's `column`, read off the

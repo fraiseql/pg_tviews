@@ -444,7 +444,7 @@ mod tests {
     /// A parent `TviewMeta` whose plan embeds `child` once.
     fn parent_meta(child: &str, kind: EmbedKind, path: &[&str]) -> TviewMeta {
         let mut meta = TviewMeta::default();
-        meta.plan.embeds.push(crate::catalog::plan::PlanEmbed {
+        meta.plan.embeds.push(crate::lineage::plan::PlanEmbed {
             entity: child.to_string(),
             lookups: vec![format!("{child}_pk")],
             kind,
