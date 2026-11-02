@@ -1,4 +1,4 @@
--- Writers run at READ COMMITTED (decision D1 of the 2026-11 architecture wave).
+-- Writers run at READ COMMITTED (docs/concurrency.md, ADR 0207).
 --
 -- A transaction snapshot cannot see what a writer waited for, so pg_tviews cannot
 -- keep a TVIEW fresh from a REPEATABLE READ or SERIALIZABLE writer without failing

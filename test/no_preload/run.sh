@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run test/no_preload/refused.sql against a throwaway cluster, restarted between its
-# phases with and without pg_tviews in shared_preload_libraries (pg_tviews and
+# steps with and without pg_tviews in shared_preload_libraries (pg_tviews and
 # jsonb_delta must be installed for $PGBIN).
 #
 #   PGBIN=/usr/lib/postgresql/18/bin test/no_preload/run.sh
@@ -20,22 +20,22 @@ trap cleanup EXIT
 
 "$PGBIN/initdb" -D "$dir/data" -U postgres -A trust >/dev/null
 
-# phase <name> <shared_preload_libraries>
-phase() {
+# step <name> <shared_preload_libraries>
+step() {
     "$PGBIN/pg_ctl" -D "$dir/data" -m fast stop >/dev/null 2>&1 || true
     "$PGBIN/pg_ctl" -D "$dir/data" \
         -o "-p $PORT -k $dir -c listen_addresses='' -c shared_preload_libraries='$2'" \
         -l "$dir/server.log" -w start >/dev/null
     local out
     out="$("$PGBIN/psql" -X -h "$dir" -p "$PORT" -U postgres -d postgres \
-        -v ON_ERROR_STOP=1 -v phase="$1" -f "$here/refused.sql" 2>&1)" || {
+        -v ON_ERROR_STOP=1 -v step="$1" -f "$here/refused.sql" 2>&1)" || {
         echo "$out"
-        echo "FAIL: phase $1, see above"
+        echo "FAIL: step $1, see above"
         exit 1
     }
     grep -q "no-preload $1: PASS" <<<"$out" || { echo "$out"; exit 1; }
 }
-phase install ''
-phase setup pg_tviews
-phase unloaded ''
+step install ''
+step setup pg_tviews
+step unloaded ''
 echo "no-preload: PASS"

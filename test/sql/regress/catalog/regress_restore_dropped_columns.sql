@@ -1,5 +1,5 @@
 -- A restored database keeps refreshing its TVIEWs when a base table had dropped
--- columns (architecture review A2).
+-- columns (docs/operations/disaster-recovery.md).
 --
 -- The stored plan names columns by attribute number ({c:<relid>:<attnum>},
 -- `attnums`, `links`, `initial_attnum`, the read sets' `attnum`). A table with

@@ -1,5 +1,5 @@
 -- A transaction that suspended refresh, wrote, and commits implicitly fails with
--- 55000 (architecture review A1).
+-- 55000 (docs/reference/api.md, suspending refresh).
 --
 -- An explicit COMMIT while suspended catches up first (the ProcessUtility hook
 -- refreshes what the suspended writes touched). An implicit commit reaches no hook:

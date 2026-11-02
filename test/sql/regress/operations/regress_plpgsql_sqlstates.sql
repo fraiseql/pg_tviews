@@ -1,5 +1,5 @@
 -- The extension's PL/pgSQL keeps the SQLSTATE of an error it cannot handle
--- (architecture review A3).
+-- (scripts/check-plpgsql-handlers.sh keeps it so).
 --
 -- Two handlers caught every error: the cleanup after a dependent drop turned it
 -- into a WARNING and the DROP committed with the TVIEW half deregistered;

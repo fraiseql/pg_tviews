@@ -1,4 +1,4 @@
--- An aggregate TVIEW's paths come from its query tree (architecture review A8).
+-- An aggregate TVIEW's paths come from its query tree (ADR 0203).
 --
 -- The declared group keys named each source table by its bare name, looked up
 -- among the view's tables with LIMIT 1, so two tables of one name in two schemas

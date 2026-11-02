@@ -1,4 +1,4 @@
--- The settings (ADR 0220, decision D11 of the 2026-11 architecture review): five a
+-- The settings (ADR 0220): five a
 -- user decides; hidden and superuser-only, three diagnostic switches and the queue
 -- bound (kept so its error can be tested); nothing else. Every other
 -- limit is a constant named by its error. A removed or misspelled pg_tviews.*

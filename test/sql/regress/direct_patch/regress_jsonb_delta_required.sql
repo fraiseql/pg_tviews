@@ -1,5 +1,5 @@
--- jsonb_delta is a required dependency (decision D5 of the 2026-11 architecture
--- wave): one mode, in which writes always patch documents in place.
+-- jsonb_delta is a required dependency (docs/getting-started/installation.md): one
+-- mode, in which writes always patch documents in place.
 --
 -- CREATE EXTENSION pg_tviews without jsonb_delta fails (PostgreSQL's "required
 -- extension is not installed"), and installs it with CASCADE; jsonb_delta cannot be

@@ -37,7 +37,7 @@ macro_rules! removed_symbol {
     };
 }
 
-// jsonb_delta is required (P08): nothing checks for it.
+// jsonb_delta is required: nothing checks for it.
 removed_symbol!(
     pg_tviews_check_jsonb_delta_wrapper,
     pg_finfo_pg_tviews_check_jsonb_delta_wrapper,

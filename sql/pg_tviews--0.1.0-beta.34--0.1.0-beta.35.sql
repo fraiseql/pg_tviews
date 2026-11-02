@@ -4,7 +4,7 @@
 -- statements here (docs/development/extension-versioning.md). Released scripts are
 -- never edited.
 
--- The public surface (ADR 0211, D8 of the 2026-11 review): functions are
+-- The public surface (ADR 0211): functions are
 -- pg_tviews_<verb>, relations nouns; functions acting on every TVIEW end in _all and
 -- are an operator's; overlapping functions are folded. No aliases: the old names go.
 -- Renames come first, so the definitions below name the new ones.

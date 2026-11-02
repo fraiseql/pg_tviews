@@ -1,5 +1,5 @@
--- What pg_tviews relies on jsonb_delta's patch functions to do (decision D5 of the
--- 2026-11 architecture wave: jsonb_delta is a required dependency). The own-row
+-- What pg_tviews relies on jsonb_delta's patch functions to do (jsonb_delta is a
+-- required dependency). The own-row
 -- patch calls jsonb_smart_patch_scalar (a top-level merge), the chained patch of
 -- an embedded document jsonb_smart_patch_nested (a merge at a path). A jsonb_delta
 -- release that changes any of these fails here.

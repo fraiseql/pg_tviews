@@ -1,12 +1,12 @@
 -- pg_tviews requires shared_preload_libraries: there is no mode without its hooks,
--- its shared statistics and its rebuild worker. run.sh calls this file in phases:
+-- its shared statistics and its rebuild worker. run.sh calls this file in steps:
 --
 --   install    (no preload)   CREATE EXTENSION fails with 55000 and the hint;
 --   setup      (preloaded)    a TVIEW is created;
 --   unloaded   (no preload)   a write to its base table fails with 55000, and so do
 --                             the functions: nothing runs half-installed.
 --
---   test/no_preload/run.sh   (restarts a throwaway cluster between phases)
+--   test/no_preload/run.sh   (restarts a throwaway cluster between steps)
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -18,14 +18,14 @@ CREATE OR REPLACE FUNCTION pg_temp.outcome(stmt text) RETURNS text LANGUAGE plpg
 BEGIN EXECUTE stmt; RETURN 'ok';
 EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM; END $$;
 
-\if :{?phase}
+\if :{?step}
 \else
-    \echo 'no-preload FAIL: run through run.sh (phase not set)'
+    \echo 'no-preload FAIL: run through run.sh (step not set)'
     \quit
 \endif
 
-SELECT :'phase' = 'install' AS install, :'phase' = 'setup' AS setup,
-       :'phase' = 'unloaded' AS unloaded \gset
+SELECT :'step' = 'install' AS install, :'step' = 'setup' AS setup,
+       :'step' = 'unloaded' AS unloaded \gset
 
 \if :install
     SELECT pg_temp.must(current_setting('shared_preload_libraries') NOT LIKE '%pg_tviews%',
