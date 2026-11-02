@@ -17,7 +17,7 @@ while IFS=: read -r file line _; do
     continue
   fi
   bad+="$file:$line"$'\n'
-done < <(grep -rnE 'WHEN OTHERS THEN' src --include='*.rs')
+done < <(grep -rnE 'WHEN OTHERS THEN' src sql/install --include='*.rs' --include='*.sql')
 if [[ -n "$bad" ]]; then
   echo "PL/pgSQL handlers that swallow every error (re-raise, or say why above the EXCEPTION line):"
   printf '%s' "$bad"

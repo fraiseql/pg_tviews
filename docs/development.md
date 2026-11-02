@@ -199,7 +199,7 @@ info!("Query result: {:?}", result);
 ```
 src/
 ├── lib.rs              # Extension entry point
-├── install_sql.rs      # Install SQL: catalog tables, views, triggers
+├── install_sql.rs      # Includes sql/install/*.sql: catalog tables, views, triggers
 ├── catalog/            # pg_tview_meta rows and their propagation plan (plan.rs)
 ├── lineage/            # Analysis of a backing view's query tree (walk/ reads the nodes)
 ├── ddl/                # pg_tviews_create / create_or_replace / drop / rename
