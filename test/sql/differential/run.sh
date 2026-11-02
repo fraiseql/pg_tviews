@@ -9,6 +9,9 @@
 #
 # N statements per seed (default 60), SEEDS a space-separated list (default "1 2 3").
 # A divergence prints the statement and the rows that differ, and fails the run.
+#
+# MODES (test/lib/modes.sh) runs every seed once per mode, each checked against the
+# views on its own: e.g. MODES="$MODES_ALL" for the patch and cache switches off.
 
 set -u
 PGHOST="${PGHOST:-localhost}"
@@ -17,6 +20,9 @@ PGUSER="${PGUSER:-postgres}"
 export PGHOST PGPORT PGUSER
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../lib/modes.sh
+source "$here/../../lib/modes.sh"
+check_modes
 n="${1:-60}"
 seeds="${2:-1 2 3}"
 db="pg_tviews_differential_$$"
@@ -25,26 +31,31 @@ db="pg_tviews_differential_$$"
 xfail="${HARNESS_XFAIL-}"
 
 failed=0
-for seed in $seeds; do
-  psql -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1
-  psql -d postgres -qc "CREATE DATABASE $db" >/dev/null || { echo "ERROR: cannot create $db"; exit 2; }
-  psql -d postgres -qc "ALTER DATABASE $db SET search_path = \"\$user\", public, tviews" >/dev/null
-  out="$(mktemp)"
-  if psql -d "$db" -X -q -v ON_ERROR_STOP=1 -v xfail="$xfail" -f "$here/schema.sql" >"$out" 2>&1 \
-     && psql -d "$db" -X -q -v ON_ERROR_STOP=1 >>"$out" 2>&1 <<SQL
+for mode in $MODES; do
+  PGOPTIONS="$(mode_options "$mode")"
+  export PGOPTIONS
+  for seed in $seeds; do
+    psql -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1
+    psql -d postgres -qc "CREATE DATABASE $db" >/dev/null || { echo "ERROR: cannot create $db"; exit 2; }
+    psql -d postgres -qc "ALTER DATABASE $db SET search_path = \"\$user\", public, tviews" >/dev/null
+    out="$(mktemp)"
+    if psql -d "$db" -X -q -v ON_ERROR_STOP=1 -v xfail="$xfail" -f "$here/schema.sql" >"$out" 2>&1 \
+       && psql -d "$db" -X -q -v ON_ERROR_STOP=1 >>"$out" 2>&1 <<SQL
 SET client_min_messages TO WARNING;
 SET harness.xfail = '$xfail';
 SELECT setseed(1.0 / ($seed + 1)) \\g /dev/null
 SELECT s FROM harness_script($n) s \\gexec
 SQL
-  then
-    echo "PASS  seed $seed ($n statements)"
-  else
-    echo "FAIL  seed $seed: $(grep -E 'ERROR' "$out" | head -1)"
-    failed=$((failed+1))
-  fi
-  grep -E 'XFAIL' "$out" | sed 's/^.*WARNING: */      /'
-  rm -f "$out"
+    then
+      echo "PASS  seed $seed [$mode] ($n statements)"
+    else
+      echo "FAIL  seed $seed [$mode]: $(grep -E 'ERROR' "$out" | head -1)"
+      failed=$((failed+1))
+    fi
+    grep -E 'XFAIL' "$out" | sed 's/^.*WARNING: */      /'
+    rm -f "$out"
+  done
 done
+unset PGOPTIONS
 psql -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1
 [[ "$failed" -eq 0 ]]

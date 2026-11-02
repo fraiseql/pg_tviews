@@ -21,6 +21,9 @@
 #   values  autocommit single-row writes to columns no TVIEW joins, filters or
 #           groups by, at READ COMMITTED: no transaction may fail at all (#263)
 #
+# MODES (test/lib/modes.sh) runs every seed once per mode, e.g. MODES="$MODES_ALL"
+# for the patch and cache switches off.
+#
 # PG_CONFIG names pgbench's pg_config (default the one on PATH). KEEP=1 keeps the
 # database of a failed seed (named in the output) for inspection.
 
@@ -32,6 +35,9 @@ export PGHOST PGPORT PGUSER
 PG_CONFIG="${PG_CONFIG:-pg_config}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../lib/modes.sh
+source "$here/../../lib/modes.sh"
+check_modes
 seconds="${1:-60}"
 seeds="${2:-1}"
 clients="${3:-8}"
@@ -53,56 +59,61 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 failed=0
-for seed in $seeds; do
-  psql -d postgres -qc "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null || exit 2
-  psql -d postgres -qc "ALTER DATABASE $db SET search_path = \"\$user\", public, tviews" >/dev/null
-  if ! psql -d "$db" -X -q -v ON_ERROR_STOP=1 -v xfail= \
-         -f "$here/../../sql/differential/schema.sql" -f "$here/fuzz.sql" >"$work/load.log" 2>&1; then
-    echo "ERROR: could not load the schema:"; grep -m3 ERROR "$work/load.log"; exit 2
-  fi
-
-  "$pgbench" -n -M simple -c "$clients" -j "$clients" -T "$seconds" --random-seed="$seed" \
-    --max-tries=1 --failures-detailed --verbose-errors "${levels[@]}" -D harness="${MIX:-50}" -f "$script" "$db" >"$work/pgbench.log" 2>&1 &
-  bench=$!
-  checks=0
-  : >"$work/stale.log"
-  while kill -0 "$bench" 2>/dev/null; do
-    diff="$(psql -d "$db" -AtX -q -c "BEGIN ISOLATION LEVEL REPEATABLE READ" \
-              -c "SELECT fuzz_check(true)" -c "COMMIT" 2>&1)"
-    checks=$((checks + 1))
-    [[ -z "$diff" ]] || echo "check $checks:$diff" >>"$work/stale.log"
-  done
-  wait "$bench"
-  final="$(psql -d "$db" -AtX -c "SELECT fuzz_check(false)" 2>&1)"
-  [[ -z "$final" ]] || echo "final check:$final" >>"$work/stale.log"
-
-  log="$work/pgbench.log"
-  number() { sed -n "s/^number of $1: \([0-9]*\).*/\1/p" "$log" | head -1; }
-  done_txns=$(number "transactions actually processed")
-  failures=$(number "failed transactions")
-  serialization=$(number "serialization failures")
-  deadlocks=$(number "deadlock failures")
-  aborted=$(grep -cE "^client [0-9]+ aborted|aborted in command" "$log")
-  verdict=PASS
-  if [[ -s "$work/stale.log" ]]; then
-    verdict="FAIL (stale)"
-  elif [[ "$aborted" -gt 0 || -z "$done_txns" ]]; then
-    verdict="FAIL (client error)"
-  elif [[ "$mode" == values && "${failures:-1}" -ne 0 ]]; then
-    verdict="FAIL (a value-only write failed)"
-  fi
-  echo "$verdict  seed $seed: ${done_txns:-?} transactions, ${failures:-?} failed" \
-       "(${serialization:-?} serialization, ${deadlocks:-?} deadlocks), $checks checks"
-  if [[ "$verdict" != PASS ]]; then
-    failed=$((failed + 1))
-    if [[ "${KEEP:-}" == 1 ]]; then
-      kept="${db}_seed$seed"
-      psql -d postgres -qc "ALTER DATABASE $db RENAME TO $kept" && echo "      kept database $kept"
+for mode in $MODES; do
+  PGOPTIONS="$(mode_options "$mode")"
+  export PGOPTIONS
+  for seed in $seeds; do
+    psql -d postgres -qc "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null || exit 2
+    psql -d postgres -qc "ALTER DATABASE $db SET search_path = \"\$user\", public, tviews" >/dev/null
+    if ! psql -d "$db" -X -q -v ON_ERROR_STOP=1 -v xfail= \
+           -f "$here/../../sql/differential/schema.sql" -f "$here/fuzz.sql" >"$work/load.log" 2>&1; then
+      echo "ERROR: could not load the schema:"; grep -m3 ERROR "$work/load.log"; exit 2
     fi
-    head -20 "$work/stale.log"
-    grep -E "aborted|ERROR" "$log" | grep -vE "deadlock detected|could not serialize" | head -10
-    [[ "$mode" == values ]] && grep -E "ERROR" "$log" | head -5
-  fi
+
+    "$pgbench" -n -M simple -c "$clients" -j "$clients" -T "$seconds" --random-seed="$seed" \
+      --max-tries=1 --failures-detailed --verbose-errors "${levels[@]}" -D harness="${MIX:-50}" -f "$script" "$db" >"$work/pgbench.log" 2>&1 &
+    bench=$!
+    checks=0
+    : >"$work/stale.log"
+    while kill -0 "$bench" 2>/dev/null; do
+      diff="$(psql -d "$db" -AtX -q -c "BEGIN ISOLATION LEVEL REPEATABLE READ" \
+                -c "SELECT fuzz_check(true)" -c "COMMIT" 2>&1)"
+      checks=$((checks + 1))
+      [[ -z "$diff" ]] || echo "check $checks:$diff" >>"$work/stale.log"
+    done
+    wait "$bench"
+    final="$(psql -d "$db" -AtX -c "SELECT fuzz_check(false)" 2>&1)"
+    [[ -z "$final" ]] || echo "final check:$final" >>"$work/stale.log"
+
+    log="$work/pgbench.log"
+    number() { sed -n "s/^number of $1: \([0-9]*\).*/\1/p" "$log" | head -1; }
+    done_txns=$(number "transactions actually processed")
+    failures=$(number "failed transactions")
+    serialization=$(number "serialization failures")
+    deadlocks=$(number "deadlock failures")
+    aborted=$(grep -cE "^client [0-9]+ aborted|aborted in command" "$log")
+    verdict=PASS
+    if [[ -s "$work/stale.log" ]]; then
+      verdict="FAIL (stale)"
+    elif [[ "$aborted" -gt 0 || -z "$done_txns" ]]; then
+      verdict="FAIL (client error)"
+    elif [[ "$mode" == values && "${failures:-1}" -ne 0 ]]; then
+      verdict="FAIL (a value-only write failed)"
+    fi
+    echo "$verdict  seed $seed [$mode]: ${done_txns:-?} transactions, ${failures:-?} failed" \
+         "(${serialization:-?} serialization, ${deadlocks:-?} deadlocks), $checks checks"
+    if [[ "$verdict" != PASS ]]; then
+      failed=$((failed + 1))
+      if [[ "${KEEP:-}" == 1 ]]; then
+        kept="${db}_seed${seed}_$(tr -c "a-z0-9\n" _ <<<"$mode")"
+        psql -d postgres -qc "ALTER DATABASE $db RENAME TO $kept" && echo "      kept database $kept"
+      fi
+      head -20 "$work/stale.log"
+      grep -E "aborted|ERROR" "$log" | grep -vE "deadlock detected|could not serialize" | head -10
+      [[ "$mode" == values ]] && grep -E "ERROR" "$log" | head -5
+    fi
+  done
 done
+unset PGOPTIONS
 psql -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1
 [[ "$failed" -eq 0 ]]
