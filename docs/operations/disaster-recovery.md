@@ -190,6 +190,16 @@ SELECT * FROM pg_tviews_health_check();
 SELECT * FROM pg_tviews_rebuild_all();
 ```
 
+**What the restore does to the catalog.** `pg_dump` dumps `tviews.pg_tview_meta`; as
+each row is restored, a trigger rebinds its stored plan to the restored database:
+tables by their qualified names (their OIDs differ), columns by their names (a table
+that had dropped columns comes back without their holes, so its column numbers
+differ). A table or column the plan names that the restored database lacks fails the
+restore with 42P01 or 42703. The trigger never re-derives a plan: it runs while the
+data section loads, before `pg_dump` creates the triggers. `pg_tviews_health_check()`
+reports any column number that does not match its name (component `columns`);
+`SELECT * FROM tviews.pg_tviews_reregister_all()` re-derives every plan by hand.
+
 ## Emergency Procedures
 
 ### Complete System Reset
