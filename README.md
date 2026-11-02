@@ -189,7 +189,7 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔍 Smart Dependency Detection**: Automatically analyzes SQL to find source tables and relationships
 - **🎯 Surgical Updates**: Updates only affected rows—never full table scans
 - **🔄 Transactional Consistency**: Refresh happens atomically within your transaction
-- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit (`READ COMMITTED`), or one fails with a retryable `40001` (`REPEATABLE READ`, `SERIALIZABLE`). See [Concurrency](docs/concurrency.md)
+- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit; writers run at `READ COMMITTED` (other levels are refused with `0A000`). See [Concurrency](docs/concurrency.md)
 - **📊 Cascade Propagation**: Automatically handles multi-level view dependencies
 
 ### High Performance

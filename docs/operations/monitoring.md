@@ -160,8 +160,7 @@ ORDER BY l.granted, l.pid;
 
 In a session, `pg_tviews_queue_stats()` counts the transaction's `value_locks`,
 `value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`. Many waits on a
-hot value are expected; deadlocks (`40P01`) and, under `REPEATABLE READ`,
-serialization failures (`40001`) are retried by the application.
+hot value are expected; deadlocks (`40P01`) are retried by the application.
 
 ## Availability
 

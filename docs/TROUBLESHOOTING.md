@@ -106,11 +106,12 @@ SELECT tviews.pg_tviews_reregister('tv_post');
 SELECT * FROM tviews.pg_tviews_health_check() WHERE component = 'plans';
 ```
 
-### `could not serialize access due to concurrent update` (`40001`)
+### `a REPEATABLE READ transaction cannot write to a table TVIEWs read` (`0A000`)
 
-A `REPEATABLE READ` or `SERIALIZABLE` transaction's refresh would have recomputed a
-TVIEW row from a snapshot older than another writer's committed change. Retry the
-transaction. See [Concurrency](concurrency.md).
+Writers run at `READ COMMITTED`: a transaction at `REPEATABLE READ` or `SERIALIZABLE`
+that writes to a table a TVIEW reads, or refreshes TVIEWs, is refused before it writes.
+Run it at `READ COMMITTED`; keep rules spanning rows with constraints and
+`SELECT … FOR UPDATE`. See [Concurrency](concurrency.md).
 
 ### `permission denied` (`42501`)
 
