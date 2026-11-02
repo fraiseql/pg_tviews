@@ -172,9 +172,7 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             crate::revision::Installed::Differs(revision) => {
                 Some(crate::revision::remedy(revision).to_string())
             }
-            crate::revision::Installed::Unversioned => {
-                Some("run scripts/migrate-from-0.1.0.sql from the pg_tviews release".to_string())
-            }
+            crate::revision::Installed::Unversioned => Some(crate::revision::RECREATE.to_string()),
             crate::revision::Installed::Unreadable(why) => {
                 error!(
                     "pg_tviews: could not read the catalog revision in database \"{database}\": {why}"

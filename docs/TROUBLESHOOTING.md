@@ -49,7 +49,9 @@ SELECT schema, name FROM tviews.registry WHERE name = 'tv_product';
 ### Every pg_tviews call fails with `55000` after an upgrade
 
 The library and the installed extension are at different versions. Run
-`ALTER EXTENSION pg_tviews UPDATE;` in the database; the hint names the fix.
+`ALTER EXTENSION pg_tviews UPDATE;` in the database; the hint names the fix. An
+install older than the previous release is dropped and recreated instead
+([Upgrading pg_tviews](operations/upgrade.md)).
 
 ## Creating a TVIEW
 

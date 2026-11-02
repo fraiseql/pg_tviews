@@ -87,7 +87,7 @@ and see [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooti
 
 ### Step 8: Restore service
 - [ ] Roll back the change that caused it, if any
-- [ ] Re-register after an upgrade: `SELECT * FROM tviews.pg_tviews_reregister_all();`
+- [ ] Re-register TVIEWs marked `needs_reregister`: `SELECT * FROM tviews.pg_tviews_reregister_all();`
 - [ ] Undo any suspension
 - [ ] Refresh affected TVIEWs: `SELECT tviews.pg_tviews_refresh_all();`
 

@@ -5,9 +5,10 @@ release. This page lists each one, the release that removes it, and what replace
 
 ## Upgrading
 
-`ALTER EXTENSION pg_tviews UPDATE` is supported from **0.1.0-beta.20** on. An older
-install has no upgrade path: drop the TVIEWs, drop and re-create the extension, and
-re-create the TVIEWs.
+`ALTER EXTENSION pg_tviews UPDATE` updates from the previous release only. An older
+install is dropped and recreated: drop the extension and the former TVIEW tables,
+create the extension, and create the TVIEWs again
+([Upgrading pg_tviews](operations/upgrade.md)).
 
 ## Removed
 

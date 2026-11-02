@@ -23,23 +23,24 @@ The library on disk is a different release from the extension catalog of this
 database. Writes to TVIEW base tables and `pg_tviews_*` calls fail until it is fixed;
 reads of `tv_*` tables still work. The hint says which way:
 
-- `run ALTER EXTENSION pg_tviews UPDATE`: the library is newer. Run in this database
+- `run ALTER EXTENSION pg_tviews UPDATE`: the library is the next release. Run in this
+  database
   ```sql
   ALTER EXTENSION pg_tviews UPDATE;
-  SELECT * FROM tviews.pg_tviews_reregister_all();
   ```
 - `the installed extension is newer than this library`: an older package was installed
   over a newer one. Install the package matching `extversion` and restart.
-- `(0.1.0, no revision)` / `a 0.1.0 install cannot be updated in place`: the database
-  has a release up to `0.1.0-beta.19`. Run `scripts/migrate-from-0.1.0.sql` from the new
-  release (README, "Upgrading").
+- `this release updates only from <previous>`: the database has an older release
+  (`(0.1.0, no revision)` for a `0.1.0` install). Drop the extension and create the
+  TVIEWs again ([Upgrading pg_tviews](../../upgrade.md#from-an-older-release)).
 
 The library is shared by every database of the server: each database with pg_tviews
 needs its own `ALTER EXTENSION pg_tviews UPDATE`.
 
 ### Health check warning: TVIEWs `registered by an older release`
-An upgrade script marked them `needs_reregister`. Until re-registered they keep their
-old triggers and may refresh more than needed. Run:
+They are marked `needs_reregister`: their plan and triggers were not re-derived since
+the catalog changed. `ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW, so a
+successful update leaves none. Run:
 ```sql
 SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
@@ -48,8 +49,11 @@ needs its definition fixed for the new release (see the CHANGELOG), then
 `tviews.pg_tviews_create_or_replace(name, query, options)`.
 
 ### `extension "pg_tviews" has no update path from version "X" to version "Y"`
-An intermediate upgrade script is missing from `$(pg_config --sharedir)/extension/`.
-Copy every `pg_tviews--*.sql` from the release tarball. Check what is installed:
+A release ships one update script, from the release before it. Either the installed
+version is older: drop the extension and create the TVIEWs again
+([Upgrading pg_tviews](../../upgrade.md#from-an-older-release)); or the script is
+missing from `$(pg_config --sharedir)/extension/`: copy every `pg_tviews--*.sql` from
+the release tarball. Check what is installed:
 ```sql
 SELECT name, default_version, installed_version
 FROM pg_available_extensions WHERE name = 'pg_tviews';
@@ -64,9 +68,15 @@ FROM pg_available_extensions WHERE name = 'pg_tviews';
 PostgreSQL major version. Install it into `$(pg_config --pkglibdir)` (release tarball,
 or `cargo pgrx install --release --pg-config "$(which pg_config)"`).
 
-### Health check warning: `jsonb_delta not installed`
-pg_tviews works without it, more slowly. If it was installed before, install
-`jsonb_delta` for the new PostgreSQL version and `CREATE EXTENSION jsonb_delta;`.
+### `required extension "jsonb_delta" is not installed`
+pg_tviews requires jsonb_delta: `ALTER EXTENSION pg_tviews UPDATE` and
+`CREATE EXTENSION pg_tviews` refuse without it. Install `jsonb_delta` for this
+PostgreSQL version and `CREATE EXTENSION jsonb_delta;`, then retry.
+
+### `ALTER EXTENSION pg_tviews UPDATE` fails naming a TVIEW
+The update re-derives every TVIEW; this one no longer analyses with the new release
+(see the error and the CHANGELOG). Nothing was changed: fix or drop it, then update
+again.
 
 ### Health check warning: orphaned triggers
 pg_tviews triggers exist on base tables for TVIEWs that are not in the catalog. Typical

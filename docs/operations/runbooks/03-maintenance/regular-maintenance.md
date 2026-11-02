@@ -73,7 +73,8 @@ SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all();
 ```
 
 ### Step 5: Registrations that need refreshing
-After an extension update some TVIEWs may need re-registration:
+`ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW; one still marked
+`needs_reregister` is re-derived by hand:
 ```sql
 SELECT schema, name FROM tviews.registry WHERE needs_reregister;
 SELECT * FROM tviews.pg_tviews_reregister_all();

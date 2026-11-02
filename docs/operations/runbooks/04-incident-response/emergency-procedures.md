@@ -82,7 +82,7 @@ SELECT tviews.pg_tviews_refresh('user');                       -- one entity
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true); -- empty ones
 ```
 
-### Action 4: Repair registration after an upgrade
+### Action 4: Repair registration
 ```sql
 SELECT * FROM tviews.pg_tviews_reregister_all();
 SELECT * FROM tviews.pg_tviews_check_health();

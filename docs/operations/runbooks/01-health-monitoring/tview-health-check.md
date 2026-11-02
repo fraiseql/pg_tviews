@@ -133,8 +133,10 @@ An orphaned trigger named in the message can be dropped with `DROP TRIGGER ... O
 
 ```sql
 ALTER EXTENSION pg_tviews UPDATE;
-SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
+It re-derives every TVIEW. When the hint says `this release updates only from …`, the
+install is older than the previous release: drop and recreate
+([Upgrading pg_tviews](../../upgrade.md#from-an-older-release)).
 
 ### A TVIEW shows old data
 

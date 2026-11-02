@@ -179,9 +179,10 @@ ALTER EXTENSION pg_tviews UPDATE;
 ```
 
 The update re-derives every TVIEW from its stored definition and fails, naming the
-TVIEW, when one no longer analyses. It starts from 0.1.0-beta.20 or later
-([Deprecation warnings](../DEPRECATION_WARNINGS.md)). Until the database is updated,
-pg_tviews functions fail with `55000`, naming the fix.
+TVIEW, when one no longer analyses. It starts from the previous release; an older
+install is dropped and recreated ([Upgrading pg_tviews](../operations/upgrade.md)).
+Until the database is updated, writes to base tables and pg_tviews functions fail with
+`55000`, naming the fix.
 
 ## Uninstalling
 

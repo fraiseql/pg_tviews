@@ -145,9 +145,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and redefines the restore trigger, the registry views and the PL/pgSQL handlers; it renames
   the functions and views above, and drops `pg_tviews_check_jsonb_delta()`,
   `pg_tviews_defines_view()`, `pg_tviews_is_suspended()`, `pg_tviews_debug_queue()` and
-  `tviews.pg_tview_helpers`. It flags every TVIEW for
-  re-registration: run `SELECT * FROM tviews.pg_tviews_reregister_all()` after it (an
-  aggregate's paths now come from its query tree). jsonb_delta must be installed first.
+  `tviews.pg_tview_helpers`. It then re-derives every TVIEW itself, as its owner (an
+  aggregate's paths now come from its query tree; the plan records the row key): a TVIEW
+  that no longer analyses fails the update, named, and nothing changes. jsonb_delta must be
+  installed first (the update refuses otherwise). Measured: 50 ms for 1 TVIEW, 1.2 s for
+  50, 2.2 s for 200.
+- **Only 0.1.0-beta.34 updates to this release.** The older update scripts and
+  `scripts/migrate-from-0.1.0.sql` are gone: an older install is dropped and recreated
+  (`docs/operations/upgrade.md`, the runbook for both). Between the package swap and the
+  update, writes and pg_tviews functions fail with 55000 and the hint naming the fix; a
+  function this release removed raises the same error, never `could not find function`.
 - A writer at REPEATABLE READ or SERIALIZABLE must move to READ COMMITTED before the update.
 - Grant the operator role the new `_all` functions again
   (`pg_tviews_ensure_propagation_indexes_all(boolean)`, `pg_tviews_reset_stats_all()`): the

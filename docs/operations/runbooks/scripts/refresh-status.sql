@@ -16,7 +16,7 @@ FROM tviews.registry r, pg_catalog.jsonb_each_text(r.cascade_kinds) k
 ORDER BY r.schema, r.name, k.key;
 
 \echo ''
-\echo '2. TVIEWs to re-register after an upgrade (SELECT * FROM tviews.pg_tviews_reregister_all())'
+\echo '2. TVIEWs marked needs_reregister (SELECT * FROM tviews.pg_tviews_reregister_all())'
 SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''

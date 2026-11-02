@@ -89,8 +89,8 @@ Then find why the write was not mapped:
    SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
    FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
    ```
-2. **Re-registration pending**: after an extension upgrade, TVIEWs with
-   `needs_reregister` may lack the current triggers.
+2. **Re-registration pending**: TVIEWs with `needs_reregister` may lack the current
+   triggers (`ALTER EXTENSION pg_tviews UPDATE` leaves none).
    ```sql
    SELECT schema, name FROM tviews.registry WHERE needs_reregister;
    SELECT * FROM tviews.pg_tviews_reregister_all();

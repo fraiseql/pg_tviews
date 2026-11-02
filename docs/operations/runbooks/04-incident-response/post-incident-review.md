@@ -71,7 +71,7 @@ Ask "why" from the symptom until you reach a cause you can act on:
 Classify factors as people, process, technology or environment. pg_tviews-specific
 ones to check:
 - [ ] A base table no cascade reaches (`tviews.registry.uncascaded_tables`) under the `warn` policy
-- [ ] Re-registration skipped after an upgrade (`needs_reregister`)
+- [ ] A TVIEW left `needs_reregister` (its plan and triggers not re-derived)
 - [ ] UNLOGGED TVIEWs (`logged: false`) read on a standby or after a crash
 - [ ] Missing indexes, or high fan-out (`tviews.pg_tviews_profile()`)
 - [ ] A health check warning ignored before the incident

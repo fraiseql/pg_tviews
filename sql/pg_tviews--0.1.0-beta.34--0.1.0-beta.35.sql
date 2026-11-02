@@ -587,9 +587,7 @@ BEGIN
 END;
 $$;
 
--- What registration derives changed (an aggregate's paths come from its query
--- tree): pg_tviews_reregister_all() re-derives every plan after the update.
-UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
+
 
 -- jsonb_delta is required (the control file's requires): nothing checks for it.
 DROP FUNCTION @extschema@.pg_tviews_check_jsonb_delta();
@@ -624,3 +622,11 @@ REVOKE EXECUTE ON FUNCTION
 FROM PUBLIC;
 COMMENT ON VIEW @extschema@.stats IS
 'Refresh statistics of each TVIEW since the server started or pg_tviews_reset_stats()';
+
+-- What registration derives changed (an aggregate's paths come from its query
+-- tree, the plan records the row key, the plan readers of older versions are
+-- gone): every TVIEW is re-derived here, inside the update, as its owner. A TVIEW
+-- that no longer analyses fails the update, named with its error; nothing is left
+-- half-migrated.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
+SELECT pg_catalog.count(*) FROM @extschema@.pg_tviews_reregister_all(strict => true);

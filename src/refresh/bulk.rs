@@ -22,11 +22,8 @@ use crate::queue::key::KeyValue;
 ///
 /// The rows refreshed, as parents look them up.
 ///
-/// # Performance
-///
-/// - **Individual refresh**: N queries (1 SELECT + 1 UPDATE per row)
-/// - **Bulk refresh**: 2 queries (1 SELECT + 1 UPDATE for all rows)
-/// - **Speedup**: 100-500× fewer queries (workload-dependent)
+/// One upsert statement per batch of [`super::BATCH_KEYS`] keys, instead of one per
+/// key.
 pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touched> {
     if keys.is_empty() {
         return Ok(super::Touched::default());

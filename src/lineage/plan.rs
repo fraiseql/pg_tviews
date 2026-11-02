@@ -107,34 +107,12 @@ pub struct FanoutPatch {
     pub lookup_col: String,
     /// `(source column, path in data)` pairs copied unchanged; a column copied
     /// to several paths has a pair for each.
-    #[serde(deserialize_with = "fanout_fields")]
     pub fields: Vec<(String, Vec<String>)>,
     /// For a table two equalities away, through a table in between: the query
     /// template from the changed rows' key values (`$1`, `int8[]`) to the
     /// `lookup_col` values they reach, as `(key, lookup value)` pairs (#228).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
-}
-
-/// The fields of a fan-out patch. A plan written before nested paths holds a
-/// top-level key where a path now is: it reads as that one-key path.
-fn fanout_fields<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<(String, Vec<String>)>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Path {
-        Keys(Vec<String>),
-        Key(String),
-    }
-    let fields: Vec<(String, Path)> = Vec::deserialize(deserializer)?;
-    Ok(fields
-        .into_iter()
-        .map(|(column, path)| match path {
-            Path::Keys(keys) => (column, keys),
-            Path::Key(key) => (column, vec![key]),
-        })
-        .collect())
 }
 
 /// How writes to a table map to a registered TVIEW's keys: the stored form of a

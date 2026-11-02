@@ -4,9 +4,6 @@
 use crate::error::{TViewError, TViewResult};
 use crate::lineage::plan::{PLAN_VERSION, PlanEmbed, TviewPlan};
 
-/// The oldest version this library reads.
-const OLDEST_READ: u32 = 1;
-
 impl TviewPlan {
     /// Decode `entity`'s stored plan.
     ///
@@ -19,7 +16,7 @@ impl TviewPlan {
                 operation: format!("Read the propagation plan of tv_{entity}"),
                 pg_error: e.to_string(),
             })?;
-        if !(OLDEST_READ..=PLAN_VERSION).contains(&plan.version) {
+        if plan.version != PLAN_VERSION {
             return Err(TViewError::CatalogError {
                 operation: format!("Read the propagation plan of tv_{entity}"),
                 pg_error: format!(
@@ -228,19 +225,26 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_plan_reads_as_one_without_references() {
-        // What upgrade scripts of earlier releases write before re-deriving.
-        let plan = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap();
+    fn only_the_current_version_reads() {
+        // The update re-derives every plan: an older one is never read.
+        for version in [1, 2, 4] {
+            let err =
+                TviewPlan::decode("post", serde_json::json!({"version": version})).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("plan version {version} is not 3")),
+                "{err}"
+            );
+        }
+        let plan = TviewPlan::decode("post", serde_json::json!({"version": 3})).unwrap();
         assert!(plan.references.is_empty());
-        let err = TviewPlan::decode("post", serde_json::json!({"version": 4})).unwrap_err();
-        assert!(err.to_string().contains("plan version 4 is not 3"), "{err}");
     }
 
     #[test]
-    fn fanout_fields_read_paths_and_top_level_keys() {
+    fn fanout_fields_read_paths() {
         let fanout: FanoutPatch = serde_json::from_value(serde_json::json!({
             "lookup_col": "fk_user",
-            "fields": [["name", "author_name"], ["bio", ["author", "bio"]]]
+            "fields": [["name", ["author_name"]], ["bio", ["author", "bio"]]]
         }))
         .unwrap();
         assert_eq!(
@@ -333,7 +337,7 @@ mod tests {
             TviewPlan::decode("post", other),
             Err(TViewError::CatalogError { .. })
         ));
-        let broken = serde_json::json!({"version": 1, "embeds": 3});
+        let broken = serde_json::json!({"version": 3, "embeds": 3});
         assert!(TviewPlan::decode("post", broken).is_err());
     }
 }

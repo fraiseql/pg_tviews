@@ -161,9 +161,9 @@ pg_tviews is not installed on the target server. Install the release the backup 
 taken with (see `docs/development/extension-versioning.md`, "Release tarball").
 
 ### `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`
-The installed library is a different release from the restored extension catalog. Run
-`ALTER EXTENSION pg_tviews UPDATE;` then `SELECT * FROM tviews.pg_tviews_reregister_all();`
-(see [Extension Updates](../../upgrade/extension/extension-minor-update.md)).
+The installed library is a different release from the restored extension catalog. From
+the previous release, run `ALTER EXTENSION pg_tviews UPDATE;`; from an older one, drop
+and recreate, as the hint says ([Upgrading pg_tviews](../../upgrade.md)).
 
 ### A TVIEW is empty after the restore
 It is UNLOGGED and the restore did not carry its rows (physical restore, crash, or

@@ -14,7 +14,8 @@ rollback, "no breaking changes") are wrong for the current releases. Do not foll
   own row, fan-out patch) and `jsonb_smart_patch_nested` (a child's patch under the path
   a parent embeds it at). See [architecture.md](../../architecture.md#patching-with-jsonb_delta).
 - It cannot be dropped while pg_tviews is installed.
-- Upgrading pg_tviews itself: `ALTER EXTENSION pg_tviews UPDATE` from 0.1.0-beta.20 on
-  ([../DEPRECATION_WARNINGS.md](../DEPRECATION_WARNINGS.md),
+- Upgrading pg_tviews itself: `ALTER EXTENSION pg_tviews UPDATE` from the previous
+  release, which refuses without jsonb_delta; an older install is dropped and recreated
+  ([../operations/upgrade.md](../operations/upgrade.md),
   [../development/extension-versioning.md](../development/extension-versioning.md)).
   There is no downgrade script.

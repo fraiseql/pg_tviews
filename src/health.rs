@@ -89,7 +89,10 @@ fn catalog_check() -> (Check, bool) {
         crate::revision::Installed::Unversioned => (
             error(
                 "catalog",
-                "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql",
+                format!(
+                    "the installed extension is a 0.1.0 catalog: {}",
+                    crate::revision::RECREATE
+                ),
             ),
             true,
         ),

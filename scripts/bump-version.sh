@@ -3,7 +3,9 @@
 # (docs/development/extension-versioning.md, "The version is the release"):
 #
 #   - Cargo.toml's version becomes <next>;
-#   - sql/pg_tviews--<released>--<next>.sql is created, holding only a header;
+#   - sql/pg_tviews--<released>--<next>.sql is created, holding only a header and
+#     the closing re-derivation; the previous update script is deleted (a release
+#     updates only from the one before it, docs/operations/upgrade.md);
 #   - README.md's version badge and "Current Version" line name <released>, the
 #     release just tagged.
 #
@@ -24,12 +26,20 @@ git rev-parse -q --verify "refs/tags/v$released" >/dev/null \
 sed -i "0,/^version = \".*\"/s//version = \"$next\"/" Cargo.toml
 
 script="sql/pg_tviews--$released--$next.sql"
+for old in sql/pg_tviews--*--*.sql; do
+  [[ "$old" == "$script" ]] || git rm -q "$old"
+done
 [[ -e "$script" ]] || cat >"$script" <<EOF
 -- pg_tviews $released → $next
 --
 -- Pending upgrade script: a pull request that changes the extension SQL adds its
--- statements here (docs/development/extension-versioning.md). Released scripts are
--- never edited.
+-- statements above the re-derivation (docs/development/extension-versioning.md).
+-- Released scripts are never edited.
+
+-- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
+-- on an older plan.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
+SELECT pg_catalog.count(*) FROM @extschema@.pg_tviews_reregister_all(strict => true);
 EOF
 
 # The badge escapes '-' as '--' (shields.io).
@@ -37,5 +47,5 @@ badge="${released//-/--}"
 sed -i -E "s#(img\.shields\.io/badge/version-)[^)]*(-orange\.svg)#\1${badge}\2#" README.md
 sed -i -E "s#^\*\*Current Version\*\*: \`[^\`]*\` \([^)]*\)#**Current Version**: \`$released\` ($(date +'%B %Y'))#" README.md
 
-echo "Cargo.toml: $released -> $next; created $script; README names $released."
+echo "Cargo.toml: $released -> $next; created $script (older scripts removed); README names $released."
 git --no-pager diff --stat

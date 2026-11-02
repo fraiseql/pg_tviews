@@ -220,8 +220,8 @@ impl Flush {
         Ok(())
     }
 
-    /// Recompute `keys` from the view, one row with a smart patch or several in
-    /// bulk, and queue the parents of the rows touched to recompute too: their
+    /// Recompute `keys` from the view, one row by itself or several in one
+    /// statement, and queue the parents of the rows touched to recompute too: their
     /// child's whole document changed.
     fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();

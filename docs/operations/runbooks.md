@@ -145,13 +145,14 @@ WHERE component IN ('extension', 'catalog', 'reregister');
 
 **Resolution**:
 
-1. `ALTER EXTENSION pg_tviews UPDATE` runs in one transaction: a failure leaves the old
-   version in place. Fix the reported error and run it again.
-2. After a successful update:
-   ```sql
-   SELECT * FROM tviews.pg_tviews_reregister_all();
-   ```
-3. Databases created with 0.1.0 use `scripts/migrate-from-0.1.0.sql`.
+1. `ALTER EXTENSION pg_tviews UPDATE` runs in one transaction and re-derives every
+   TVIEW: a failure, such as a TVIEW that no longer analyses, leaves the old version in
+   place. Fix the reported error and run it again.
+2. `required extension "jsonb_delta" is not installed`: install jsonb_delta, then
+   update.
+3. A release updates only from the release before it. An older install, `0.1.0`
+   included, is dropped and its TVIEWs created again
+   ([Upgrading pg_tviews](upgrade.md#from-an-older-release)).
 4. Scripts: `docs/operations/upgrade/scripts/pre-upgrade-checks.sh` and
    `post-upgrade-validation.sql`. If the problem persists, open an issue with the full
    error, the PostgreSQL version and both pg_tviews versions.

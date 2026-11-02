@@ -1,5 +1,5 @@
 -- pg_tviews post-upgrade validation
--- Run after ALTER EXTENSION pg_tviews UPDATE (and pg_tviews_reregister_all()):
+-- Run after ALTER EXTENSION pg_tviews UPDATE, or after recreating the TVIEWs:
 --   psql -X -v ON_ERROR_STOP=1 -d <database> -f docs/operations/upgrade/scripts/post-upgrade-validation.sql
 --
 -- Read-only, except step 4, which writes nothing either: it compares each TVIEW
@@ -15,7 +15,7 @@ SELECT pg_catalog.current_setting('server_version') AS postgresql,
 SELECT status, message FROM tviews.pg_tviews_check_health() WHERE component = 'catalog';
 
 \echo ''
-\echo '2. TVIEWs still to re-register (run SELECT * FROM tviews.pg_tviews_reregister_all())'
+\echo '2. TVIEWs marked needs_reregister (expect none: the update re-derives every TVIEW)'
 SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''

@@ -158,9 +158,10 @@ Details: [Replication](../operations/replication.md),
 ## Upgrades
 
 Install the new package, restart, then in each database run
-`ALTER EXTENSION pg_tviews UPDATE;` and `SELECT * FROM tviews.pg_tviews_reregister_all();`.
-Until the `UPDATE` runs, writes to base tables fail rather than be served by a
-mismatched library. The full procedure is in [Upgrades](../operations/upgrades.md).
+`ALTER EXTENSION pg_tviews UPDATE;`: it re-derives every TVIEW. Until the `UPDATE`
+runs, writes to base tables fail rather than be served by a mismatched library. A
+release updates from the previous one only; an older install is dropped and recreated.
+The procedures are in [Upgrading pg_tviews](../operations/upgrade.md).
 
 ## Maintenance
 

@@ -6,14 +6,13 @@
 #   test/upgrade/upgrade_check.sh before            # previous release installed
 #   ...stop PostgreSQL, install the commit under test, start...
 #   test/upgrade/upgrade_check.sh after update       # ALTER EXTENSION pg_tviews UPDATE
-#   test/upgrade/upgrade_check.sh after migrate      # scripts/migrate-from-0.1.0.sql
+#   test/upgrade/upgrade_check.sh after recreate     # an older release: drop and recreate
 #
 # Honors PGHOST/PGPORT/PGUSER. Uses the databases pg_tviews_upgrade and
 # pg_tviews_fresh, which it drops and re-creates.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(cd "$here/../.." && pwd)"
 upgraded=pg_tviews_upgrade
 fresh=pg_tviews_fresh
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -32,8 +31,9 @@ after)
     # Every C symbol the previous catalog binds is exported by the new library: a
     # call in the window reaches pg_tviews' code (and its revision error), never
     # PostgreSQL's "could not find function … in file".
+    # An older catalog is dropped, not updated: only the previous release's counts.
     so="${PG_TVIEWS_SO:-$(pg_config --pkglibdir)/pg_tviews.so}"
-    if [[ -f "$so" ]]; then
+    if [[ "$mode" == update && -f "$so" ]]; then
         exported="$(nm -D --defined-only "$so" | awk '{print $NF}')"
         missing="$(psql -X -At -d "$upgraded" -c \
             "SELECT DISTINCT prosrc FROM pg_catalog.pg_proc
@@ -55,12 +55,12 @@ after)
             "SELECT 1 FROM pg_catalog.pg_class WHERE relname = 'tb_event'")" ]] && continue
         if out="$(psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "BEGIN" -c "$write" \
                 -c "ROLLBACK" 2>&1)"; then
-            [[ "$mode" == update ]] || fail "a write succeeded against the 0.1.0 catalog"
+            [[ "$mode" == update ]] || fail "a write succeeded against an older catalog"
             [[ -z "$revision_changed" ]] || fail "$write succeeded in the window"
         else
             grep -q "catalog revision" <<<"$out" || fail "unexpected error for $write: $out"
-            [[ "$mode" != migrate ]] || grep -q "migrate-from-0.1.0.sql" <<<"$out" \
-                || fail "the guard's hint does not name the migration script: $out"
+            [[ "$mode" != recreate ]] || grep -q "DROP EXTENSION pg_tviews CASCADE" <<<"$out" \
+                || fail "the guard's hint does not say to drop and recreate: $out"
             revision_changed=yes
         fi
     done
@@ -68,6 +68,8 @@ after)
         echo "catalog revision unchanged: writes work before ALTER EXTENSION"
     else
         echo "writes refused until the upgrade (row, statement, partition, TRUNCATE)"
+    fi
+    if [[ -n "$revision_changed" && "$mode" == update ]]; then
         # Every function of the old catalog callable without arguments either works
         # or raises pg_tviews' own error.
         for fn in $(psql -X -At -d "$upgraded" -c \
@@ -84,16 +86,56 @@ after)
     fi
 
     case "$mode" in
-    migrate)
-        psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -f "$root/scripts/migrate-from-0.1.0.sql"
+    recreate)
+        # docs/operations/upgrade.md: no update reaches this release from an older
+        # one. Drop the extension and what is left of its TVIEWs, then create them
+        # again from their definitions; the base tables keep their rows.
+        if psql -X -d "$upgraded" -c "ALTER EXTENSION pg_tviews UPDATE" >/dev/null 2>&1; then
+            fail "ALTER EXTENSION UPDATE succeeded from a release without an update path"
+        fi
+        rows="$(psql -X -At -d "$upgraded" -c "SELECT count(*) FROM tb_user")"
+        psql -X -q -d "$upgraded" -v ON_ERROR_STOP=1 <<'SQL'
+SET client_min_messages TO WARNING;
+DROP EXTENSION pg_tviews CASCADE;
+DROP SCHEMA IF EXISTS tviews CASCADE;
+-- What is left of the TVIEWs: their tables, and backing views of releases
+-- that kept them beside the table.
+SELECT format('DROP %s IF EXISTS %I.%I CASCADE',
+              CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END, n.nspname, c.relname)
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname IN ('public', 'app', 'scratch') AND c.relkind IN ('r', 'v')
+   AND (c.relname LIKE 'tv\_%' OR c.relname LIKE 'v\_%') \gexec
+CREATE EXTENSION pg_tviews;
+SQL
+        [[ "$(psql -X -At -d "$upgraded" -c "SELECT count(*) FROM tb_user")" == "$rows" ]] \
+            || fail "dropping the extension changed tb_user"
+        psql -X -q -d "$upgraded" -v ON_ERROR_STOP=1 <<'SQL'
+SET client_min_messages TO WARNING;
+SELECT tviews.pg_tviews_create('tv_user', $$
+    SELECT pk_user, id, jsonb_build_object('name', name, 'bio', bio) AS data FROM tb_user $$);
+SELECT tviews.pg_tviews_create('tv_post', $$
+    SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
+    FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
+UPDATE tb_user SET name = name || '+' WHERE pk_user = 1;
+DO $$ BEGIN
+    IF EXISTS (SELECT pk_post, data FROM tv_post EXCEPT
+               SELECT p.pk_post, jsonb_build_object('title', p.title, 'author', u.data)
+                 FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user) THEN
+        RAISE EXCEPTION 'upgrade check: tv_post stale after the recreate';
+    END IF;
+END $$;
+SQL
+        echo "dropped and recreated: the TVIEWs follow their base tables"
         ;;
     update)
+        start=$(date +%s%N)
         psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE"
-        # Until re-registered, TVIEWs keep refreshing with their old metadata.
-        psql -X -d "$upgraded" -q -f "$here/verify.sql"
-        echo "TVIEWs follow their base tables before re-registration"
-        psql -X -d "$upgraded" -v ON_ERROR_STOP=1 \
-            -c "SELECT * FROM tviews.pg_tviews_reregister_all(strict => true)"
+        echo "ALTER EXTENSION pg_tviews UPDATE took $(( ($(date +%s%N) - start) / 1000000 )) ms"
+        # The update re-derived every TVIEW: none is left to re-register.
+        left="$(psql -X -At -d "$upgraded" -c \
+            "SELECT count(*) FROM tviews.registry WHERE needs_reregister")"
+        [[ "$left" == 0 ]] || fail "$left TVIEW(s) left to re-register after the update"
         # A DISTINCT ON TVIEW is keyed on its DISTINCT ON key (ADR 0169): the
         # unique index on pk_<entity> it had before is gone.
         left="$(psql -X -At -d "$upgraded" -c \
@@ -101,7 +143,7 @@ after)
         [[ "$left" == 0 ]] || fail "$left pk_unique index(es) survived re-registration"
         psql -X -d "$upgraded" -q -f "$here/verify_after.sql"
         ;;
-    *) fail "usage: $0 after update|migrate" ;;
+    *) fail "usage: $0 after update|recreate" ;;
     esac
 
     psql -X -d postgres -qc "DROP DATABASE IF EXISTS $fresh" >/dev/null
@@ -118,12 +160,14 @@ after)
     fi
     echo "catalog identical to a fresh install ($(wc -l <"$tmp/fresh") facts)"
 
-    psql -X -d "$upgraded" -q -f "$here/verify.sql"
-    echo "TVIEWs follow their base tables after the upgrade"
-    psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"
-    echo "backing views are readable by the readers of their TVIEWs"
+    if [[ "$mode" == update ]]; then
+        psql -X -d "$upgraded" -q -f "$here/verify.sql"
+        echo "TVIEWs follow their base tables after the upgrade"
+        psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"
+        echo "backing views are readable by the readers of their TVIEWs"
+    fi
     ;;
 *)
-    fail "usage: $0 before | after update|migrate"
+    fail "usage: $0 before | after update|recreate"
     ;;
 esac

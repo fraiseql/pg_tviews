@@ -84,10 +84,7 @@ pub fn check() {
             ),
             function_name!(),
         )
-        .set_hint(
-            "a 0.1.0 install cannot be updated in place: run scripts/migrate-from-0.1.0.sql \
-             from the pg_tviews release",
-        )
+        .set_hint(RECREATE)
         .report(PgLogLevel::ERROR),
         Installed::Unreadable(why) => pg_sys::panic::ErrorReport::new(
             PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
@@ -103,12 +100,22 @@ pub fn is_current() -> bool {
     MATCHED.get() || in_own_script() || matches!(installed(), Installed::Matches)
 }
 
+/// The revision of the one release this library updates from (0.1.0-beta.34).
+pub const PREVIOUS_REVISION: i32 = 10;
+
+/// What fixes a catalog this library has no update for.
+pub const RECREATE: &str = "this release updates only from 0.1.0-beta.34: DROP EXTENSION \
+     pg_tviews CASCADE, CREATE EXTENSION pg_tviews and create the TVIEWs again \
+     (docs/operations/upgrade.md)";
+
 /// What fixes a catalog of `revision` for this library.
 #[must_use]
 pub const fn remedy(revision: i32) -> &'static str {
     if revision > CATALOG_REVISION {
         "the installed extension is newer than this library: install the pg_tviews package \
          that matches it"
+    } else if revision < PREVIOUS_REVISION {
+        RECREATE
     } else {
         "run ALTER EXTENSION pg_tviews UPDATE"
     }
