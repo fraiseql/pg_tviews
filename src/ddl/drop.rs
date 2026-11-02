@@ -204,7 +204,7 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
 /// When `cascade` is true the generated statement uses `CASCADE` so dependent
 /// objects are removed as well.
 fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
-    let qualified = crate::utils::spi_get_string(&format!(
+    let qualified = crate::utils::spi::get_string(&format!(
         "SELECT quote_ident(n.nspname::text) || '.' || quote_ident(c.relname::text) \
          FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
@@ -230,7 +230,7 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
 /// the registration is all that is left, and any role may remove it.
 fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys::Oid>> {
     let args = [meta.tview_oid, meta.view_oid].map(crate::utils::spi::oid);
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 "SELECT COALESCE((SELECT oid FROM pg_catalog.pg_class WHERE oid = $1), \

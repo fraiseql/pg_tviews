@@ -351,7 +351,7 @@ fn compare_definition(
             "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
         ))?;
     }
-    let (same_view, same_columns) = Spi::connect(|client| {
+    let (same_view, same_columns) = crate::utils::spi::connect(|client| {
         client
             .select(
                 "WITH candidate AS (SELECT 'pg_temp.pg_tviews_candidate'::pg_catalog.regclass AS c) \

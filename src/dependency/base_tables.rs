@@ -49,7 +49,7 @@ fn get_view_oid(view_name: &str, schema: &str) -> TViewResult<pg_sys::Oid> {
         crate::utils::spi::text(view_name),
         crate::utils::spi::text(schema),
     ];
-    Spi::get_one_with_args::<pg_sys::Oid>(
+    crate::utils::spi::one::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
          WHERE c.relname = $1 \

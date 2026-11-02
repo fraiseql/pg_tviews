@@ -142,9 +142,9 @@ impl ManagedIndex {
             return Ok(None);
         }
         let ddl = self.ddl(schema_name, tview_name);
-        crate::utils::spi_run_ddl(&ddl).map_err(|e| TViewError::SpiError {
+        crate::utils::spi::run_ddl(&ddl).map_err(|e| TViewError::SpiError {
             query: ddl.clone(),
-            error: e,
+            error: e.to_string(),
         })?;
         Ok(Some(self.name.clone()))
     }

@@ -6,7 +6,6 @@
 use super::TviewMeta;
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys;
-use pgrx::prelude::*;
 
 /// A TVIEW as named: the schema written, if any, and the entity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +99,7 @@ pub fn resolve(name: &str) -> TViewResult<std::rc::Rc<TviewMeta>> {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn registered_schema(entity: &str) -> TViewResult<Option<String>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 // With its table gone, a TVIEW's schema is the prefix of its backing

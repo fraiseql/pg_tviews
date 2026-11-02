@@ -1,7 +1,7 @@
 //! Storage changes in place, and the rebuild of a TVIEW whose columns change.
 
 use super::Declared;
-use super::{Spi, invalid, pg_sys, spi};
+use super::{invalid, pg_sys, spi};
 use crate::catalog::TviewMeta;
 use crate::ddl::create::{self, Compression, DataStorage, Storage};
 use crate::error::{TViewError, TViewResult};
@@ -10,7 +10,7 @@ use crate::utils::ident;
 /// The table's actual storage, as `tviews.registry` reports it. A TVIEW without
 /// a `data` column stores no document: its `data` settings are `declared`'s.
 pub(super) fn current_storage(entity: &str, declared: &Storage) -> TViewResult<Storage> {
-    let row = Spi::connect(|client| {
+    let row = crate::utils::spi::connect(|client| {
         let row = client
             .select(
                 &format!(
@@ -246,7 +246,7 @@ fn restore_privileges(restore: &[String], tv: &str, view: &str) -> TViewResult<(
 /// names the index when it no longer applies.
 fn recreate_user_indexes(tv_name: &str, indexes: Vec<(String, String)>) -> TViewResult<()> {
     for (index, definition) in indexes {
-        let wrapped = Spi::connect(|client| {
+        let wrapped = crate::utils::spi::connect(|client| {
             client
                 .select(
                     "SELECT pg_catalog.format('DO %L', pg_catalog.format(\
@@ -359,7 +359,7 @@ fn invalid_user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
 /// Indexes a user added to the TVIEW's table (see
 /// [`crate::catalog::indexes::user_index_filter`]), as `(name, definition)`.
 pub(super) fn user_indexes(table: pg_sys::Oid) -> TViewResult<Vec<(String, String)>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut indexes = Vec::new();
         for row in client.select(
             &format!(

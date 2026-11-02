@@ -14,7 +14,6 @@
 use crate::error::{TViewError, TViewResult};
 use crate::lineage::plan::LocalPath;
 use pgrx::pg_sys::Oid;
-use pgrx::prelude::*;
 use std::collections::BTreeMap;
 
 /// Source table name → the column whose value is the group key.
@@ -74,7 +73,7 @@ fn list(found: &[(&str, &str)]) -> String {
 }
 
 fn column_exists(table: Oid, column: &str) -> TViewResult<bool> {
-    Spi::get_one_with_args::<bool>(
+    crate::utils::spi::one::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute \
          WHERE attrelid = $1 AND attname = $2 AND attnum > 0 AND NOT attisdropped)",
         &[

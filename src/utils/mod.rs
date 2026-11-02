@@ -14,104 +14,6 @@ macro_rules! log_debug {
 }
 pub(crate) use log_debug;
 
-/// Execute a DDL statement via SPI in non-atomic mode.
-///
-/// In `PostgreSQL` 18.1 compiled with assertions enabled, calling `SPI_execute()` for DDL
-/// (CREATE VIEW, CREATE TABLE, CREATE TRIGGER, etc.) from within an atomic SPI context
-/// triggers an assertion failure → SIGSEGV.  The fix is two-fold:
-///
-/// 1. Connect via `SPI_connect_ext(SPI_OPT_NONATOMIC)` to open a non-atomic SPI context.
-/// 2. Execute via `SPI_execute_extended()` with `allow_nonatomic = true`, which suppresses
-///    `PostgreSQL`'s internal assertion that DDL cannot run in an atomic transaction context.
-///
-/// Using `SPI_execute()` even after `SPI_connect_ext(SPI_OPT_NONATOMIC)` still fires the
-/// assertion in PG18 assert builds; `SPI_execute_extended` with `allow_nonatomic` is the
-/// correct API for DDL executed from SPI callbacks.
-///
-/// This function is used for all DDL calls issued internally by `pg_tviews_create` and
-/// related functions.
-///
-/// # Errors
-/// Returns an error string if `SPI_connect_ext` or `SPI_execute` fails.
-///
-/// # Safety
-/// Calls raw `PostgreSQL` SPI functions.  Must only be called from a `PostgreSQL` backend.
-pub fn spi_run_ddl(sql: &str) -> Result<(), String> {
-    use std::ffi::CString;
-
-    log_debug!(
-        "spi_run_ddl() called with SQL ({} chars): {}",
-        sql.len(),
-        truncate_chars(sql, 200)
-    );
-
-    let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
-
-    // SAFETY: spi_run_ddl is only called from PostgreSQL backend context where SPI
-    // functions are valid. SPI_connect_ext/SPI_execute_extended/SPI_finish
-    // are thread-local PostgreSQL operations.
-    unsafe {
-        // Atomic, as the caller is (a trigger, a hook, a function called from a
-        // query): only a caller that may itself commit (a procedure) gets a
-        // non-atomic connection, so the DDL can never end its transaction.
-        let nonatomic = pg_sys::SPI_inside_nonatomic_context();
-        #[allow(clippy::cast_possible_wrap)]
-        // Reason: PostgreSQL SPI constants are u32, API takes i32
-        let connect_result = pg_sys::SPI_connect_ext(if nonatomic {
-            pg_sys::SPI_OPT_NONATOMIC as i32
-        } else {
-            0
-        });
-        #[allow(clippy::cast_possible_wrap)]
-        // Reason: PostgreSQL SPI constants are u32, API takes i32
-        if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
-            error!(
-                "spi_run_ddl() FAILED: SPI_connect_ext returned error code: {}",
-                connect_result
-            );
-        }
-
-        let opts = pg_sys::SPIExecuteOptions {
-            read_only: false,
-            allow_nonatomic: nonatomic,
-            tcount: 0,
-            ..pg_sys::SPIExecuteOptions::default()
-        };
-
-        let execute_result =
-            pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
-
-        // Always finish even on error
-        pg_sys::SPI_finish();
-
-        if execute_result < 0 {
-            error!(
-                "spi_run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}",
-                execute_result, sql
-            );
-        }
-    }
-
-    log_debug!("spi_run_ddl() succeeded");
-    Ok(())
-}
-
-/// Safe wrapper for `Spi::get_one::<String>()` that avoids SIGABRT in pgrx 0.16.1.
-///
-/// `Spi::get_one::<String>()` invokes `SPI_getvalue` which returns a `*const c_char`
-/// owned by the SPI memory context. The `String` conversion attempts to free that
-/// pointer after the SPI call returns, causing an abort. This helper keeps the SPI
-/// context alive during value extraction.
-pub fn spi_get_string(query: &str) -> crate::TViewResult<Option<String>> {
-    Spi::connect(|client| {
-        let mut rows = client.select(query, Some(1), &[])?;
-        match rows.next() {
-            Some(row) => Ok(row[1].value::<String>()?),
-            None => Ok(None),
-        }
-    })
-}
-
 /// Utilities: Common Helper Functions and `PostgreSQL` Integration
 ///
 /// This module provides utility functions used throughout `pg_tviews`:
@@ -193,7 +95,7 @@ pub fn qualified_type_name(typid: Oid, typmod: i32) -> String {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn column_types(relid: Oid) -> crate::TViewResult<Vec<(String, String)>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::oid(relid)];
         let mut out = Vec::new();
         for row in client.select(
@@ -244,34 +146,6 @@ pub fn first_time(key: &str) -> bool {
 /// Schema the `pg_tviews` extension is installed in. It needs no quoting.
 pub const fn ext_schema() -> &'static str {
     EXT_SCHEMA
-}
-
-thread_local! {
-    /// Relation → its column names, in order.
-    static COLUMNS: crate::cache::Memo<Oid, Vec<String>> = crate::cache::Memo::new();
-}
-
-/// The column names of relation `rel_oid`, in order (cached per backend). Used
-/// for the column lists of upserts.
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
-    COLUMNS.with(|m| {
-        m.get_or_load(rel_oid, || {
-            crate::cache::watch(&[rel_oid]);
-            Ok(crate::utils::spi::catalog_rows(
-                "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
-                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
-                 ORDER BY a.attnum",
-                &[crate::utils::spi::oid(rel_oid)],
-                |row| row.get::<String>(1),
-            )?
-            .into_iter()
-            .flatten()
-            .collect())
-        })
-    })
 }
 
 /// `text` as an SQL string literal, as `PostgreSQL`'s `quote_literal()` writes it:

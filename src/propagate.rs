@@ -1,7 +1,6 @@
 //! Parent discovery for the flush: the rows of the TVIEWs that embed a changed
 //! TVIEW's rows, found through the lookup columns of their plans.
 
-use pgrx::prelude::*;
 use std::collections::HashMap;
 
 use crate::catalog::KeyType;
@@ -145,7 +144,7 @@ fn find_affected_keys_batch(
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
     // Read-write: a fresh snapshot, which sees what the locks waited for.
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
         for row in crate::utils::spi::kept_update(client, &query, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {

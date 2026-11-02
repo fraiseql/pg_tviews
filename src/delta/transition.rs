@@ -3,7 +3,7 @@
 
 use super::render::key_of;
 use crate::catalog::KeyType;
-use crate::error::{TViewError, TViewResult};
+use crate::error::TViewResult;
 use crate::lineage::DELTA;
 use crate::queue::key::KeyValue;
 use pgrx::datum::DatumWithOid;
@@ -140,19 +140,9 @@ pub(super) fn with_transition_tables<T>(
         .map_err(|e| crate::utils::spi::error("the trigger's table", &e))?
         .oid();
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    Spi::connect_mut(|client| {
-        // SAFETY: inside an AFTER statement trigger the TriggerData is valid; this
-        // registers its transition tables with the SPI connection just opened.
-        let registered = unsafe {
-            pg_sys::SPI_register_trigger_data(std::ptr::from_ref(trigger.trigger_data()).cast_mut())
-        };
-        if registered != pg_sys::SPI_OK_TD_REGISTER.cast_signed() {
-            return Err(TViewError::SpiError {
-                query: "SPI_register_trigger_data".to_string(),
-                error: format!("returned {registered}"),
-            });
-        }
-        f(client, table)
-    })
+    crate::utils::spi::connect_over_transition_tables(
+        std::ptr::from_ref(trigger.trigger_data()).cast_mut(),
+        |client| f(client, table),
+    )
     .map_err(|e| crate::utils::spi::error("a query over the transition tables", &e))
 }

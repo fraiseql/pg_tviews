@@ -29,6 +29,8 @@ jobs:
         run: scripts/check-plan-readers.sh
       - name: Check the lower modules form layers (no dependency cycle)
         run: scripts/check-module-layers.sh
+      - name: Check SPI is reached through src/utils/spi.rs only
+        run: scripts/check-spi-facade.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})

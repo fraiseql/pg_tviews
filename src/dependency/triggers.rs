@@ -175,7 +175,7 @@ fn entity_triggers(
            AND ($2 IS NULL OR t.tgrelid = $2)",
         schema = crate::utils::ext_schema(),
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [
             crate::utils::spi::text(entity),
             crate::utils::spi::oid(table_oid),
@@ -309,7 +309,7 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
         schema = crate::utils::ext_schema(),
         reads = crate::catalog::registered::reads_with_kind_sql(),
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut problems = TriggerProblems::default();
         for row in client.select(&query, None, &[])? {
             if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
@@ -367,9 +367,9 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
                 crate::utils::ext_schema(),
                 spec.function,
             );
-            crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
+            crate::utils::spi::run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
                 operation: format!("Install {} trigger on {qi_table}", spec.function),
-                pg_error: e,
+                pg_error: e.to_string(),
             })?;
         }
         if partitioned && set != TriggerSet::None {
@@ -387,7 +387,7 @@ pub fn install_triggers(plan: &[(pg_sys::Oid, TriggerSet)], tview_entity: &str) 
 /// # Errors
 /// [`TViewError::DefinitionRefused`] (0A000) naming the table, or a catalog error.
 fn refuse_subscribed(entity: &str, table_oid: pg_sys::Oid, qi_table: &str) -> TViewResult<()> {
-    let subscribed = Spi::get_one_with_args::<bool>(
+    let subscribed = crate::utils::spi::one::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s WHERE s.srrelid = $1)",
         &[crate::utils::spi::oid(table_oid)],
     )
@@ -424,7 +424,7 @@ pub fn row_trigger_entities(table: pg_sys::Oid) -> TViewResult<Vec<String>> {
            AND t.tgparentid = 0 AND t.tgnargs = 1 AND t.tgrelid = $1",
         schema = crate::utils::ext_schema(),
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::oid(table)];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -495,7 +495,7 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
                            AND b.proname IN ('{ROW_HANDLER}', '{DELTA_HANDLER}'))",
         schema = crate::utils::ext_schema(),
     );
-    let changes: Vec<Change> = Spi::connect(|client| {
+    let changes: Vec<Change> = crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::regclass(rel)];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -534,9 +534,9 @@ pub fn ensure_partition_triggers(rel: pg_sys::Oid) -> TViewResult<()> {
             spec.function,
             ident::quoted(&entity),
         );
-        crate::utils::spi_run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
+        crate::utils::spi::run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
             operation: format!("Install {} trigger on partition {qi_table}", spec.function),
-            pg_error: e,
+            pg_error: e.to_string(),
         })?;
     }
     Ok(())
@@ -608,16 +608,16 @@ fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResu
         "DROP TRIGGER IF EXISTS {} ON {table}",
         ident::quoted(trigger)
     );
-    crate::utils::spi_run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
+    crate::utils::spi::run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
         operation: format!("Drop trigger {trigger} from {table}"),
-        pg_error: e,
+        pg_error: e.to_string(),
     })
 }
 
 /// Returns `(schema_name, table_name)` for the given OID, both unquoted.
 /// Schema, name and whether `oid` is a partitioned table.
 fn get_table_name(oid: pg_sys::Oid) -> TViewResult<(String, String, bool)> {
-    let names = Spi::connect(|client| {
+    let names = crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::oid(oid)];
         client
             .select(

@@ -138,7 +138,7 @@ fn readers_above(partition: Oid) -> TViewResult<Vec<(String, Oid)>> {
 
 /// The OIDs `sql` returns for `relid` (its `$1`).
 fn oids(sql: &str, relid: Oid) -> TViewResult<Vec<Oid>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut out = Vec::new();
         for row in client.select(sql, None, &[crate::utils::spi::oid(relid)])? {
             out.extend(row.get::<Oid>(1)?);
@@ -184,7 +184,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
     // The owner reads the partition itself, under the partition's own privileges
     // and row security, not the root's: one it cannot read whole is refreshed in
     // full.
-    let readable = Spi::get_one_with_args::<bool>(
+    let readable = crate::utils::spi::one::<bool>(
         "SELECT pg_catalog.has_table_privilege($1, 'SELECT') AND NOT c.relrowsecurity \
          FROM pg_catalog.pg_class c WHERE c.oid = $1",
         &[crate::utils::spi::regclass(partition)],
@@ -211,7 +211,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
     );
     // Read-write: a fresh snapshot, which sees every row committed before the locks.
     let lookup = || {
-        Spi::connect_mut(|client| {
+        crate::utils::spi::connect_mut(|client| {
             let mut keys = Vec::new();
             for row in crate::utils::spi::kept_update(client, &sql, &[])? {
                 keys.extend(key_of(&row, key_type)?);
@@ -225,8 +225,10 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
             &meta,
             mapping,
             |column| {
-                Spi::connect_mut(|client| texts(client, None, &changed_values(&delta, column), &[]))
-                    .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
+                crate::utils::spi::connect_mut(|client| {
+                    texts(client, None, &changed_values(&delta, column), &[])
+                })
+                .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
             },
             lookup,
         )?
@@ -304,13 +306,13 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 &meta,
                 mapping,
                 |column| {
-                    Spi::connect_mut(|client| {
+                    crate::utils::spi::connect_mut(|client| {
                         texts(client, None, &changed_values(&delta, column), &images)
                     })
                     .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
                 },
                 || {
-                    Spi::connect_mut(|client| {
+                    crate::utils::spi::connect_mut(|client| {
                         let mut keys = Vec::new();
                         for row in crate::utils::spi::kept_update(client, &sql, &images)? {
                             keys.extend(key_of(&row, key_type)?);

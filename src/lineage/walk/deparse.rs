@@ -1,7 +1,7 @@
 //! Expressions written back as SQL for the mapping queries, and the functions a level calls.
 
 use super::{
-    Oid, Resolved, Spi, Sql, Walker, collect_functions, cstr, elements, pg_sys, quote_if_needed,
+    Oid, Resolved, Sql, Walker, collect_functions, cstr, elements, pg_sys, quote_if_needed,
     quote_literal, tag, term_sql,
 };
 
@@ -230,7 +230,7 @@ impl Walker<'_> {
             .operators
             .entry(opno.to_u32())
             .or_insert_with(|| {
-                Spi::get_one_with_args::<String>(
+                crate::utils::spi::one::<String>(
                     "SELECT pg_catalog.quote_ident(n.nspname) || '.' || o.oprname \
                      FROM pg_catalog.pg_operator o \
                      JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace \

@@ -58,7 +58,7 @@ impl TviewRelation {
 /// transaction id): it must run on a hot standby.
 fn has_no_rows(qualified: &str) -> TViewResult<bool> {
     let sql = format!("SELECT NOT EXISTS (SELECT 1 FROM {qualified}) AS empty");
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let rows = client.select(&sql, Some(1), &[])?;
         rows.first().get_one::<bool>()
     })

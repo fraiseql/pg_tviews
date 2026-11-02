@@ -6,7 +6,6 @@
 use crate::catalog::TviewMeta;
 use crate::error::{TViewError, TViewResult};
 use crate::utils::ident;
-use pgrx::prelude::*;
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
 /// its owner, and nothing that reads it.
@@ -33,7 +32,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
     }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&format!("TRUNCATE {qi_tv}"))?;
+    crate::utils::spi::run(&format!("TRUNCATE {qi_tv}"), &[])?;
     let inserted = crate::utils::spi::run_counted(&insert)?;
     drop(owner);
     // Rebuilt from its view: its rows can be trusted again.
@@ -62,7 +61,7 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
     }
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&format!("DELETE FROM {qi_tv}"))?;
+    crate::utils::spi::run(&format!("DELETE FROM {qi_tv}"), &[])?;
     let inserted = crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))?;
     crate::queue::affected::record_rebuilt(entity)?;
     Ok(inserted)
@@ -81,7 +80,7 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     crate::concurrency::require_read_committed();
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (_, insert) = rebuild_statements(&owner, entity)?;
-    Spi::run(&insert)?;
+    crate::utils::spi::run(&insert, &[])?;
     crate::queue::affected::record_rebuilt(entity)
 }
 
@@ -101,7 +100,7 @@ fn rebuild_statements(
     })?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let view_columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    let view_columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
     if view_columns.is_empty() {
         return Err(TViewError::CatalogError {
             operation: format!("Get columns for view {qi_view}"),
@@ -137,7 +136,7 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
 
-    let columns = crate::utils::get_view_columns_by_oid(meta.view_oid)?;
+    let columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
     let keys = crate::utils::spi::strings(
         "SELECT a.attname::text FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \

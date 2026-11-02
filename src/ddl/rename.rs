@@ -41,7 +41,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         let new_definition = if let Some(sql) = rewritten {
             sql
         } else {
-            let viewdef: String = Spi::get_one_with_args(
+            let viewdef: String = crate::utils::spi::one(
                 "SELECT pg_get_viewdef($1)",
                 &[crate::utils::spi::oid(view_oid)],
             )
@@ -65,7 +65,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
 }
 
 fn relation_name(relid: Oid) -> TViewResult<String> {
-    Spi::get_one_with_args::<String>(
+    crate::utils::spi::one::<String>(
         "SELECT relname::text FROM pg_class WHERE oid = $1",
         &[crate::utils::spi::oid(relid)],
     )
@@ -82,7 +82,7 @@ fn relation_name(relid: Oid) -> TViewResult<String> {
 /// renamer's `search_path`, as the definition was written under one.
 fn defines_view(candidate: &str, view_oid: Oid) -> bool {
     let _caller = crate::owner::CallerPath::enter();
-    Spi::get_one_with_args::<bool>(
+    crate::utils::spi::one::<bool>(
         &format!(
             "SELECT {}.pg_tviews_defines_view($1, $2)",
             crate::utils::ext_schema()

@@ -60,7 +60,7 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
         crate::utils::ident::quoted(&view_schema),
         crate::utils::ident::quoted(&wanted)
     );
-    let taken = Spi::get_one_with_args::<bool>(
+    let taken = crate::utils::spi::one::<bool>(
         "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
         &[crate::utils::spi::text(qualified.as_str())],
     )
@@ -125,7 +125,7 @@ pub(crate) fn in_extension_schema_for<T>(
         crate::utils::spi::oid(role),
         crate::utils::spi::text(schema),
     ];
-    let (can_create, name) = Spi::get_two_with_args::<bool, String>(
+    let (can_create, name) = crate::utils::spi::two::<bool, String>(
         "SELECT pg_catalog.has_schema_privilege($1, $2, 'CREATE'), \
                 pg_catalog.quote_ident(pg_catalog.pg_get_userbyid($1))",
         &args,
@@ -159,7 +159,7 @@ pub(crate) fn in_extension_schema_for<T>(
 /// Returns an error if the relation does not exist.
 pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
     let args = [crate::utils::spi::oid(oid)];
-    let (name, schema) = Spi::get_two_with_args::<String, String>(
+    let (name, schema) = crate::utils::spi::two::<String, String>(
         "SELECT c.relname::text, n.nspname::text FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1",
         &args,
@@ -187,7 +187,7 @@ const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
 /// # Errors
 /// Returns an error if the lock cannot be taken.
 pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
-    Spi::run_with_args(
+    crate::utils::spi::run(
         "SELECT pg_catalog.pg_advisory_xact_lock($1, pg_catalog.hashtext($2))",
         &[
             crate::utils::spi::int4(REGISTRATION_LOCK_CLASS),

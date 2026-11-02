@@ -1,8 +1,8 @@
 //! `CREATE TABLE tv_* AS`: read from the parse tree and turned into a TVIEW.
 
 use super::{
-    CStr, Intercept, PgLogLevel, PgSqlErrorCode, Spi, TViewError, TViewResult, function_name,
-    pg_guard, pg_sys,
+    CStr, Intercept, PgLogLevel, PgSqlErrorCode, TViewError, TViewResult, function_name, pg_guard,
+    pg_sys,
 };
 
 /// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n,
@@ -52,7 +52,7 @@ impl CtasTarget {
             crate::utils::spi::text(schema.as_str()),
             crate::utils::spi::text(self.table.as_str()),
         ];
-        Spi::connect(|client| {
+        crate::utils::spi::connect(|client| {
             client
                 .select(
                     "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \

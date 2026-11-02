@@ -10,7 +10,6 @@ use crate::error::TViewResult;
 use crate::utils::ident;
 use crate::utils::log_debug;
 use pgrx::pg_sys;
-use pgrx::prelude::Spi;
 
 /// Make a TVIEW's table keyed on its identity at re-registration (ADR 0169): drop
 /// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had, and
@@ -23,12 +22,12 @@ pub(crate) fn key_table_on_identity(
 ) -> TViewResult<()> {
     let table = relation_oid(schema_name, tview_name)?;
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
-    let catalog = |e: pgrx::spi::Error| TViewError::CatalogError {
+    let catalog = |e: TViewError| TViewError::CatalogError {
         operation: format!("Read the keys of {qualified}"),
         pg_error: e.to_string(),
     };
     let pk_unique = index_name(tview_name, "pk_unique");
-    let leftover = Spi::get_one_with_args::<bool>(
+    let leftover = crate::utils::spi::one::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
                         JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid \
                         WHERE i.indrelid = $1 AND c.relname = $2)",
@@ -44,12 +43,12 @@ pub(crate) fn key_table_on_identity(
             ident::quoted(schema_name),
             ident::quoted(&pk_unique)
         );
-        crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
+        crate::utils::spi::run_ddl(&sql).map_err(|e| TViewError::SpiError {
             query: sql,
-            error: e,
+            error: e.to_string(),
         })?;
     }
-    let key = Spi::get_one_with_args::<Vec<String>>(
+    let key = crate::utils::spi::one::<Vec<String>>(
         "SELECT pg_catalog.array_agg(a.attname::text ORDER BY a.attnum) \
          FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey) \
@@ -65,9 +64,9 @@ pub(crate) fn key_table_on_identity(
                 "ALTER TABLE {qualified} ADD PRIMARY KEY ({})",
                 ident::quoted(identity)
             );
-            crate::utils::spi_run_ddl(&sql).map_err(|e| TViewError::SpiError {
+            crate::utils::spi::run_ddl(&sql).map_err(|e| TViewError::SpiError {
                 query: sql,
-                error: e,
+                error: e.to_string(),
             })
         }
         _ => Err(TViewError::DefinitionRefused {
@@ -94,7 +93,7 @@ pub(crate) fn relation_exists(schema: &str, name: &str) -> TViewResult<bool> {
 }
 
 pub(crate) fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_sys::Oid>> {
-    Spi::get_one_with_args::<pg_sys::Oid>(
+    crate::utils::spi::one::<pg_sys::Oid>(
         "SELECT (SELECT c.oid FROM pg_catalog.pg_class c \
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = $1 AND c.relname = $2)",
@@ -134,24 +133,24 @@ pub(crate) fn create_backing_view(
     // The definition's names resolve as the caller wrote them.
     let created = {
         let _caller = crate::owner::CallerPath::enter();
-        crate::utils::spi_run_ddl(&create_view_sql)
+        crate::utils::spi::run_ddl(&create_view_sql)
     };
     match created {
         Ok(()) => {
-            // Log successful spi_run_ddl
-            log_debug!("spi_run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
+            // Log a successful run_ddl
+            log_debug!("run_ddl SUCCEEDED for {}.{}", schema_name, view_name);
         }
         Err(e) => {
-            // Log spi_run_ddl failure
+            // Log a run_ddl failure
             log_debug!(
-                "spi_run_ddl FAILED - {}.{} - error: {}",
+                "run_ddl FAILED - {}.{} - error: {}",
                 schema_name,
                 view_name,
                 e
             );
             return Err(TViewError::SpiError {
                 query: create_view_sql,
-                error: e,
+                error: e.to_string(),
             });
         }
     }
@@ -168,7 +167,7 @@ pub(crate) fn create_backing_view(
         crate::utils::spi::text(view_name),
         crate::utils::spi::text(schema_name),
     ];
-    let exists = match Spi::get_one_with_args::<i32>(
+    let exists = match crate::utils::spi::one::<i32>(
         "SELECT 1 FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
          WHERE c.relname = $1 AND n.nspname = $2 AND c.relkind = 'v'",
@@ -186,7 +185,7 @@ pub(crate) fn create_backing_view(
             } else {
                 // Log verification failure
                 log_debug!(
-                    "VERIFICATION FAILED - backing view {}.{} not found in pg_class after spi_run_ddl",
+                    "VERIFICATION FAILED - backing view {}.{} not found in pg_class after run_ddl",
                     schema_name,
                     view_name
                 );
@@ -321,9 +320,9 @@ pub(crate) fn create_materialized_table(
         "CREATE {unlogged_keyword}TABLE {qi_schema}.{qi_tview} (\n    {columns_sql}\n){with}"
     );
 
-    crate::utils::spi_run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
+    crate::utils::spi::run_ddl(&create_table_sql).map_err(|e| TViewError::SpiError {
         query: create_table_sql,
-        error: e,
+        error: e.to_string(),
     })?;
 
     create_tview_indexes(tview_name, schema, schema_name, storage.data_gin_index)
@@ -339,7 +338,7 @@ pub(crate) fn populate_initial_data(
     // Get actual column names from the backing view (like pg_tviews_refresh does)
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
     let view = crate::utils::qualified_relname_from_oid(view_oid)?;
-    let view_columns = crate::utils::get_view_columns_by_oid(view_oid)?;
+    let view_columns = crate::utils::spi::get_view_columns_by_oid(view_oid)?;
 
     if view_columns.is_empty() {
         return Err(TViewError::CatalogError {
@@ -367,11 +366,13 @@ pub(crate) fn populate_initial_data(
     // under the caller's settings, as CREATE VIEW parses it.
     let _pin = crate::owner::RenderPin::new();
 
-    let rows = Spi::connect_mut(|client| client.update(&insert_sql, None, &[]).map(|t| t.len()))
-        .map_err(|e| TViewError::SpiError {
-            query: insert_sql,
-            error: e.to_string(),
-        })?;
+    let rows = crate::utils::spi::connect_mut(|client| {
+        client.update(&insert_sql, None, &[]).map(|t| t.len())
+    })
+    .map_err(|e| TViewError::SpiError {
+        query: insert_sql,
+        error: e.to_string(),
+    })?;
 
     Ok(rows as u64)
 }

@@ -73,7 +73,7 @@ pub(crate) fn read_set_queries(
     for set in &mapping.reads {
         let column = (set.attnum != 0)
             .then(|| {
-                Spi::get_one_with_args::<String>(
+                crate::utils::spi::one::<String>(
                     "SELECT attname::pg_catalog.text FROM pg_catalog.pg_attribute \
                      WHERE attrelid = $1 AND attnum = $2",
                     &[

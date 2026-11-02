@@ -126,7 +126,7 @@ pub(crate) fn refuse_duplicate_keys_in(
         "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
                  GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
     );
-    let duplicate = Spi::connect(|client| {
+    let duplicate = crate::utils::spi::connect(|client| {
         crate::utils::spi::kept_select(client, &sql, args)?
             .first()
             .get::<String>(1)
@@ -263,7 +263,7 @@ pub(crate) fn run_counted_upsert(
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows, duplicate) = Spi::connect_mut(|client| {
+    let (keys, rows, duplicate) = crate::utils::spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
         Ok::<_, spi::Error>((
             row.get::<Vec<String>>(1)?,
@@ -418,7 +418,7 @@ fn locked_rows(
     crate::catalog::collections::OldKeys,
 )> {
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    Ok(Spi::connect_mut(|client| {
+    Ok(crate::utils::spi::connect_mut(|client| {
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
         let mut old = crate::catalog::collections::OldKeys::new();
@@ -466,7 +466,7 @@ pub(crate) fn lock_in_key_order(
     );
     let args = [key_array(key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    let rows = Spi::connect_mut(|client| {
+    let rows = crate::utils::spi::connect_mut(|client| {
         let mut rows = std::collections::HashMap::new();
         for row in crate::utils::spi::kept_update(client, &sql, &args)? {
             let Some(pk) = row.get::<i64>(1)? else {
@@ -503,7 +503,7 @@ pub(crate) fn run_journaled(
     args: &[DatumWithOid],
     change: crate::queue::affected::Change,
 ) -> crate::TViewResult<Vec<i64>> {
-    let written = Spi::connect_mut(|client| {
+    let written = crate::utils::spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in crate::utils::spi::kept_update(client, sql, args)? {
             let pk: Option<i64> = row.get(1)?;

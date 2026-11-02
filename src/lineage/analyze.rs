@@ -256,12 +256,11 @@ impl Lineage {
 /// TVIEW stale. A partitioned table's partitions are followed; this is the
 /// older, non-declarative inheritance.
 fn refuse_inheritance(tables: &std::collections::BTreeSet<u32>) -> crate::TViewResult<()> {
-    use pgrx::prelude::*;
     if tables.is_empty() {
         return Ok(());
     }
     let oids: Vec<pgrx::pg_sys::Oid> = tables.iter().map(|&t| t.into()).collect();
-    let found = Spi::get_two_with_args::<String, String>(
+    let found = crate::utils::spi::two::<String, String>(
         "SELECT i.inhparent::pg_catalog.regclass::pg_catalog.text, \
                 pg_catalog.string_agg(i.inhrelid::pg_catalog.regclass::pg_catalog.text, ', ' \
                                       ORDER BY i.inhrelid::pg_catalog.regclass::pg_catalog.text) \
@@ -277,7 +276,7 @@ fn refuse_inheritance(tables: &std::collections::BTreeSet<u32>) -> crate::TViewR
                  read FROM ONLY {table}, or make {table} a partitioned table"
             ),
         }),
-        Ok(_) | Err(pgrx::spi::Error::InvalidPosition) => Ok(()),
+        Ok(_) => Ok(()),
         Err(e) => Err(crate::TViewError::CatalogError {
             operation: "Read the inheritance children of the tables a TVIEW reads".to_string(),
             pg_error: e.to_string(),
@@ -461,12 +460,11 @@ pub fn analyze(
 
 /// `(oid, schema.name(argument types))` of each function.
 pub(super) fn function_signatures(oids: &[u32]) -> Result<Vec<(u32, String)>, pgrx::spi::Error> {
-    use pgrx::prelude::*;
     if oids.is_empty() {
         return Ok(Vec::new());
     }
     let oids: Vec<pgrx::pg_sys::Oid> = oids.iter().map(|&o| o.into()).collect();
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut functions = Vec::new();
         for row in client.select(
             &format!("SELECT oid, {FUNCTION_SIGNATURE} FROM pg_catalog.pg_proc p WHERE p.oid = ANY ($1) ORDER BY 2"),
@@ -517,7 +515,7 @@ pub(super) fn explain(
         "EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {} LIMIT 0) {sql}",
         table.qualified
     );
-    let plan = Spi::get_one::<pgrx::Json>(&explain)
+    let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
         .map_err(|e| crate::TViewError::SpiError {
             query: explain.clone(),
             error: e.to_string(),
@@ -633,8 +631,7 @@ pub fn virtual_reads(
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn virtual_inputs(relid: u32) -> crate::TViewResult<VirtualInputs> {
-    use pgrx::prelude::*;
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut out: VirtualInputs = Vec::new();
         for row in client.select(
             "SELECT g.attnum, i.attname::pg_catalog.text, i.attnum \

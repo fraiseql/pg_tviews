@@ -15,7 +15,6 @@ pub mod validity {
     use crate::TViewResult;
     use crate::catalog::TviewMeta;
     use pgrx::pg_sys::{self, Oid};
-    use pgrx::prelude::*;
 
     thread_local! {
         /// The TVIEW tables this backend found trusted (or filled).
@@ -77,7 +76,7 @@ pub mod validity {
         );
         let _owner = crate::owner::AsOwner::of_extension()?;
         // No row when it was there already (`first()` of an empty result is an error).
-        let inserted = Spi::connect_mut(|client| {
+        let inserted = crate::utils::spi::connect_mut(|client| {
             Ok::<_, pgrx::spi::Error>(
                 !client
                     .update(&sql, None, &[crate::utils::spi::text(entity)])?
@@ -221,9 +220,11 @@ pub mod validity {
     /// Whether `sql` returns true, read-only: a status call must not assign a
     /// transaction id.
     fn probe(sql: &str, args: &[pgrx::datum::DatumWithOid<'_>]) -> TViewResult<bool> {
-        Spi::connect(|client| client.select(sql, Some(1), args)?.first().get_one::<bool>())
-            .map(|found| found == Some(true))
-            .map_err(|e| crate::utils::spi::error(sql, &e))
+        crate::utils::spi::connect(|client| {
+            client.select(sql, Some(1), args)?.first().get_one::<bool>()
+        })
+        .map(|found| found == Some(true))
+        .map_err(|e| crate::utils::spi::error(sql, &e))
     }
 
     /// Check the tables again when a rolled-back (sub)transaction may have undone

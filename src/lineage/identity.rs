@@ -208,7 +208,6 @@ pub(super) fn identity_of(
     view_oid: pgrx::pg_sys::Oid,
     graph: &QueryGraph,
 ) -> crate::TViewResult<Identity> {
-    use pgrx::prelude::*;
     match graph
         .identity
         .clone()
@@ -225,7 +224,7 @@ pub(super) fn identity_of(
                 .collect(),
         }),
         Err(error) => {
-            let viewdef = Spi::get_one_with_args::<String>(
+            let viewdef = crate::utils::spi::one::<String>(
                 "SELECT pg_catalog.pg_get_viewdef($1)",
                 &[crate::utils::spi::oid(view_oid)],
             )

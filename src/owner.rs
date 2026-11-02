@@ -43,7 +43,7 @@ impl AsOwner {
     /// # Errors
     /// Returns an error if the extension's row cannot be read.
     pub fn of_extension() -> TViewResult<Self> {
-        let owner = Spi::connect(|client| {
+        let owner = crate::utils::spi::connect(|client| {
             client
                 .select(
                     "SELECT extowner FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews'",
@@ -304,7 +304,7 @@ unsafe fn pin_settings() {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
-    let allowed = Spi::connect(|client| {
+    let allowed = crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::oid(table)];
         client
             .select(

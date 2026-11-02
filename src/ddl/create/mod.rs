@@ -50,7 +50,7 @@ use pgrx::prelude::*;
 /// `PostgreSQL` convention for unqualified DDL statements.
 pub(crate) fn current_schema() -> TViewResult<String> {
     let _caller = crate::owner::CallerPath::enter();
-    crate::utils::spi_get_string("SELECT current_schema()::text")
+    crate::utils::spi::get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
             pg_error: e.to_string(),

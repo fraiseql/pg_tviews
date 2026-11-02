@@ -1,4 +1,3 @@
-use pgrx::prelude::*;
 use std::cell::RefCell;
 
 // ── Audit entry types ───────────────────────────────────────────────────
@@ -105,7 +104,7 @@ pub fn flush_audit_buffer() -> crate::TViewResult<()> {
     // The log is writable only by the extension owner, which inserts the entries
     // and records the session user.
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "SELECT {}.pg_tviews_audit_write($1::jsonb)",
             crate::utils::ext_schema()

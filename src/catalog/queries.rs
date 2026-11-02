@@ -105,7 +105,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::boolean(time_dependent),
     ];
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
+    crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),
     })
@@ -126,7 +126,7 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
         crate::utils::spi::oid_array(declared.function_read_tables),
         crate::utils::spi::text(declared.time_refresh),
     ];
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET uncascaded_policy = $2, \
                  uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
@@ -151,7 +151,7 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
              WHERE entity = $1 AND group_keys->>$2 = $3",
@@ -203,7 +203,7 @@ pub fn dropped_by_event(entity: &str) -> TViewResult<Option<bool>> {
 /// # Errors
 /// A [`TViewError::SpiError`] when the catalog cannot be read.
 pub fn table_left_and_owned(entity: &str) -> TViewResult<(Option<bool>, Option<bool>)> {
-    Spi::get_two_with_args::<bool, bool>(
+    crate::utils::spi::two::<bool, bool>(
         &format!(
             "SELECT t.oid IS NOT NULL, \
                     COALESCE(pg_catalog.pg_has_role(t.relowner, 'USAGE'), false) \
@@ -250,7 +250,7 @@ pub fn extension_backing_views() -> TViewResult<Vec<Oid>> {
     if current != Some(true) {
         return Ok(Vec::new());
     }
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -338,7 +338,7 @@ const SELECT_GRANT_CHANGES: &str = "\
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
     let args = [crate::utils::spi::oid(table)];
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         client
             .update(
                 &SELECT_GRANT_CHANGES.replace("{meta}", &super::meta_table()),
@@ -362,7 +362,7 @@ pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn owner_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
     let args = [crate::utils::spi::oid(table)];
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         client
             .update(
                 &format!(
@@ -430,7 +430,7 @@ pub fn reading_column(relid: Oid, column: &str) -> TViewResult<Vec<(String, Stri
         )),
         super::meta_table()
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [
             crate::utils::spi::oid(relid),
             crate::utils::spi::text(column),
@@ -462,7 +462,7 @@ pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Ve
     );
     // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
     // their views: it reads more of the others' views and tables than any of them.
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut dependents = Vec::new();
         for row in client.select(
             &format!(
@@ -585,7 +585,7 @@ pub fn table_readers_of(table: Oid) -> TViewResult<Vec<String>> {
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn full_refresh_readers_of(matview: Oid) -> TViewResult<Vec<String>> {
     let args = [crate::utils::spi::oid(matview)];
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -635,7 +635,7 @@ pub fn meta_table_oid() -> Option<Oid> {
 pub fn function_read_relation(
     table: Oid,
 ) -> TViewResult<(Option<String>, Option<String>, Option<String>)> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -701,7 +701,7 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
          ORDER BY m.entity",
         super::meta_table()
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text(entity)];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -727,7 +727,7 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, String, String)>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text_array(entities)];
         let mut out = Vec::new();
         for row in client.select(
