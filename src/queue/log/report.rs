@@ -68,7 +68,7 @@ impl Recorded {
             entity: meta.entity_name.clone(),
             typename: std::rc::Rc::clone(&meta.typename),
             pk,
-            id: id.map(|text| meta.row_id(text)),
+            id: id.map(|text| crate::catalog::RowId { text }),
             change,
             parents: meta.parents(references, old),
             captured: crate::config::publish_changes() == Some(crate::config::Publish::Rows),
@@ -379,7 +379,6 @@ mod tests {
             pk,
             id: id.map(|text| crate::catalog::RowId {
                 text: text.to_string(),
-                kind: crate::catalog::PublicId::String,
             }),
             change,
             parents: Vec::new(),
@@ -493,7 +492,7 @@ mod tests {
                 parent_table_oid: pgrx::pg_sys::Oid::from(1),
                 parent_column: "pk_post".to_string(),
                 parent_type: "integer".to_string(),
-                parent_id: Some(crate::catalog::PublicId::String),
+                parent_id: Some(crate::catalog::PublicId),
                 parent_typename: "Post".into(),
                 parent_keyed_by_pk: true,
             });

@@ -418,10 +418,7 @@ fn parent_ids_of(
         let Some((c, _)) = i.parse::<usize>().ok().and_then(|i| lookups.get(i)) else {
             continue;
         };
-        let id = crate::catalog::RowId {
-            text: id.clone(),
-            kind: c.parent_id.unwrap_or(crate::catalog::PublicId::String),
-        };
+        let id = crate::catalog::RowId { text: id.clone() };
         found.insert((c.parent_table.clone(), key.clone()), id.json());
     }
     Ok(())

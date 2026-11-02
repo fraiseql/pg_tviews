@@ -124,17 +124,14 @@ pub(super) fn add(publish: Publish, recorded: &Recorded) {
             if set.types.contains(child) {
                 continue;
             }
-            let Some(kind) = collection.parent_id else {
+            if collection.parent_id.is_none() {
                 set.types.insert(Rc::clone(child));
                 continue;
-            };
-            let resolved = parent.id.as_ref().map(|id| {
-                crate::catalog::RowId {
-                    text: id.clone(),
-                    kind,
-                }
-                .json()
-            });
+            }
+            let resolved = parent
+                .id
+                .as_ref()
+                .map(|id| crate::catalog::RowId { text: id.clone() }.json());
             let bytes = parent.key.len() + resolved.as_ref().map_or(0, String::len);
             if set.bytes + bytes > KEPT_BYTES {
                 set.types.insert(Rc::clone(child));
@@ -433,10 +430,8 @@ mod tests {
             entity: typename.to_lowercase(),
             typename: typename.into(),
             pk,
-            // Already JSON text: kept as is.
             id: id.map(|text| crate::catalog::RowId {
                 text: text.to_string(),
-                kind: crate::catalog::PublicId::Number,
             }),
             change,
             parents: Vec::new(),
@@ -482,30 +477,12 @@ mod tests {
     #[test]
     fn rows_fold_to_net_changes_by_type() {
         clear();
-        add(
-            Publish::Rows,
-            &r("User", 1, Some("\"u1\""), Change::Updated),
-        );
-        add(
-            Publish::Rows,
-            &r("Post", 1, Some("\"p1\""), Change::Inserted),
-        );
-        add(
-            Publish::Rows,
-            &r("Post", 1, Some("\"p1\""), Change::Deleted),
-        );
-        add(
-            Publish::Rows,
-            &r("Post", 2, Some("\"p2\""), Change::Deleted),
-        );
-        add(
-            Publish::Rows,
-            &r("Post", 3, Some("\"p3\""), Change::Deleted),
-        );
-        add(
-            Publish::Rows,
-            &r("Post", 3, Some("\"p3\""), Change::Inserted),
-        );
+        add(Publish::Rows, &r("User", 1, Some("u1"), Change::Updated));
+        add(Publish::Rows, &r("Post", 1, Some("p1"), Change::Inserted));
+        add(Publish::Rows, &r("Post", 1, Some("p1"), Change::Deleted));
+        add(Publish::Rows, &r("Post", 2, Some("p2"), Change::Deleted));
+        add(Publish::Rows, &r("Post", 3, Some("p3"), Change::Deleted));
+        add(Publish::Rows, &r("Post", 3, Some("p3"), Change::Inserted));
         let (upserted, deleted, types) = snapshot();
         assert_eq!(
             upserted,
@@ -520,10 +497,7 @@ mod tests {
     fn a_row_without_id_publishes_its_type() {
         clear();
         add(Publish::Rows, &r("Tag", 1, None, Change::Updated));
-        add(
-            Publish::Rows,
-            &r("User", 1, Some("\"u1\""), Change::Updated),
-        );
+        add(Publish::Rows, &r("User", 1, Some("u1"), Change::Updated));
         let (upserted, _, types) = snapshot();
         assert_eq!(types, ["Tag"]);
         assert_eq!(upserted, [list("User", &["\"u1\""])]);
@@ -533,14 +507,8 @@ mod tests {
     #[test]
     fn types_mode_keeps_no_ids() {
         clear();
-        add(
-            Publish::Types,
-            &r("User", 1, Some("\"u1\""), Change::Updated),
-        );
-        add(
-            Publish::Types,
-            &r("Post", 1, Some("\"p1\""), Change::Deleted),
-        );
+        add(Publish::Types, &r("User", 1, Some("u1"), Change::Updated));
+        add(Publish::Types, &r("Post", 1, Some("p1"), Change::Deleted));
         SET.with_borrow(|set| assert!(set.entries.is_empty()));
         assert_eq!(snapshot().2, ["Post", "User"]);
         clear();
@@ -563,17 +531,11 @@ mod tests {
     #[test]
     fn a_rollback_restores_rows_and_types() {
         clear();
-        add(
-            Publish::Rows,
-            &r("User", 1, Some("\"u1\""), Change::Updated),
-        );
+        add(Publish::Rows, &r("User", 1, Some("u1"), Change::Updated));
         let outer = mark();
         add(Publish::Rows, &r("Tag", 1, None, Change::Updated));
         let inner = mark();
-        add(
-            Publish::Rows,
-            &r("Post", 1, Some("\"p1\""), Change::Inserted),
-        );
+        add(Publish::Rows, &r("Post", 1, Some("p1"), Change::Inserted));
         rollback(inner);
         let (upserted, _, types) = snapshot();
         assert_eq!(upserted, [list("User", &["\"u1\""])]);
@@ -600,7 +562,7 @@ mod tests {
             parent_table_oid: pgrx::pg_sys::Oid::from(1),
             parent_column: "pk_post".to_string(),
             parent_type: "integer".to_string(),
-            parent_id: parent_id.then_some(crate::catalog::PublicId::String),
+            parent_id: parent_id.then_some(crate::catalog::PublicId),
             parent_typename: "Post".into(),
             parent_keyed_by_pk: true,
         })
@@ -776,10 +738,7 @@ mod tests {
     fn a_parent_the_transaction_wrote_is_resolved_from_its_row() {
         clear();
         let post = collection("Comment", "fk_post", true);
-        add(
-            Publish::Rows,
-            &r("Post", 4, Some("\"p4\""), Change::Updated),
-        );
+        add(Publish::Rows, &r("Post", 4, Some("p4"), Change::Updated));
         add(
             Publish::Rows,
             &child(1, Change::Updated, &[(&post, "4", None)]),

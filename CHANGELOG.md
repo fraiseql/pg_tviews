@@ -32,6 +32,19 @@ Opens 0.1.0-beta.36.
 - Health component `contents`: TVIEWs whose table is empty while their definition
   yields rows, read as each TVIEW's owner (what a deploy probe read through the
   backing view before).
+- Coverage of the SQL suites: `scripts/sql-coverage.sh` runs the regression and
+  isolation suites against an instrumented build; CI holds the merged line coverage
+  at 91 % or more (92.7 % measured; the unit tests alone cover 28.4 %).
+
+### Removed
+- `PublicId::Number`: a TVIEW's `id` is always `uuid`, written in JSON as a string.
+- The regression tests of jsonb_delta's array helpers (`jsonb_extract_id`,
+  `jsonb_array_update_where_batch`, …), which pg_tviews never calls; the contract test
+  of the functions it does call stays.
+
+### Internal
+- One recompute by key set (`refresh/recompute.rs`) for one key or many: the single-key
+  path wrote the same statement.
 
 ## [0.1.0-beta.35] - 2026-11-01
 

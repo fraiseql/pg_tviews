@@ -61,8 +61,7 @@ pub struct TviewMeta {
     /// The GraphQL type name of its rows ([`typename`]), shared by every change
     /// the journal records.
     pub typename: std::rc::Rc<str>,
-    /// How its table's `id` column, the rows' public id that the journal carries,
-    /// is written in JSON; `None` without such a column.
+    /// Its table's public id column; `None` without one.
     pub public_id: Option<PublicId>,
     /// Its references to other TVIEWs, as the change feed names the collections
     /// its rows belong to: read only while the feed names them.
@@ -81,42 +80,30 @@ pub struct PlanEntry {
     pub plan: crate::lineage::plan::TviewPlan,
 }
 
-/// How a TVIEW's public `id` is written in JSON (as `to_jsonb` writes it).
+/// A TVIEW table's public id column, `id uuid` (the key convention): its rows'
+/// id, which the journal carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicId {
-    /// An integer or numeric: its text is the JSON number.
-    Number,
-    /// Anything else (a uuid): a JSON string.
-    String,
-}
+pub struct PublicId;
 
-/// A row's public id as the write that changed it returned it
-/// ([`TviewMeta::id_text`]): kept as text, written in JSON only where it is
-/// reported or published.
+/// A row's public id (its table's `id uuid`) as the write that changed it
+/// returned it ([`TviewMeta::id_text`]): kept as text, written in JSON (a
+/// string, as `to_jsonb` writes a uuid) only where it is reported or published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowId {
     pub text: String,
-    pub kind: PublicId,
 }
 
 impl RowId {
-    /// The id as JSON text, as `to_jsonb` writes it.
+    /// The id as JSON text.
     #[must_use]
     pub fn json(&self) -> String {
-        match self.kind {
-            PublicId::Number => self.text.clone(),
-            PublicId::String => serde_json::Value::String(self.text.clone()).to_string(),
-        }
+        self.value().to_string()
     }
 
     /// The id as a JSON value.
     #[must_use]
     pub fn value(&self) -> serde_json::Value {
-        match self.kind {
-            PublicId::Number => serde_json::from_str(&self.text)
-                .unwrap_or_else(|_| serde_json::Value::String(self.text.clone())),
-            PublicId::String => serde_json::Value::String(self.text.clone()),
-        }
+        serde_json::Value::String(self.text.clone())
     }
 }
 
@@ -199,12 +186,8 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
          time_dependent, graphql_typename, \
-         (SELECT a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
-                                'pg_catalog.int4'::pg_catalog.regtype, \
-                                'pg_catalog.int8'::pg_catalog.regtype, \
-                                'pg_catalog.numeric'::pg_catalog.regtype) \
-          FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
-          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS public_id_number, \
+         EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
+          AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id, \
          (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
                                           'pg_catalog.int4'::pg_catalog.regtype, \
                                           'pg_catalog.int8'::pg_catalog.regtype) THEN NULL \
@@ -298,15 +281,6 @@ impl TviewMeta {
             format!("{table}.\"id\"::pg_catalog.text")
         } else {
             "NULL::pg_catalog.text".to_string()
-        }
-    }
-
-    /// The public id `text` a write returned ([`Self::id_text`]), with its kind.
-    #[must_use]
-    pub fn row_id(&self, text: String) -> RowId {
-        RowId {
-            text,
-            kind: self.public_id.unwrap_or(PublicId::String),
         }
     }
 
@@ -602,13 +576,10 @@ impl TviewMeta {
                 .named::<Vec<String>>("view_columns")?
                 .unwrap_or_default(),
             typename,
-            public_id: row.named::<bool>("public_id_number")?.map(|number| {
-                if number {
-                    PublicId::Number
-                } else {
-                    PublicId::String
-                }
-            }),
+            public_id: row
+                .named::<bool>("has_public_id")?
+                .unwrap_or(false)
+                .then_some(PublicId),
             collections,
             collections_read: false,
         })
@@ -673,23 +644,18 @@ pub fn typename(entity: &str, declared: Option<String>) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_public_id_is_written_in_json_as_to_jsonb_writes_it() {
+    fn a_public_id_is_written_in_json_as_a_string() {
         let meta = |public_id| super::TviewMeta {
             public_id,
             ..super::TviewMeta::default()
         };
-        let number = meta(Some(super::PublicId::Number));
-        let string = meta(Some(super::PublicId::String));
-        assert_eq!(number.row_id("42".into()).json(), "42");
-        assert_eq!(number.row_id("42".into()).value(), serde_json::json!(42));
-        assert_eq!(string.row_id("8f0c".into()).json(), r#""8f0c""#);
-        assert_eq!(string.row_id(r#"a"b\c"#.into()).json(), r#""a\"b\\c""#);
-        assert_eq!(
-            string.row_id("8f0c".into()).value(),
-            serde_json::json!("8f0c")
-        );
+        let id = |text: &str| super::RowId { text: text.into() };
+        let with_id = meta(Some(super::PublicId));
+        assert_eq!(id("8f0c").json(), r#""8f0c""#);
+        assert_eq!(id(r#"a"b\c"#).json(), r#""a\"b\\c""#);
+        assert_eq!(id("8f0c").value(), serde_json::json!("8f0c"));
         assert_eq!(meta(None).id_text("t"), "NULL::pg_catalog.text");
-        assert_eq!(string.id_text("t"), r#"t."id"::pg_catalog.text"#);
+        assert_eq!(with_id.id_text("t"), r#"t."id"::pg_catalog.text"#);
     }
 
     #[test]
