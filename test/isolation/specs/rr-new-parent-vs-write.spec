@@ -1,11 +1,9 @@
 # A parent row inserted while the child it reads is renamed, both under
-# REPEATABLE READ: each order ends with every TVIEW row fresh, or with one session
-# failing with 40001 (the application retries it). tv_post embeds the user's
-# TVIEW, tv_note joins its base table.
-#
-# A snapshot taken before the other session committed can't see its change,
-# whatever waits, so the orders where the other one commits first are failed by
-# a cross-check against the latest snapshot.
+# REPEATABLE READ. A snapshot taken before the other session committed can't see
+# its change, whatever it waits for; writers therefore run at READ COMMITTED, and
+# in every order each write here is refused with 0A000 before it writes. Every
+# TVIEW row stays fresh. tv_post embeds the user's TVIEW, tv_note joins its base
+# table.
 
 setup
 {

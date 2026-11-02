@@ -18,6 +18,7 @@ fn pg_tviews_suspend_triggers() {
 fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     crate::suspend::resume()?;
     if !crate::suspend::is_suspended() {
         crate::suspend::catch_up()?;

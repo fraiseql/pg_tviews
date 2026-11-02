@@ -1,8 +1,8 @@
 -- Regression test (#235): a write looks its children up through the lookup
 -- index on a freshly built TVIEW.
 --
--- The statements that find a parent's children (the fan-out UPDATE, its
--- REPEATABLE READ cross-check, parent discovery) took the keys as an array and
+-- The statements that find a parent's children (the fan-out UPDATE, parent
+-- discovery) took the keys as an array and
 -- ran from a plan made once, without them. That plan assumed ten keys, each
 -- matching the average number of rows per lookup value; when the lookup column
 -- has few distinct values (categories, statuses, small parents) it estimated a
@@ -146,24 +146,24 @@ SELECT must(count(*) = 60, 'two keys: the children moved to them hold their new 
 FROM tv_item WHERE fk_cat IN (11, 12) AND data #>> '{category,name}' = 'moved too';
 SELECT must(fresh(), 'moved children: tv_item is stale');
 
--- 4. One category at REPEATABLE READ: the fan-out and its cross-check, which
---    looks the children up again under the transaction's and the latest snapshot.
+-- 4. One category in an explicit transaction: the fan-out looks its children up
+--    by one key.
 SELECT build(20, 50, false);
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-SELECT check_write('one key, REPEATABLE READ',
+BEGIN;
+SELECT check_write('one key, in a transaction',
                    $$UPDATE tb_cat SET name = 'three' WHERE pk_cat = 2$$);
 COMMIT;
 
--- 5. tv_item embedding tv_cat's document: parent discovery by fk_cat, cross-checked
---    at REPEATABLE READ, with and without direct patches.
+-- 5. tv_item embedding tv_cat's document: parent discovery by fk_cat, with and
+--    without direct patches.
 SELECT build(20, 50, true);
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-SELECT check_write('embedded TVIEW, REPEATABLE READ, patched',
+BEGIN;
+SELECT check_write('embedded TVIEW, patched',
                    $$UPDATE tb_cat SET name = 'four' WHERE pk_cat = 2$$);
 COMMIT;
 SET pg_tviews.direct_patch_enabled = off;
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-SELECT check_write('embedded TVIEW, REPEATABLE READ, recomputed',
+BEGIN;
+SELECT check_write('embedded TVIEW, recomputed',
                    $$UPDATE tb_cat SET name = 'five' WHERE pk_cat = 3$$);
 COMMIT;
 RESET pg_tviews.direct_patch_enabled;
@@ -209,11 +209,10 @@ END $$;
 SELECT must(seq_scans_during('tb_tag', 'SELECT move_tags(10)') = 0,
             'three posts, READ COMMITTED: their read set or recompute scanned tb_tag');
 
--- 7. At REPEATABLE READ the refreshed post is read again from its backing view,
---    under the transaction's snapshot and the latest one, and compared.
-BEGIN ISOLATION LEVEL REPEATABLE READ;
+-- 7. A second post's tag in a transaction of its own.
+BEGIN;
 SELECT must(seq_scans_during('tb_tag', $$UPDATE tb_tag SET name = 'seven' WHERE pk_tag = 160$$) = 0,
-            'one post, REPEATABLE READ: its refreshed rows scanned tb_tag');
+            'one post, in a transaction: its refreshed rows scanned tb_tag');
 COMMIT;
 SELECT must(NOT EXISTS (SELECT pk_post, data FROM tv_post
                         EXCEPT SELECT pk_post, data FROM tviews.public__tv_post),

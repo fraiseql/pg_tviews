@@ -443,15 +443,11 @@ pub(crate) fn run_counted_upsert(
 
 /// A refresh creates a TVIEW row only under its key lock (ADR 0207): every other
 /// transaction creating the same row waits for it, and one that finds the row
-/// then locks it before computing ([`lock_rows`]). A row created without the
-/// lock is a key whose row the refresh found, gone since: under REPEATABLE READ
-/// and SERIALIZABLE, a row a concurrent transaction deleted after the snapshot,
-/// which fails with 40001 as an UPDATE of that row would. Under READ COMMITTED
-/// the found rows are locked, so it can't happen.
+/// then locks it before computing ([`lock_rows`]). The found rows are locked, so
+/// a row created without its lock is a defect.
 ///
 /// # Errors
-/// An internal error for a row created without its key lock under READ
-/// COMMITTED.
+/// An internal error for a row created without its key lock.
 fn refuse_unlocked_creations(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
@@ -463,11 +459,6 @@ fn refuse_unlocked_creations(
     {
         return Ok(());
     }
-    if crate::concurrency::crosscheck::enabled() {
-        crate::concurrency::serialization_failure(
-            "a concurrent transaction deleted a TVIEW row this refresh read",
-        );
-    }
     Err(crate::TViewError::CatalogError {
         operation: format!("Create a row of {qi_tv}"),
         pg_error: "the row was created without its key lock".to_string(),
@@ -476,38 +467,28 @@ fn refuse_unlocked_creations(
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before
 /// recomputing them, then the keys of those it doesn't hold yet, then the rows
-/// of those keys created in between, and return the rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
-/// recomputing one of these rows, or creating it, is then waited for here, and
-/// the recompute that follows, a new statement, sees what it committed; without
-/// the lock it waited inside its own upsert and wrote a document computed before
-/// that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already fails
-/// on an existing row (SQLSTATE 40001): those rows are only read; a key another
-/// transaction is creating fails at once (ADR 0207).
+/// of those keys created in between, and return the rows' `pk_<entity>`. A
+/// concurrent writer recomputing one of these rows, or creating it, is then
+/// waited for here, and the recompute that follows, a new statement, sees what
+/// it committed; without the lock it waited inside its own upsert and wrote a
+/// document computed before that commit (ADR 0207).
 pub(crate) fn lock_rows(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
 ) -> crate::TViewResult<Locked> {
-    // SAFETY: reads the backend's isolation level.
-    let transaction_snapshot =
-        unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
     if keys.is_empty() {
         return Ok(Locked::default());
     }
     let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
     let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
-    let lock = if transaction_snapshot {
-        ""
-    } else {
-        " FOR UPDATE"
-    };
     // The reference keys the rows hold before the recompute: what the change
     // feed names as the collections a row leaves.
     let references = meta.publishes_collections();
     let sql = format!(
         "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
-         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
+         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key} FOR UPDATE",
         meta.reference_keys("t"),
         key_cast(key_type, "$1", true)
     );
@@ -532,7 +513,7 @@ pub(crate) fn lock_rows(
     // statement: the key lock only stops new creations of it. Without this the
     // upsert waits for that row's lock inside ON CONFLICT DO UPDATE and writes
     // what it computed before the wait.
-    if !transaction_snapshot && !missing.is_empty() {
+    if !missing.is_empty() {
         let created: Vec<KeyValue> = missing.into_iter().map(KeyValue::Text).collect();
         let args = [key_array(key_type, &created)?];
         let (more, _, more_old) = locked_rows(&sql, &args, references)?;
@@ -580,9 +561,8 @@ fn locked_rows(
 /// statements (direct patches, grouped by shape, then recomputes) then takes
 /// their row locks in the order every concurrent refresh does, so two of them
 /// never wait for each other in a cycle (#263); and a patch written into a parent
-/// can be checked against what the parent embeds now. Under REPEATABLE READ and
-/// SERIALIZABLE a row updated since the snapshot fails the write here (40001), as
-/// it would in the refresh; one being updated is waited for in key order too.
+/// can be checked against what the parent embeds now. A row being updated is
+/// waited for in key order too.
 ///
 /// # Errors
 /// Returns an error if the rows cannot be locked.

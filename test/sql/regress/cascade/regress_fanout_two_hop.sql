@@ -91,11 +91,12 @@ SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename and a move in one stat
 SELECT must((SELECT count(*) FROM tv_comment WHERE data #>> '{post,author,username}' = 'twelve') = 55,
             'the moved post''s comments do not show their new author');
 
--- 5. REPEATABLE READ: the lookup through tb_post is checked like the patch's own.
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-UPDATE tb_user SET username = 'rr' WHERE pk_user = 13;
+-- 5. A rename in an explicit transaction: the lookup through tb_post runs in
+--    the flush's own snapshot.
+BEGIN;
+UPDATE tb_user SET username = 'tx' WHERE pk_user = 13;
 COMMIT;
-SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename at REPEATABLE READ');
+SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename in a transaction');
 
 -- 6. Without an index on tb_post.fk_author the comments are still found (as the
 --    recompute found them, scanning tb_post) and patched.

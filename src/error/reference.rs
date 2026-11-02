@@ -127,20 +127,18 @@ fn examples() -> Vec<TViewError> {
 const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     (
         "src/concurrency/mod.rs",
-        PgSqlErrorCode::ERRCODE_T_R_SERIALIZATION_FAILURE,
-        "Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a \
-         concurrent transaction holds (`a concurrent transaction changes rows this TVIEW \
-         refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting \
-         could not make the snapshot see the other's change; or the latest snapshot shows \
-         what the transaction's missed (`a TVIEW row this transaction refreshed changed in a \
-         concurrent transaction`, `a concurrent transaction added rows this write must \
-         refresh`). Retry the transaction.",
+        PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+        "A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, \
+         or refreshes or rebuilds TVIEWs: writers run at `READ COMMITTED` (ADR 0207). Nothing \
+         was written. Reads of TVIEWs work at any level.",
     ),
     (
         "src/flush/xact.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "A transaction commits with refresh work still queued (a missing or disabled flush \
-         trigger): the commit fails.",
+         trigger), or commits implicitly (several statements in one query string, a `COMMIT` \
+         inside a procedure) after writes made while refresh was suspended: the commit \
+         fails. Call `pg_tviews_resume_triggers()` before committing.",
     ),
     (
         "src/revision.rs",

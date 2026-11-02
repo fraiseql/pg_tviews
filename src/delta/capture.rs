@@ -142,8 +142,7 @@ pub(super) fn firing_entities(trigger: &PgTrigger<'_>) -> Option<Vec<String>> {
 /// rows entering with a partition): one pass of the writer's locks (`values`, as
 /// [`crate::concurrency::changed_rows`] runs it) and, after a link change, of the
 /// read set of what `lookup` finds now, then `lookup` again, after the writer's
-/// locks. `lookup` runs in a new snapshot, checked against the latest one under
-/// REPEATABLE READ when its argument says so.
+/// locks. `lookup` runs in a new snapshot.
 ///
 /// # Errors
 /// What `values`, `lookup` or a read-set query returns.
@@ -151,15 +150,15 @@ pub(super) fn locked_keys(
     meta: &TviewMeta,
     mapping: &crate::lineage::KeyMapping,
     values: impl FnMut(&str) -> TViewResult<Vec<String>>,
-    mut lookup: impl FnMut(bool) -> TViewResult<Vec<KeyValue>>,
+    mut lookup: impl FnMut() -> TViewResult<Vec<KeyValue>>,
 ) -> TViewResult<Vec<KeyValue>> {
     let mut pass = Pass::default();
     crate::concurrency::changed_rows(mapping, &mut pass, values)?;
     if crate::concurrency::links_changed() {
-        add_read_set(meta, &lookup(false)?, &mut pass)?;
+        add_read_set(meta, &lookup()?, &mut pass)?;
     }
     crate::concurrency::take(&pass);
-    lookup(true)
+    lookup()
 }
 
 /// Add the read set of `meta`'s rows `keys` to `pass`, read as the TVIEW's

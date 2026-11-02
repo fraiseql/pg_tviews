@@ -83,43 +83,20 @@ pub(super) unsafe fn reads_unchanged(td: &pg_sys::TriggerData, attnums: &[i16]) 
 }
 
 /// Run `sql`, which reads the statement's transition tables, as `entity`'s owner
-/// and return the key in each row's first column; under REPEATABLE READ checked
-/// against the latest snapshot when `crosscheck` says so.
+/// and return the key in each row's first column.
 pub(super) fn run_with_transition_tables(
     trigger: &PgTrigger<'_>,
     entity: &str,
     key_type: &KeyType,
     sql: &str,
-    crosscheck: bool,
 ) -> TViewResult<Vec<KeyValue>> {
     with_transition_tables(trigger, entity, |client, table| {
         let mut keys = Vec::new();
         for row in crate::utils::spi::kept_update_over(client, table, sql, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
-        if crosscheck {
-            crosscheck_keys(sql, &[], &keys)?;
-        }
         Ok(keys)
     })
-}
-
-/// REPEATABLE READ: the keys `sql` finds under the latest snapshot are among
-/// `keys`, which it found under the transaction's. Inside the connection that ran
-/// it (it may read transition tables).
-pub(super) fn crosscheck_keys(
-    sql: &str,
-    args: &[DatumWithOid<'_>],
-    keys: &[KeyValue],
-) -> TViewResult<()> {
-    if !crate::concurrency::crosscheck::enabled() {
-        return Ok(());
-    }
-    let latest = crate::utils::spi::latest_rows_connected(sql, args, None)?;
-    let found: Vec<crate::concurrency::crosscheck::TextRow> =
-        keys.iter().map(|k| vec![Some(k.to_string())]).collect();
-    crate::concurrency::crosscheck::discovered(&found, &latest);
-    Ok(())
 }
 
 /// `SELECT DISTINCT <value>` of the changed rows `delta`, `value` a lock value

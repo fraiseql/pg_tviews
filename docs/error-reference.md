@@ -40,9 +40,8 @@ Placeholders stand for the values each message carries.
 
 | SQLSTATE | Condition | When |
 |---|---|---|
-| `40001` | `t_r_serialization_failure` | Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a concurrent transaction holds (`a concurrent transaction changes rows this TVIEW refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting could not make the snapshot see the other's change; or the latest snapshot shows what the transaction's missed (`a TVIEW row this transaction refreshed changed in a concurrent transaction`, `a concurrent transaction added rows this write must refresh`). Retry the transaction. |
-| `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger): the commit fails. |
-| `55000` | `object_not_in_prerequisite_state` | A transaction commits implicitly (several statements in one query string, a `COMMIT` inside a procedure) after writes made while refresh was suspended: the commit fails. Call `pg_tviews_resume_triggers()` before committing. |
+| `0A000` | `feature_not_supported` | A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, or refreshes or rebuilds TVIEWs: writers run at `READ COMMITTED` (ADR 0207). Nothing was written. Reads of TVIEWs work at any level. |
+| `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger), or commits implicitly (several statements in one query string, a `COMMIT` inside a procedure) after writes made while refresh was suspended: the commit fails. Call `pg_tviews_resume_triggers()` before committing. |
 | `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). |
 | `42501` | `insufficient_privilege` | The caller neither owns the TVIEW (or is a member of its owner) nor owns the extension. |
 | `0A000` | `feature_not_supported` | A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, `TABLESPACE`, `USING`, a storage parameter other than `fillfactor` and `toast_tuple_target`, a query with parameters. |

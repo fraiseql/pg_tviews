@@ -7,7 +7,6 @@
 
 -- Start transaction with proper isolation
 BEGIN;
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
 -- Clean up any existing test objects
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;

@@ -419,64 +419,6 @@ pub fn kept_update_over<'conn>(
 /// A row of a query, its columns as text (`None` for NULL).
 pub type TextRow = Vec<Option<String>>;
 
-/// The rows of the read-only query `sql` as text, under the latest snapshot
-/// instead of the transaction's: what a REPEATABLE READ transaction can't see
-/// yet, as PostgreSQL's foreign-key checks read it. From its plan kept with
-/// `keep` when there is one (never for a query over a trigger's transition
-/// tables, which are the statement's own). The caller is inside an SPI
-/// connection (one that sees the transition tables, if the query reads them).
-///
-/// # Errors
-/// Returns an error if the query can't be prepared or doesn't return rows.
-pub fn latest_rows_connected(
-    sql: &str,
-    args: &[DatumWithOid<'_>],
-    keep: Option<Plan>,
-) -> TViewResult<Vec<TextRow>> {
-    let (mut types, mut values, nulls) = bind(args);
-    if keep != Some(Plan::Generic) {
-        crate::metrics::metrics_api::record_per_execution_plan();
-    }
-    let kept = match keep {
-        Some(plan) => Some(kept_plan(sql, &mut types, plan)?),
-        None => None,
-    };
-    // SAFETY: inside an SPI connection; the plan (kept, or prepared here and
-    // freed below) and the arguments, of the types it was prepared for, live
-    // until the call returns.
-    unsafe {
-        let plan = if let Some(plan) = &kept {
-            plan.0.as_ptr()
-        } else {
-            let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
-            let nargs = i32::try_from(types.len()).map_err(|e| error(sql, &e))?;
-            let plan = pg_sys::SPI_prepare(src.as_ptr(), nargs, types.as_mut_ptr());
-            if plan.is_null() {
-                return Err(error(
-                    sql,
-                    &format!("SPI_prepare failed ({})", { pg_sys::SPI_result }),
-                ));
-            }
-            plan
-        };
-        let rc = pg_sys::SPI_execute_snapshot(
-            plan,
-            values.as_mut_ptr(),
-            nulls.as_ptr(),
-            pg_sys::GetLatestSnapshot(),
-            std::ptr::null_mut(),
-            true,
-            false,
-            0,
-        );
-        let rows = tuptable_rows(sql, rc);
-        if kept.is_none() {
-            pg_sys::SPI_freeplan(plan);
-        }
-        rows
-    }
-}
-
 /// How a kept statement is planned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Plan {
@@ -493,15 +435,6 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// The plan of a statement holding lookups planned `self` and `other`.
-    #[must_use]
-    pub const fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Generic, Self::Generic) => Self::Generic,
-            _ => Self::PerExecution,
-        }
-    }
-
     /// The cursor option `SPI_prepare_cursor` takes for this plan.
     const fn cursor_option(self) -> u32 {
         match self {
@@ -740,15 +673,6 @@ impl KeptRow<'_> {
                 .collect()
         }
     }
-}
-
-/// The rows of the result an SPI call returned with `rc`, as text.
-///
-/// # Safety
-/// The SPI call that returned `rc` was the last one, in the current connection.
-unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
-    // SAFETY: the caller's contract.
-    unsafe { tuptable_map(sql, rc, |row| Ok(row.texts())) }
 }
 
 /// The rows of the result an SPI call returned with `rc`, each read by `read`.

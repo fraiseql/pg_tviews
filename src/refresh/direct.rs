@@ -158,23 +158,6 @@ pub fn apply_fanout_patch(
         changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
     }
 
-    // REPEATABLE READ: the patch reached every row the latest snapshot holds
-    // with these values (a row it couldn't see would keep the old value).
-    if crate::concurrency::crosscheck::enabled()
-        && let Some(keys) = LookupKeys::of(rows.iter().map(|(key, _)| *key).collect())
-    {
-        let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-        let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-        let qi_lookup = crate::utils::ident::quoted(lookup_col);
-        let lookup = format!(
-            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t WHERE {}",
-            keys.predicate(&format!("t.{qi_lookup}"), 1)
-        );
-        let args = keys.args();
-        // Read-write, as the patch: its snapshot sees this flush's own writes.
-        let found = crate::utils::spi::kept_rows(&lookup, &args, keys.plan())?;
-        crate::concurrency::crosscheck::discovered_by(&lookup, &args, keys.plan(), &found)?;
-    }
     crate::metrics::metrics_api::record_direct_patches_applied(
         &meta.entity_name,
         changed.len() as u64,

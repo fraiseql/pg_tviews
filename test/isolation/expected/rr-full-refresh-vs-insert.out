@@ -9,7 +9,7 @@ posts
 
 step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
 step r_rename: UPDATE tb_site SET name = 'news';
-ERROR:  could not serialize access: a TVIEW row this transaction refreshed changed in a concurrent transaction
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step r_check: 
   SELECT t.pk_post, t.data->>'site' AS site, t.data = v.data AS fresh

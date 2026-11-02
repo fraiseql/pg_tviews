@@ -116,6 +116,7 @@ fn pg_tview_trigger_handler<'a>(
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     crate::delta::require_level(trigger, true);
     // A lookup that fails fails the write: committing it with nothing queued would
     // leave the TVIEWs over the table stale.

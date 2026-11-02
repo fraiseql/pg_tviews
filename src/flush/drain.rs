@@ -20,6 +20,7 @@ pub(super) fn flush_pending() -> TViewResult<()> {
         return Ok(());
     }
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     crate::queue::affected::begin_flush();
     let timer = crate::metrics::metrics_api::record_refresh_start();
 

@@ -5,7 +5,7 @@
 
 use super::mapping::{refresh_all, rendered};
 use super::render::{computed_columns, key_of, key_sql_type};
-use super::transition::{changed_values, crosscheck_keys, texts};
+use super::transition::{changed_values, texts};
 use super::trigger::{suspended, truncate_mapped};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
@@ -210,14 +210,11 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         key_sql_type(key_type)
     );
     // Read-write: a fresh snapshot, which sees every row committed before the locks.
-    let lookup = |crosscheck: bool| {
+    let lookup = || {
         Spi::connect_mut(|client| {
             let mut keys = Vec::new();
             for row in crate::utils::spi::kept_update(client, &sql, &[])? {
                 keys.extend(key_of(&row, key_type)?);
-            }
-            if crosscheck {
-                crosscheck_keys(&sql, &[], &keys)?;
             }
             Ok::<_, TViewError>(keys)
         })
@@ -234,7 +231,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
             lookup,
         )?
     } else {
-        lookup(true)?
+        lookup()?
     };
     if !keys.is_empty() {
         crate::queue::enqueue_refresh_bulk(entity, keys);
@@ -312,14 +309,11 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                     })
                     .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
                 },
-                |crosscheck| {
+                || {
                     Spi::connect_mut(|client| {
                         let mut keys = Vec::new();
                         for row in crate::utils::spi::kept_update(client, &sql, &images)? {
                             keys.extend(key_of(&row, key_type)?);
-                        }
-                        if crosscheck {
-                            crosscheck_keys(&sql, &images, &keys)?;
                         }
                         Ok::<_, TViewError>(keys)
                     })

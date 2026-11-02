@@ -179,7 +179,6 @@ pub(super) fn map_statement(
                 entity,
                 &KeyType::Int,
                 &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
-                true,
             )?;
             if !changed.is_empty() {
                 crate::queue::enqueue_refresh_all(entity);
@@ -211,7 +210,7 @@ pub(super) fn map_statement(
             // transaction linked to these values is found. Rows the first
             // lookup missed have their read set locked by the flush, as every
             // row it computes.
-            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, true)?;
+            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql)?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
@@ -221,15 +220,13 @@ pub(super) fn map_statement(
 }
 
 /// The keys of `entity`'s rows that the changed rows (`delta`) reach through
-/// the mapping query `keys_sql`, read in a new snapshot as the TVIEW's owner;
-/// under REPEATABLE READ checked against the latest snapshot (`crosscheck`).
+/// the mapping query `keys_sql`, read in a new snapshot as the TVIEW's owner.
 fn lookup(
     trigger: &PgTrigger<'_>,
     entity: &str,
     key_type: &KeyType,
     delta: &str,
     keys_sql: &str,
-    crosscheck: bool,
 ) -> TViewResult<Vec<KeyValue>> {
     run_with_transition_tables(
         trigger,
@@ -240,7 +237,6 @@ fn lookup(
              SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
             key_sql_type(key_type)
         ),
-        crosscheck,
     )
 }
 
@@ -320,7 +316,7 @@ fn capture_pass(
         let Some(keys_sql) = rendered(entity, mapping)? else {
             continue;
         };
-        let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql, false)?;
+        let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
         super::capture::add_read_set(meta, &keys, &mut pass)?;
     }
     crate::concurrency::take(&pass);
@@ -424,14 +420,12 @@ type FanoutFields = (i64, serde_json::Map<String, serde_json::Value>);
 /// each key reaches through the table in between (`fanout.via`): a key reaching
 /// none writes nothing. The lookup reads as the TVIEW's owner, as every refresh
 /// read does, so the writer needs no privilege on the table in between and its
-/// policies hide none of the rows. Under REPEATABLE READ the lookup is checked
-/// against the latest snapshot, as the patch's own lookup is. `None` when a
-/// relation the lookup reads is gone, a value it reaches is no integer, or the
-/// rows in between can't be locked one by one: the rows are then mapped and
-/// recomputed.
+/// policies hide none of the rows. `None` when a relation the lookup reads is
+/// gone, a value it reaches is no integer, or the rows in between can't be
+/// locked one by one: the rows are then mapped and recomputed.
 ///
 /// # Errors
-/// Returns an error if the lookup fails; a missed row raises 40001.
+/// Returns an error if the lookup fails.
 fn reached_through(
     entity: &str,
     mapping: &KeyMapping,
@@ -466,7 +460,6 @@ fn reached_through(
     let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
         return Ok(None);
     };
-    crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
     let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
         patches.iter().map(|(key, fields)| (*key, fields)).collect();
     let mut reached = Vec::with_capacity(found.len());
@@ -489,11 +482,10 @@ fn reached_through(
 /// exclusively, so it waits for this write, or this lookup waits for it. No row
 /// of the table is locked, so the owner needs no more than SELECT on it.
 ///
-/// Under READ COMMITTED the lookup runs again after its locks, in a new
-/// snapshot, until it reaches no row it hasn't locked: it then drops a row a
-/// re-point moved away, whether it waited for the re-point or the re-point
-/// committed between the lookup and the lock. Under REPEATABLE READ a lock
-/// held elsewhere raises 40001, and the snapshot can't change.
+/// The lookup runs again after its locks, in a new snapshot, until it reaches
+/// no row it hasn't locked: it then drops a row a re-point moved away, whether
+/// it waited for the re-point or the re-point committed between the lookup and
+/// the lock.
 ///
 /// `None` past `pg_tviews.lock_escalation_threshold` rows: a lock on the whole
 /// table would wait for every writer of it, among them one moving a row to
@@ -526,9 +518,6 @@ fn locked_lookup(
             &new,
         ) {
             return Ok(None);
-        }
-        if crate::concurrency::crosscheck::enabled() {
-            return Ok(Some(found));
         }
         locked.extend(new);
     }

@@ -92,6 +92,7 @@ fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
 fn pg_tviews_refresh(tview: &str) -> Result<(), ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     let found = super::owned(tview)?;
     crate::admin::rebuild_with_dependents(&[found.entity])?;
     Ok(())
@@ -106,6 +107,7 @@ fn pg_tviews_refresh_time_dependent(
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     let chosen = match tview {
         Some(name) => {
             let meta = super::owned_meta(name)?;

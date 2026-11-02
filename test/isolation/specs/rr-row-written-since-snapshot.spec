@@ -1,9 +1,8 @@
-# REPEATABLE READ refreshes and the rows other transactions wrote since their
+# A REPEATABLE READ writer and the rows other transactions wrote since its
 # snapshot. Another transaction renames the author, which rewrites the post's row
 # (a fan-out patch) after the snapshot; a title written into the post from the
-# snapshot would undo that, while the base rows don't conflict: the refresh fails
-# with 40001. A transaction's own earlier writes are its own, so writing a post
-# twice in one transaction never fails.
+# snapshot would undo that. The REPEATABLE READ writer is refused with 0A000
+# before it writes, in both orders; the post stays fresh.
 
 setup
 {

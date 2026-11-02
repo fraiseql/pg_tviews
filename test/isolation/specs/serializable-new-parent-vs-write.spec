@@ -1,7 +1,7 @@
 # A parent row inserted while the child it reads is renamed, both under
-# SERIALIZABLE: each order ends with every TVIEW row fresh, or with one session
-# failing with 40001 (the application retries it). tv_post embeds the user's
-# TVIEW, tv_note joins its base table.
+# SERIALIZABLE. Writers run at READ COMMITTED: in every order each write is
+# refused with 0A000 before it writes, and every TVIEW row stays fresh. tv_post
+# embeds the user's TVIEW, tv_note joins its base table.
 
 setup
 {

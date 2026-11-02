@@ -20,6 +20,7 @@ use pgrx::prelude::*;
 /// # Errors
 /// Returns error if the entity is not registered or the truncate/insert fails.
 pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
+    crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         // Every row changes: refreshes of any of them wait, and are waited for,
@@ -54,6 +55,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
 /// # Errors
 /// Returns error if the entity is not registered or the delete/insert fails.
 pub fn refill(entity: &str) -> TViewResult<u64> {
+    crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
@@ -76,6 +78,7 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
 /// # Errors
 /// Returns error if the entity is not registered or the insert fails.
 pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
+    crate::concurrency::require_read_committed();
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (_, insert) = rebuild_statements(&owner, entity)?;
     Spi::run(&insert)?;
@@ -123,6 +126,7 @@ fn rebuild_statements(
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
     use crate::queue::affected::Change;
+    crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     let _pin = crate::owner::RenderPin::new();
     // Every row is computed: writers of anything they read wait, and are waited for.
@@ -222,6 +226,5 @@ pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>>
         &[],
         Change::Inserted,
     )?);
-    crate::concurrency::crosscheck::reconciled(meta)?;
     Ok(changed)
 }

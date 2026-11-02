@@ -12,6 +12,7 @@ use crate::error::TViewError;
 fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     if crate::suspend::is_suspended() {
         return Err(TViewError::WrongState {
             reason: "Cannot refresh: triggers are suspended".to_string(),
@@ -41,6 +42,7 @@ fn pg_tviews_rebuild_all(
 {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     Ok(TableIterator::new(crate::replication::rebuild_all(
         only_empty,
     )?))

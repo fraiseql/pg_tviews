@@ -99,6 +99,19 @@ BEGIN
     END LOOP;
 END $$;
 
+-- One transaction at REPEATABLE READ or SERIALIZABLE, seeded by `seed`: a write
+-- pg_tviews maintains is refused with 0A000 before it writes (writers run at READ
+-- COMMITTED); a statement no TVIEW sees goes through. Any other error fails the
+-- run, as in fuzz_txn.
+CREATE FUNCTION fuzz_refused(seed int, harness int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM setseed(seed / 2147483648.0);
+    PERFORM fuzz_exec(CASE WHEN random() * 100 < harness THEN harness_statement(seed % 100000)
+                           ELSE fuzz_crossed(true) END, false);
+EXCEPTION
+    WHEN feature_not_supported THEN NULL;
+END $$;
+
 -- The table's and the view's version of the first row they disagree on.
 CREATE FUNCTION fuzz_rows(tv regclass, key text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE

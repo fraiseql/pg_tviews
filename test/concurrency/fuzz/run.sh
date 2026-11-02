@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Concurrent differential fuzzer: N pgbench clients write random transactions to
 # the base tables of every TVIEW shape of the differential harness and of #263's
-# crossed fan-outs, at READ COMMITTED, REPEATABLE READ and SERIALIZABLE, with
-# subtransactions that commit or roll back; a checker compares every TVIEW with
-# its backing view in REPEATABLE READ snapshots throughout, and once more at the
-# end. Every committed snapshot must be fresh.
+# crossed fan-outs, at READ COMMITTED, with subtransactions that commit or roll
+# back; one transaction in ten runs at REPEATABLE READ or SERIALIZABLE, where
+# every write pg_tviews maintains must be refused with 0A000. A checker compares
+# every TVIEW with its backing view in REPEATABLE READ snapshots throughout, and
+# once more at the end. Every committed snapshot must be fresh.
 #
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres \
@@ -13,11 +14,8 @@
 # SECONDS per seed (default 60), SEEDS a space-separated list (default "1"),
 # CLIENTS (default 8). MODE:
 #   mixed   (default) any statement; 40001 and 40P01 are allowed, any other error
-#           a client hits fails the run. LEVELS says at which isolation levels:
-#           rc (READ COMMITTED only), rr (6 in 10 READ COMMITTED, the rest
-#           REPEATABLE READ) or all (default: 6 READ COMMITTED, 3 REPEATABLE READ,
-#           1 SERIALIZABLE in 10). MIX is the percentage of statements drawn from
-#           the differential harness, the rest from #263's schema (default 50).
+#           a client hits fails the run. MIX is the percentage of statements drawn
+#           from the differential harness, the rest from #263's schema (default 50).
 #   values  autocommit single-row writes to columns no TVIEW joins, filters or
 #           groups by, at READ COMMITTED: no transaction may fail at all (#263)
 #
@@ -47,12 +45,6 @@ case "$mode" in
   values) script="$here/values.pgb" ;;
   *) echo "ERROR: mode is mixed or values, not $mode"; exit 2 ;;
 esac
-case "${LEVELS:-all}" in
-  rc) levels=(-D rc=10 -D rr=10) ;;
-  rr) levels=(-D rc=6 -D rr=10) ;;
-  all) levels=(-D rc=6 -D rr=9) ;;
-  *) echo "ERROR: LEVELS is rc, rr or all"; exit 2 ;;
-esac
 pgbench="$("$PG_CONFIG" --bindir)/pgbench"
 db="pg_tviews_fuzz_$$"
 work="$(mktemp -d)"
@@ -71,7 +63,7 @@ for mode in $MODES; do
     fi
 
     "$pgbench" -n -M simple -c "$clients" -j "$clients" -T "$seconds" --random-seed="$seed" \
-      --max-tries=1 --failures-detailed --verbose-errors "${levels[@]}" -D harness="${MIX:-50}" -f "$script" "$db" >"$work/pgbench.log" 2>&1 &
+      --max-tries=1 --failures-detailed --verbose-errors -D harness="${MIX:-50}" -f "$script" "$db" >"$work/pgbench.log" 2>&1 &
     bench=$!
     checks=0
     : >"$work/stale.log"

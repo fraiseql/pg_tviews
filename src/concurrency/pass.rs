@@ -110,14 +110,6 @@ impl RelationMode {
         }
     }
 
-    /// The side a wait for it is reported as.
-    pub(super) const fn side(self) -> Side {
-        match self {
-            Self::RefreshIntent | Self::RefreshEscalated => Side::Refresh,
-            _ => Side::Writer,
-        }
-    }
-
     /// What it is recorded as.
     pub(super) fn held(self, relid: u32, space: Space) -> Vec<Held> {
         let intent = |side| Held::Intent { relid, space, side };

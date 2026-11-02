@@ -2,8 +2,8 @@
 # view has rows (TRUNCATE plus deleting its row in pg_tview_valid stands in for
 # the crash): the first one claims and fills it from the view; the second waits
 # for the claim and then finds the TVIEW filled, instead of filling it a second
-# time and failing on a duplicate key (#214). Under REPEATABLE READ the second
-# fails with 40001, which can be retried.
+# time and failing on a duplicate key (#214). A second writer at REPEATABLE READ
+# is refused with 0A000 at once.
 
 setup
 {

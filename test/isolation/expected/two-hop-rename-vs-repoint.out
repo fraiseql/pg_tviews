@@ -66,7 +66,7 @@ step m_begin: BEGIN;
 step m_repoint: UPDATE tb_post SET fk_author = 1 WHERE pk_post = 2;
 step m_commit: COMMIT;
 step r_rename: UPDATE tb_user SET username = 'ann2' WHERE pk_user = 1;
-ERROR:  could not serialize access: a concurrent transaction added rows this write must refresh
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step r_check: 
   SELECT t.pk_comment, t.data -> 'post' -> 'author' ->> 'username' AS author,

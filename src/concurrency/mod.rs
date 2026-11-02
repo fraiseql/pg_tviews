@@ -5,10 +5,9 @@
 //! looks TVIEW rows up by them; a refresh locks, shared, the join values its rows
 //! read before it computes them. Past a threshold, a transaction locks the
 //! relation instead of its values. Locks live in PostgreSQL's lock manager under a
-//! private advisory tag and are held to the end of the transaction. REPEATABLE
-//! READ and SERIALIZABLE fail instead of waiting.
+//! private advisory tag and are held to the end of the transaction. Writers run
+//! at READ COMMITTED: a transaction snapshot could not see what it waited for.
 
-pub mod crosscheck;
 mod pass;
 pub mod reads;
 mod registry;
@@ -62,35 +61,32 @@ pub struct LockTarget {
     pub attnums: Vec<i16>,
 }
 
-/// What a transaction does when a lock isn't granted at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Policy {
-    /// Wait for it (READ COMMITTED): what follows sees the other's commit.
-    Wait,
-    /// Fail with 40001 (REPEATABLE READ, SERIALIZABLE): the snapshot can't see
-    /// what it waited for. Serializable snapshot isolation alone would not do:
-    /// it orders serializable transactions among themselves, not against a
-    /// READ COMMITTED writer.
-    FailFast,
-}
-
-impl Policy {
-    /// The policy of an isolation level (`XactIsoLevel`).
-    #[must_use]
-    pub const fn of_level(level: u32) -> Self {
-        match level {
-            pg_sys::XACT_SERIALIZABLE | pg_sys::XACT_REPEATABLE_READ => Self::FailFast,
-            _ => Self::Wait,
-        }
-    }
-
-    /// The policy of the current transaction.
-    #[must_use]
-    pub fn current() -> Self {
-        // SAFETY: XactIsoLevel is a plain backend global, set for the transaction.
-        let level = unsafe { pg_sys::XactIsoLevel };
-        Self::of_level(u32::try_from(level).unwrap_or(0))
-    }
+/// Refuse a write path (a trigger capturing a write, a refresh, a rebuild) in a
+/// transaction at REPEATABLE READ or SERIALIZABLE, with 0A000, before it writes
+/// (ADR 0207). Its snapshot cannot see what it would wait for on the value
+/// locks: a row it computes or a row it looks up could be one a concurrent
+/// transaction already changed. Reads are not concerned.
+pub fn require_read_committed() {
+    // SAFETY: XactIsoLevel is a plain backend global, set for the transaction.
+    let level = u32::try_from(unsafe { pg_sys::XactIsoLevel }).unwrap_or(0);
+    let name = match level {
+        pg_sys::XACT_REPEATABLE_READ => "REPEATABLE READ",
+        pg_sys::XACT_SERIALIZABLE => "SERIALIZABLE",
+        _ => return,
+    };
+    pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+        format!(
+            "pg_tviews: a {name} transaction cannot write to a table TVIEWs read, nor \
+             refresh TVIEWs"
+        ),
+        function_name!(),
+    )
+    .set_hint(
+        "Set READ COMMITTED for transactions that write to tables feeding TVIEWs. \
+         Reads of TVIEWs work at any level.",
+    )
+    .report(PgLogLevel::ERROR);
 }
 
 const fn value_mode(side: Side) -> pg_sys::LOCKMODE {
@@ -153,7 +149,6 @@ pub fn take(pass: &Pass) {
     if pass.is_empty() {
         return;
     }
-    let policy = Policy::current();
     let threshold = crate::config::lock_escalation_threshold();
     let (ops, escalations) = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold));
     for _ in 0..escalations {
@@ -166,8 +161,6 @@ pub fn take(pass: &Pass) {
                 acquire(
                     &relation_tag(database, relid, space),
                     mode.lockmode(),
-                    mode.side(),
-                    policy,
                 );
                 REGISTRY.with_borrow_mut(|r| {
                     for held in mode.held(relid, space) {
@@ -184,8 +177,6 @@ pub fn take(pass: &Pass) {
                 acquire(
                     &value_tag(database, relid, hash),
                     value_mode(side),
-                    side,
-                    policy,
                 );
                 REGISTRY.with_borrow_mut(|r| {
                     r.record(Held::Value {
@@ -411,9 +402,9 @@ pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValu
     Ok(value)
 }
 
-/// Acquire `tag` in `mode`: at once, or as `policy` says when another
-/// transaction holds a conflicting lock. A wait is counted and timed.
-fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Policy) {
+/// Acquire `tag` in `mode`: at once, or after waiting for the transactions that
+/// hold a conflicting lock. A wait is counted and timed.
+fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE) {
     // SAFETY: a transaction is in progress (a trigger or a flush runs inside one)
     // and the tag is a well-formed advisory tag; the lock belongs to the current
     // resource owner and ends with the (sub)transaction.
@@ -421,35 +412,13 @@ fn acquire(tag: &pg_sys::LOCKTAG, mode: pg_sys::LOCKMODE, side: Side, policy: Po
     if got != pg_sys::LockAcquireResult::LOCKACQUIRE_NOT_AVAIL {
         return;
     }
-    match policy {
-        Policy::FailFast => serialization_failure(match side {
-            Side::Refresh => "a concurrent transaction changes rows this TVIEW refresh reads",
-            Side::Writer => {
-                "a concurrent transaction refreshes TVIEW rows from rows this write changes"
-            }
-        }),
-        Policy::Wait => {
-            let start = std::time::Instant::now();
-            // SAFETY: as above; waiting honours lock_timeout and deadlock
-            // detection, which raise an ERROR.
-            unsafe {
-                pg_sys::LockAcquire(tag, mode, false, false);
-            }
-            crate::metrics::metrics_api::record_value_lock_wait(start.elapsed().as_nanos());
-        }
+    let start = std::time::Instant::now();
+    // SAFETY: as above; waiting honours lock_timeout and deadlock detection,
+    // which raise an ERROR.
+    unsafe {
+        pg_sys::LockAcquire(tag, mode, false, false);
     }
-}
-
-/// Raise 40001 with `why`. Does not return.
-pub fn serialization_failure(why: &str) -> ! {
-    pg_sys::panic::ErrorReport::new(
-        PgSqlErrorCode::ERRCODE_T_R_SERIALIZATION_FAILURE,
-        format!("could not serialize access: {why}"),
-        function_name!(),
-    )
-    .set_hint("The transaction might succeed if retried.")
-    .report(PgLogLevel::ERROR);
-    unreachable!("an ERROR report does not return")
+    crate::metrics::metrics_api::record_value_lock_wait(start.elapsed().as_nanos());
 }
 
 /// Where the transaction's locks stand, for a subtransaction to roll back to.
@@ -585,19 +554,5 @@ mod tests {
         assert!(conflicts(both, mode(M::RefreshEscalated)));
         assert!(conflicts(both, both));
         assert!(!conflicts(both, mode(M::RefreshIntent)));
-    }
-
-    #[test]
-    fn each_level_has_its_policy() {
-        assert_eq!(Policy::of_level(0), Policy::Wait);
-        assert_eq!(Policy::of_level(pg_sys::XACT_READ_COMMITTED), Policy::Wait);
-        assert_eq!(
-            Policy::of_level(pg_sys::XACT_REPEATABLE_READ),
-            Policy::FailFast
-        );
-        assert_eq!(
-            Policy::of_level(pg_sys::XACT_SERIALIZABLE),
-            Policy::FailFast
-        );
     }
 }
