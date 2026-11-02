@@ -567,3 +567,7 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- What registration derives changed (an aggregate's paths come from its query
+-- tree): pg_tviews_reregister_all() re-derives every plan after the update.
+UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

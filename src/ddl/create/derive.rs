@@ -73,10 +73,14 @@ pub(crate) fn derive(
             all_base_tables.push(table);
         }
     }
-    let paths = match group_keys {
-        Some(keys) => crate::ddl::aggregate::local_paths(entity_name, keys, base_tables, view_oid)?,
-        None => local_paths(entity_name, &lineage),
-    };
+    let mut paths = local_paths(entity_name, &lineage);
+    if let Some(keys) = group_keys {
+        crate::ddl::aggregate::check_group_keys(entity_name, keys, &paths)?;
+        // The rows of an aggregate are its groups, not any table's rows.
+        for path in &mut paths {
+            path.root = false;
+        }
+    }
     let plan = crate::lineage::plan::assemble(entity_name, &lineage, paths);
     Ok(Derivation {
         lineage,

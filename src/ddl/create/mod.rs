@@ -13,7 +13,6 @@ pub(crate) use json_indexes::{
     apply as apply_json_indexes, declared as declared_json_indexes, present as present_json_indexes,
 };
 use register::Registration;
-pub(crate) use relations::view_source_columns;
 use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,

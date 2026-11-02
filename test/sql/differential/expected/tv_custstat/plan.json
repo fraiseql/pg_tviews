@@ -4,6 +4,18 @@
   "paths": [
     {
       "entity_name": "custstat",
+      "initial_attnum": "public.tb_order.fk_customer",
+      "initial_col": "fk_customer",
+      "root": false,
+      "source_columns": [
+        "fk_customer"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    },
+    {
+      "entity_name": "custstat",
+      "initial_attnum": "public.tb_customer.pk_customer",
       "initial_col": "pk_customer",
       "root": false,
       "source_columns": [
@@ -13,16 +25,6 @@
       ],
       "source_oid": "public.tb_customer",
       "source_table": "tb_customer"
-    },
-    {
-      "entity_name": "custstat",
-      "initial_col": "fk_customer",
-      "root": false,
-      "source_columns": [
-        "fk_customer"
-      ],
-      "source_oid": "public.tb_order",
-      "source_table": "tb_order"
     }
   ],
   "references": [],

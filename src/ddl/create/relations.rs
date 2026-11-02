@@ -10,9 +10,7 @@ use crate::error::TViewResult;
 use crate::utils::ident;
 use crate::utils::log_debug;
 use pgrx::pg_sys;
-use pgrx::pg_sys::Oid;
 use pgrx::prelude::Spi;
-use pgrx::prelude::notice;
 
 /// Make a TVIEW's table keyed on its identity at re-registration (ADR 0169): drop
 /// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had, and
@@ -109,28 +107,6 @@ pub(crate) fn find_relation(schema: &str, name: &str) -> TViewResult<Option<pg_s
         operation: format!("Look up {schema}.{name}"),
         pg_error: e.to_string(),
     })
-}
-
-/// Re-resolve the relation OIDs stored inside serialized cascade paths against
-/// the current catalog, using the same relname → OID map that creation built
-/// from the backing view's base tables.
-///
-/// Columns of `source_table` that the backing view `view_oid` reads, directly or
-/// through views, from `PostgreSQL`'s own column-level `pg_depend` records: the
-/// exact set of source columns whose change can alter a target TVIEW row.
-///
-/// Empty when they cannot be read; the caller treats an empty result as "unknown
-/// ⇒ always refresh", so a miss is never unsafe.
-pub(crate) fn view_source_columns(view_oid: Oid, source_oid: Oid) -> Vec<String> {
-    match crate::lineage::reads::view_columns_read(view_oid, source_oid) {
-        Ok(columns) => columns.into_iter().map(|(name, _)| name).collect(),
-        Err(e) => {
-            notice!(
-                "view_source_columns({view_oid:?}, {source_oid:?}): {e} — cascade will always refresh"
-            );
-            Vec::new()
-        }
-    }
 }
 
 /// Check if a TVIEW already exists

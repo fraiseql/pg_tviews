@@ -38,8 +38,12 @@ $$, '{"group_keys": {"tb_order": "fk_user", "tb_user": "pk_user"}}');
 
 The `group_keys` option names for each source table the column whose value
 **is** the group key: a change to a `tb_order` row affects the group `fk_user`, a change
-to a `tb_user` row the group `pk_user`. Tables not listed do not refresh the aggregate.
-The columns may have any names; `tviews.registry` shows the mapping in `options`:
+to a `tb_user` row the group `pk_user`. pg_tviews finds the same columns in the
+definition's query tree (each table whose column equals `pk_<entity>` through the
+`GROUP BY` and its joins) and checks the declaration against them; a table the
+declaration does not list but whose column equals the key (read in a subquery
+correlated on it, say) refreshes its groups too. The columns may have any names;
+`tviews.registry` shows the declaration in `options`:
 
 ```sql
 SELECT options->'group_keys' AS group_keys FROM tviews.registry
@@ -76,7 +80,8 @@ A TVIEW with `group_keys` refuses a definition it cannot maintain group by group
 - `pk_<entity>` is a plain column that is also a `GROUP BY` key (not an expression).
 - No window functions (`OVER (…)`): a window spans rows of other groups, so a group
   cannot be recomputed on its own.
-- Every table in `group_keys` must be read by the definition and have the named column.
+- Every table in `group_keys` must be read by the definition, have the named column,
+  and that column must equal the group key in the definition.
 
 Renaming a group key column keeps the aggregate maintained (`group_keys` follows).
 

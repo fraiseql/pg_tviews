@@ -1,6 +1,8 @@
 # ADR 0203: One propagation plan per TVIEW, derived from the query tree
 
-- Status: Accepted (implemented in 0.1.0-beta.27)
+- Status: Accepted (implemented in 0.1.0-beta.27; `lineage::plan` assembles the typed plan
+  and the SQL reads it through one set of decoders since 0.1.0-beta.35, and an aggregate's
+  paths come from its query tree)
 - Completes: [ADR 0157](0157-cascade-key-mapping.md) (query-tree key mapping),
   [ADR 0169](0169-tview-row-identity.md) (row identity)
 - Supersedes: the text-pattern analysis (`src/schema/*`), `cascade_paths`, and the
