@@ -30,19 +30,6 @@ pub struct AsOwner {
 }
 
 impl AsOwner {
-    /// Switch to the owner of `entity`'s `tv_*` table.
-    ///
-    /// # Errors
-    /// Returns an error if the entity is not registered or its table is gone.
-    pub fn of_entity(entity: &str) -> TViewResult<Self> {
-        let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-            TViewError::TviewNotFound {
-                name: entity.to_string(),
-            }
-        })?;
-        Self::of_table(meta.tview_oid)
-    }
-
     /// Switch to the owner of the relation `table`.
     ///
     /// # Errors

@@ -94,7 +94,7 @@ fn prune_edge(graph: &crate::catalog::EntityDepGraph, child: &str, parent: &str,
         .contains(&(child.to_string(), parent.to_string()))
         && !crate::queue::affected::changed_in_flush(child, pk);
     if prune {
-        crate::metrics::metrics_api::record_propagation_pruned(parent);
+        crate::stats::record_propagation_pruned(parent);
     }
     prune
 }

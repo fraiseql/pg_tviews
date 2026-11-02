@@ -518,7 +518,7 @@ pub(crate) fn refresh_entities(entities: &[String]) -> TViewResult<()> {
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(entity);
         } else {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::concurrency::enqueue_refresh_all(entity);
         }
     }
     crate::flush::flush_refresh_queue()

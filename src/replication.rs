@@ -131,7 +131,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
     let mut targets = TviewRelation::load(None)?;
-    let graph = crate::cache::graph()?;
+    let graph = crate::catalog::graph()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order

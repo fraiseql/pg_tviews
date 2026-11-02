@@ -357,7 +357,7 @@ fn statement(
 ) -> pgrx::spi::Result<std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> {
     let types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
     let key = (sql.to_string(), types, mutating, over);
-    if let Some(kept) = crate::cache::STATEMENTS.with(|m| m.get(&key)) {
+    if let Some(kept) = STATEMENTS.with(|m| m.get(&key)) {
         return Ok(kept);
     }
     let pg_types: Vec<pgrx::PgOid> = key.1.iter().map(|&t| pgrx::PgOid::from(t)).collect();
@@ -371,7 +371,7 @@ fn statement(
     if let Some(table) = over {
         crate::cache::watch(&[table]);
     }
-    crate::cache::STATEMENTS.with(|m| m.insert(key, kept.clone()));
+    STATEMENTS.with(|m| m.insert(key, kept.clone()));
     Ok(kept)
 }
 
@@ -418,6 +418,25 @@ pub fn kept_update_over<'conn>(
 
 /// A row of a query, its columns as text (`None` for NULL).
 pub type TextRow = Vec<Option<String>>;
+
+thread_local! {
+    /// `(how it is planned, SQL)` → its kept statement, for the queries every
+    /// refresh runs and the catalog reads. Kept across an invalidation:
+    /// PostgreSQL revalidates a kept plan when what it reads changes, and a TVIEW
+    /// changed changes the SQL generated for it.
+    static PLANS: crate::cache::Memo<(Plan, String), std::rc::Rc<KeptPlan>> =
+        crate::cache::Memo::keeping(|_| true);
+    /// `(SQL, argument types, mutating, the table whose transition tables it
+    /// reads)` → the statement kept for the backend. Kept across an invalidation
+    /// as [`PLANS`] are, but for the statements over transition tables:
+    /// PostgreSQL does not revalidate those when their table changes.
+    static STATEMENTS: crate::cache::Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
+        crate::cache::Memo::keeping(|(_, _, _, over)| over.is_none());
+}
+
+/// What a kept statement is found by: its SQL, its argument types, whether it
+/// may change data, and the table whose transition tables it reads.
+type StatementKey = (String, Vec<Oid>, bool, Option<Oid>);
 
 /// How a kept statement is planned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -543,7 +562,7 @@ pub fn catalog_one<T: OwnedColumn>(sql: &str, args: &[DatumWithOid<'_>]) -> TVie
 /// Inside an SPI connection.
 fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::Rc<KeptPlan>> {
     let key = (mode, sql.to_string());
-    if let Some(plan) = crate::cache::PLANS.with(|m| m.get(&key)) {
+    if let Some(plan) = PLANS.with(|m| m.get(&key)) {
         return Ok(plan);
     }
     let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
@@ -567,7 +586,7 @@ fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::R
         std::rc::Rc::new(KeptPlan(plan))
     };
     crate::metrics::metrics_api::record_plan_prepared();
-    crate::cache::PLANS.with(|m| m.insert(key, plan.clone()));
+    PLANS.with(|m| m.insert(key, plan.clone()));
     Ok(plan)
 }
 

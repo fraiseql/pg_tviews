@@ -24,7 +24,7 @@ pub(super) fn flush_pending() -> TViewResult<()> {
     crate::queue::affected::begin_flush();
     let timer = crate::metrics::metrics_api::record_refresh_start();
 
-    let mut flush = Flush::new(crate::cache::graph()?, queue, patches);
+    let mut flush = Flush::new(crate::catalog::graph()?, queue, patches);
     // Write each parent change into all its children at once; the
     // parents of every changed child join the queue.
     flush.apply_fanouts(fanout)?;

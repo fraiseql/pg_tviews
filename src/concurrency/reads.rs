@@ -6,6 +6,13 @@ use crate::lineage::{KeyMapping, Placeholder, ReadSet};
 use crate::queue::key::KeyValue;
 use pgrx::pg_sys::Oid;
 
+thread_local! {
+    /// `(entity, relid, attnum)` → the rendered read-set query (`None`: a
+    /// relation is gone).
+    static READ_SETS: crate::cache::Memo<(String, u32, i16), Option<String>> =
+        crate::cache::Memo::new();
+}
+
 /// The query of `set`, a read set of `entity`'s mapping of `mapping`, with the
 /// current names of what it reads and its keys compared with `keys` (cached
 /// until a relation it reads changes). `None` when a relation it reads is gone,
@@ -23,7 +30,7 @@ pub fn rendered(
         return Ok(None);
     };
     let key = (entity.to_string(), mapping.relid, set.attnum);
-    let sql = if let Some(sql) = crate::cache::READ_SETS.with(|m| m.get(&key)) {
+    let sql = if let Some(sql) = READ_SETS.with(|m| m.get(&key)) {
         sql
     } else {
         let sql = crate::lineage::render_template(template)
@@ -35,7 +42,7 @@ pub fn rendered(
             })
             .collect();
         crate::cache::watch(&relids);
-        crate::cache::READ_SETS.with(|m| m.insert(key, sql.clone()));
+        READ_SETS.with(|m| m.insert(key, sql.clone()));
         sql
     };
     Ok(sql.map(|sql| sql.replace("ANY ($1)", keys)))
@@ -70,7 +77,7 @@ pub fn read_set(
     pass: &mut super::Pass,
 ) -> TViewResult<()> {
     use super::{LockTarget, Side};
-    let Some(lookup) = crate::refresh::key_lookup(&meta.key_type, keys)? else {
+    let Some(lookup) = crate::queue::key::key_lookup(&meta.key_type, keys)? else {
         return Ok(());
     };
     pass.intent(meta.tview_oid.to_u32(), Side::Refresh);

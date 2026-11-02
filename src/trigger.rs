@@ -135,7 +135,7 @@ fn pg_tview_trigger_handler<'a>(
     // A row of a partition: what pg_tviews knows is its partitioned table.
     let table_oid = crate::catalog::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
-    let all_paths = crate::cache::cascade_paths(table_oid)
+    let all_paths = crate::catalog::cascade_paths(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
     let paths: Vec<&crate::lineage::plan::LocalPath> = all_paths
         .iter()

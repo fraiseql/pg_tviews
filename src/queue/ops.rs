@@ -60,16 +60,15 @@ pub fn enqueue_refresh_patched(
     // Count the capture once per fresh key: a base table feeding several tviews
     // has several row triggers that each re-record the same key in one statement.
     if super::patch::record(RefreshKey::pk(entity, pk), Vec::new(), fields) {
-        crate::metrics::metrics_api::record_direct_patch_captured(entity);
+        crate::stats::record_direct_patch_captured(entity);
     }
 }
 
 /// Enqueue a refresh of every row of `entity`'s TVIEW. One
 /// entry however many rows the statement changes; the flush absorbs the entity's
-/// per-key entries into it.
+/// per-key entries into it. The caller notes the link change
+/// ([`crate::concurrency::enqueue_refresh_all`]).
 pub fn enqueue_refresh_all(entity: &str) {
-    // Rows rebuilt in full may come and go: a link change.
-    crate::concurrency::note_link_change();
     let key = RefreshKey::all(entity);
     if state::queue_contains(&key) {
         return;

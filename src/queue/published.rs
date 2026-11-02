@@ -35,14 +35,7 @@ use std::rc::Rc;
 /// are encoded.
 pub const KEPT_BYTES: usize = 2 * crate::publish::MAX_MESSAGES * crate::publish::MESSAGE_BYTES;
 
-/// What a transaction publishes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Publish {
-    /// Changed rows, by id.
-    Rows,
-    /// Changed types only.
-    Types,
-}
+pub use crate::config::Publish;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {

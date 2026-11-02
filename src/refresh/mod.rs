@@ -10,131 +10,14 @@ pub mod full;
 pub use bulk::refresh_bulk;
 pub use row::refresh_key;
 
+pub(crate) use crate::queue::key::{key_array, key_cast, key_lookup, key_scalar, produced_keys};
+
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;
 use crate::utils::ident;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::fmt::Write as _;
-
-/// `param` (`$1`) cast to the identity's type, or to an array of it: an integer
-/// identity is bound as `int8`, any other as text cast to its type, so a filter on
-/// the identity column can use its index.
-pub(crate) fn key_cast(key_type: &KeyType, param: &str, array: bool) -> String {
-    let brackets = if array { "[]" } else { "" };
-    match key_type {
-        KeyType::Int => format!("{param}::pg_catalog.int8{brackets}"),
-        KeyType::Text(ty) => format!("{param}::pg_catalog.text{brackets}::{ty}{brackets}"),
-    }
-}
-
-/// The values of `keys` as the identity binds them; a text key of an integer
-/// identity that is not an integer is an error.
-fn key_values(key_type: &KeyType, keys: &[KeyValue]) -> crate::TViewResult<KeyValues> {
-    Ok(match key_type {
-        KeyType::Int => KeyValues::Int(
-            keys.iter()
-                .map(|k| {
-                    k.to_int().ok_or_else(|| crate::TViewError::InvalidInput {
-                        parameter: "key".to_string(),
-                        reason: format!("{k} is not a value of an integer identity"),
-                    })
-                })
-                .collect::<crate::TViewResult<_>>()?,
-        ),
-        KeyType::Text(_) => KeyValues::Text(keys.iter().map(ToString::to_string).collect()),
-    })
-}
-
-enum KeyValues {
-    Int(Vec<i64>),
-    Text(Vec<String>),
-}
-
-/// `keys` as one array parameter, for `key_cast(…, true)`.
-pub(crate) fn key_array(
-    key_type: &KeyType,
-    keys: &[KeyValue],
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_values(key_type, keys)? {
-        KeyValues::Int(v) => crate::utils::spi::int8_array(v),
-        KeyValues::Text(v) => crate::utils::spi::text_array(v),
-    })
-}
-
-/// The identities an upsert's source produced ([`Produced::keys`], as text), as
-/// one array parameter for `key_cast(…, true)`.
-pub(crate) fn produced_keys(
-    key_type: &KeyType,
-    keys: Vec<String>,
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_type {
-        KeyType::Int => crate::utils::spi::int8_array(
-            keys.iter()
-                .map(|k| {
-                    k.parse().map_err(|_| crate::TViewError::InvalidInput {
-                        parameter: "key".to_string(),
-                        reason: format!("{k} is not a value of an integer identity"),
-                    })
-                })
-                .collect::<crate::TViewResult<_>>()?,
-        ),
-        KeyType::Text(_) => crate::utils::spi::text_array(keys),
-    })
-}
-
-/// One key as a parameter, for `key_cast(…, false)`.
-pub(crate) fn key_scalar(
-    key_type: &KeyType,
-    key: &KeyValue,
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_values(key_type, std::slice::from_ref(key))? {
-        KeyValues::Int(v) => crate::utils::spi::int8(v[0]),
-        KeyValues::Text(mut v) => crate::utils::spi::text(v.swap_remove(0)),
-    })
-}
-
-/// Identity keys bound from `$1` for a lookup, shaped by their count as
-/// [`crate::utils::spi::LookupKeys`] shapes keys of `fk_<entity>`: a backing view
-/// read by identity may join many rows of a table for each key (an aggregate of
-/// children), which a generic plan for an array estimates as ten keys' worth.
-pub(crate) struct KeyLookup {
-    /// What the identity is compared with by `OPERATOR(pg_catalog.=)`.
-    pub rhs: String,
-    /// The keys, as `rhs` reads them.
-    pub args: Vec<DatumWithOid<'static>>,
-    /// How a statement looking them up is planned.
-    pub plan: crate::utils::spi::Plan,
-}
-
-/// The lookup of `keys` of an identity of `key_type`; `None` without any.
-///
-/// # Errors
-/// A text key of an integer identity that is not an integer.
-pub(crate) fn key_lookup(
-    key_type: &KeyType,
-    keys: &[KeyValue],
-) -> crate::TViewResult<Option<KeyLookup>> {
-    use crate::utils::spi::{Plan, padded, shape, shaped_rhs};
-    if keys.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(match shape(keys.len()) {
-        Some(width) => KeyLookup {
-            rhs: shaped_rhs(width, 1, |p| key_cast(key_type, p, false)),
-            args: padded(keys.to_vec(), width)
-                .iter()
-                .map(|key| key_scalar(key_type, key))
-                .collect::<crate::TViewResult<_>>()?,
-            plan: Plan::Generic,
-        },
-        None => KeyLookup {
-            rhs: format!("ANY ({})", key_cast(key_type, "$1", true)),
-            args: vec![key_array(key_type, keys)?],
-            plan: Plan::PerExecution,
-        },
-    }))
-}
 
 /// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look
 /// them up by (ADR 0169, D4).
@@ -400,10 +283,7 @@ pub(crate) fn run_counted_upsert(
         Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
         _ => Vec::new(),
     };
-    crate::metrics::metrics_api::record_noop_skipped(
-        entity,
-        keys.len().saturating_sub(rows.len()) as u64,
-    );
+    crate::stats::record_noop_skipped(entity, keys.len().saturating_sub(rows.len()) as u64);
     let mut written = Written::default();
     let mut created = Vec::new();
     for row in rows {

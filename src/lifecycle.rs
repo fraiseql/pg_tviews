@@ -115,7 +115,7 @@ pub mod validity {
         }
         let filled = fill_if_reset(entity)?.is_some();
         // The TVIEWs it reads first: one restored empty would make its rows empty.
-        let graph = crate::cache::graph()?;
+        let graph = crate::catalog::graph()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_emptied(dependency)?;
         }
@@ -171,7 +171,7 @@ pub mod validity {
     /// first. No write reaches it in this statement, so its view's rows are all
     /// missing ones.
     fn fill_if_emptied(entity: &str) -> TViewResult<()> {
-        let graph = crate::cache::graph()?;
+        let graph = crate::catalog::graph()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_emptied(dependency)?;
         }
@@ -291,7 +291,7 @@ pub mod validity {
         if !needs_fill(entity, meta.tview_oid)? {
             return Ok(None);
         }
-        let graph = crate::cache::graph()?;
+        let graph = crate::catalog::graph()?;
         for dependency in graph.children.get(entity).into_iter().flatten() {
             fill_if_reset(dependency)?;
         }

@@ -17,6 +17,15 @@ use crate::queue::key::KeyValue;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
+thread_local! {
+    /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
+    static MAPPINGS: crate::cache::Memo<(String, u32), Option<String>> = crate::cache::Memo::new();
+    /// `(entity, relid)` → the rendered lookup of a fan-out through a table in
+    /// between (`None`: a relation is gone).
+    static FANOUT_VIAS: crate::cache::Memo<(String, u32), Option<String>> =
+        crate::cache::Memo::new();
+}
+
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of `meta`'s TVIEW (ADR 0157), with the current names
 /// of what it reads. `None` when writes to the table do not map through a query
@@ -181,7 +190,7 @@ pub(super) fn map_statement(
                 &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
             )?;
             if !changed.is_empty() {
-                crate::queue::enqueue_refresh_all(entity);
+                crate::concurrency::enqueue_refresh_all(entity);
             }
         }
         Route::Mapped { delta } => {
@@ -566,18 +575,18 @@ pub(super) fn refresh_all(entity: &str, why: &str) {
              SELECT tviews.pg_tviews_reregister('{entity}') re-derives it"
         ),
     );
-    crate::queue::enqueue_refresh_all(entity);
+    crate::concurrency::enqueue_refresh_all(entity);
 }
 
 /// The mapping query of `mapping`, with the current names of what it reads
 /// (cached until one of them changes).
 pub(super) fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);
-    if let Some(sql) = crate::cache::MAPPINGS.with(|m| m.get(&key)) {
+    if let Some(sql) = MAPPINGS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let sql = render_watched(mapping.sql.as_deref().unwrap_or_default())?;
-    crate::cache::MAPPINGS.with(|m| m.insert(key, sql.clone()));
+    MAPPINGS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 
@@ -586,12 +595,12 @@ pub(super) fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option
 /// it reads (cached until one of them changes).
 fn rendered_via(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);
-    if let Some(sql) = crate::cache::FANOUT_VIAS.with(|m| m.get(&key)) {
+    if let Some(sql) = FANOUT_VIAS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let template = mapping.fanout.as_ref().and_then(|f| f.via.as_deref());
     let sql = render_watched(template.unwrap_or_default())?;
-    crate::cache::FANOUT_VIAS.with(|m| m.insert(key, sql.clone()));
+    FANOUT_VIAS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 

@@ -246,13 +246,18 @@ pub const fn ext_schema() -> &'static str {
     EXT_SCHEMA
 }
 
+thread_local! {
+    /// Relation → its column names, in order.
+    static COLUMNS: crate::cache::Memo<Oid, Vec<String>> = crate::cache::Memo::new();
+}
+
 /// The column names of relation `rel_oid`, in order (cached per backend). Used
 /// for the column lists of upserts.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
-    crate::cache::COLUMNS.with(|m| {
+    COLUMNS.with(|m| {
         m.get_or_load(rel_oid, || {
             crate::cache::watch(&[rel_oid]);
             Ok(crate::utils::spi::catalog_rows(

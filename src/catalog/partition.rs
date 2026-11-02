@@ -3,10 +3,15 @@
 use crate::TViewResult;
 use pgrx::pg_sys::Oid;
 
+thread_local! {
+    /// Table → the root of its partition tree (itself when it is no partition).
+    static PARTITION_ROOTS: crate::cache::Memo<Oid, Oid> = crate::cache::Memo::new();
+}
+
 /// The root of `table_oid`'s partition tree, `table_oid` itself if it is not a
 /// partition (cached).
 pub fn partition_root(table_oid: Oid) -> TViewResult<Oid> {
-    if let Some(root) = crate::cache::PARTITION_ROOTS.with(|m| m.get(&table_oid)) {
+    if let Some(root) = PARTITION_ROOTS.with(|m| m.get(&table_oid)) {
         return Ok(root);
     }
     let root = crate::utils::spi::catalog_one::<Oid>(
@@ -14,6 +19,6 @@ pub fn partition_root(table_oid: Oid) -> TViewResult<Oid> {
         &[crate::utils::spi::regclass(table_oid)],
     )?
     .unwrap_or(table_oid);
-    crate::cache::PARTITION_ROOTS.with(|m| m.insert(table_oid, root));
+    PARTITION_ROOTS.with(|m| m.insert(table_oid, root));
     Ok(root)
 }

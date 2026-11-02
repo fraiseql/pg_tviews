@@ -27,6 +27,8 @@ jobs:
         run: scripts/check-plpgsql-handlers.sh
       - name: Check plans are read through the typed plan and the SQL decoders only
         run: scripts/check-plan-readers.sh
+      - name: Check the lower modules form layers (no dependency cycle)
+        run: scripts/check-module-layers.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})

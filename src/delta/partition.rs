@@ -31,7 +31,7 @@ pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
         if suspended() {
             crate::suspend::record_change(entity);
         } else {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::concurrency::enqueue_refresh_all(entity);
         }
     }
     crate::flush::flush_refresh_queue()
@@ -86,7 +86,7 @@ pub fn map_leaving_partition(partition: Oid, lock_parent: bool) -> TViewResult<(
         if suspended() {
             crate::suspend::record_change(&entity);
         } else if foreign {
-            crate::queue::enqueue_refresh_all(&entity);
+            crate::concurrency::enqueue_refresh_all(&entity);
         } else {
             map_partition_rows(&entity, partition, ancestor, false)?;
         }
@@ -113,7 +113,7 @@ pub fn map_entering_partition(partition: Oid) -> TViewResult<()> {
         if suspended() {
             crate::suspend::record_change(&entity);
         } else if foreign {
-            crate::queue::enqueue_refresh_all(&entity);
+            crate::concurrency::enqueue_refresh_all(&entity);
         } else {
             map_partition_rows(&entity, partition, ancestor, true)?;
         }
@@ -192,7 +192,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
     .map_err(|e| crate::utils::spi::error("has_table_privilege", &e))?
     .unwrap_or(false);
     let Some(keys_sql) = keys_sql.filter(|_| readable) else {
-        crate::queue::enqueue_refresh_all(entity);
+        crate::concurrency::enqueue_refresh_all(entity);
         return Ok(());
     };
     let rows = format!(
@@ -254,7 +254,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind {
         MappingKind::AllKeys if full_refresh => {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::concurrency::enqueue_refresh_all(entity);
             Ok(true)
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it

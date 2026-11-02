@@ -306,13 +306,22 @@ pub fn max_queue_size() -> usize {
     MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
 }
 
+/// What a transaction publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Publish {
+    /// Changed rows, by id.
+    Rows,
+    /// Changed types only.
+    Types,
+}
+
 /// What commit publishes (`pg_tviews.publish_changes`); `None` when off.
 #[must_use]
-pub fn publish_changes() -> Option<crate::queue::published::Publish> {
+pub fn publish_changes() -> Option<Publish> {
     match PUBLISH_CHANGES_GUC.get() {
         PublishChanges::Off => None,
-        PublishChanges::Types => Some(crate::queue::published::Publish::Types),
-        PublishChanges::Rows => Some(crate::queue::published::Publish::Rows),
+        PublishChanges::Types => Some(Publish::Types),
+        PublishChanges::Rows => Some(Publish::Rows),
     }
 }
 

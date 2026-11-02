@@ -158,10 +158,7 @@ pub fn apply_fanout_patch(
         changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
     }
 
-    crate::metrics::metrics_api::record_direct_patches_applied(
-        &meta.entity_name,
-        changed.len() as u64,
-    );
+    crate::stats::record_direct_patches_applied(&meta.entity_name, changed.len() as u64);
     Ok(changed
         .into_iter()
         .map(|(pk, (id, references))| {
@@ -315,8 +312,8 @@ pub fn apply_entity_patches(
             let present: HashSet<i64> = materialised.iter().map(|&(pk, ..)| pk).collect();
             let changed = materialised.iter().filter(|&&(_, c, _)| c).count() as u64;
 
-            crate::metrics::metrics_api::record_direct_patches_applied(&meta.entity_name, changed);
-            crate::metrics::metrics_api::record_noop_skipped(
+            crate::stats::record_direct_patches_applied(&meta.entity_name, changed);
+            crate::stats::record_noop_skipped(
                 &meta.entity_name,
                 materialised.len() as u64 - changed,
             );
@@ -339,10 +336,7 @@ pub fn apply_entity_patches(
     }
 
     if !fallback.is_empty() {
-        crate::metrics::metrics_api::record_direct_patch_fallbacks(
-            &meta.entity_name,
-            fallback.len() as u64,
-        );
+        crate::stats::record_direct_patch_fallbacks(&meta.entity_name, fallback.len() as u64);
     }
     Ok(fallback)
 }

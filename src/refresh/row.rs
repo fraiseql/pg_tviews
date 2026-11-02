@@ -46,7 +46,7 @@ pub fn refresh_key(meta: &TviewMeta, key: &KeyValue) -> crate::TViewResult<super
     // returning several rows for the key is refused there. No source row
     // means the base row was deleted, so remove the tview row instead of
     // erroring, which would leave the deleted row stale.
-    crate::metrics::metrics_api::record_view_recomputes(&meta.entity_name, 1);
+    crate::stats::record_view_recomputes(&meta.entity_name, 1);
     let produced = write_row(meta, key, locked.old.as_ref())?;
     let deleted = if produced.keys.is_empty() {
         delete_tview_row(meta, key)?

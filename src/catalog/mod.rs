@@ -1,3 +1,4 @@
+mod cached;
 pub mod collections;
 pub mod graph;
 pub(crate) mod indexes;
@@ -8,6 +9,7 @@ pub mod registered;
 pub mod resolve;
 pub mod row;
 
+pub use cached::{cascade_paths, graph, plans};
 pub use collections::Collection;
 pub use graph::EntityDepGraph;
 pub use partition::partition_root;
@@ -223,7 +225,12 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
 
 /// Whether the change feed names collections: then the catalog rows read carry them.
 fn feed_collections() -> bool {
-    crate::config::publish_changes() == Some(crate::queue::published::Publish::Rows)
+    crate::config::publish_changes() == Some(crate::config::Publish::Rows)
+}
+
+thread_local! {
+    /// Every `TviewMeta` read so far (keyed by entity).
+    static METAS: crate::cache::Memo<String, std::rc::Rc<TviewMeta>> = crate::cache::Memo::new();
 }
 
 /// The cached catalog row of `entity`, unless `pg_tviews.table_cache_enabled` is
@@ -232,7 +239,7 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     if !crate::config::table_cache_enabled() {
         return None;
     }
-    let meta = crate::cache::METAS
+    let meta = METAS
         .with(|m| m.get(&entity.to_string()))
         .filter(|meta| meta.collections_read || !feed_collections());
     if meta.is_some() {
@@ -258,8 +265,22 @@ fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
         .map(|c| c.parent_table_oid)
         .collect();
     crate::cache::watch(&parents);
-    crate::cache::METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
+    METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
     meta
+}
+
+impl crate::owner::AsOwner {
+    /// Switch to the owner of `entity`'s `tv_*` table.
+    ///
+    /// # Errors
+    /// Returns an error if the entity is not registered or its table is gone.
+    pub fn of_entity(entity: &str) -> crate::TViewResult<Self> {
+        let meta =
+            TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
+                name: entity.to_string(),
+            })?;
+        Self::of_table(meta.tview_oid)
+    }
 }
 
 impl TviewMeta {
@@ -342,7 +363,7 @@ impl TviewMeta {
         if crate::config::table_cache_enabled() {
             let relid = table_oid.to_u32();
             entities.extend(
-                crate::cache::plans()?
+                plans()?
                     .iter()
                     .filter(|e| e.entity != entity_name)
                     .filter(|e| e.plan.tables.iter().any(|m| m.relid == relid))

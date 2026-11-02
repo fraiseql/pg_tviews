@@ -446,6 +446,45 @@ fn unavailable() -> crate::TViewError {
     }
 }
 
+/// An eligible direct-patch capture of `entity`'s TVIEW: in the session's
+/// metrics and `tviews.stats`.
+pub fn record_direct_patch_captured(entity: &str) {
+    crate::metrics::metrics_api::record_direct_patch_captured();
+    add(entity, Counter::PatchCaptured, 1);
+}
+
+/// `n` rows of `entity`'s TVIEW updated directly by a patch.
+pub fn record_direct_patches_applied(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_direct_patches_applied(n);
+    add(entity, Counter::PatchApplied, n);
+}
+
+/// `n` patched keys of `entity`'s TVIEW that fell back to recompute.
+pub fn record_direct_patch_fallbacks(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_direct_patch_fallbacks(n);
+    add(entity, Counter::PatchFallbacks, n);
+}
+
+/// `n` rows of `entity`'s TVIEW recomputed from the backing view.
+pub fn record_view_recomputes(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_view_recomputes(n);
+    add(entity, Counter::ViewRecomputes, n);
+}
+
+/// `n` refresh writes to `entity`'s TVIEW skipped because nothing changed.
+pub fn record_noop_skipped(entity: &str, n: u64) {
+    if n > 0 {
+        crate::metrics::metrics_api::record_noop_skipped(n);
+        add(entity, Counter::NoopSkipped, n);
+    }
+}
+
+/// One propagation edge into `parent`'s TVIEW skipped at an unchanged child row.
+pub fn record_propagation_pruned(parent: &str) {
+    crate::metrics::metrics_api::record_propagation_pruned();
+    add(parent, Counter::PropagationPruned, 1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CAPACITY, Slot, Table};

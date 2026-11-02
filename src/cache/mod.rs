@@ -1,16 +1,16 @@
-//! Every per-backend cache, and the one path that invalidates them.
+//! The per-backend memo every cache is made of, and the one path that
+//! invalidates them all.
 //!
-//! A cache here only memoises catalog reads: clearing it costs a re-read, never
-//! correctness. DDL on a watched relation (a TVIEW's table or backing view,
-//! `pg_tview_meta`, a base table a mapping query reads) invalidates its relcache
-//! entry in every backend; the relcache callback bumps this backend's generation,
-//! and the next lookup in any cache here sees the bump and clears them all. The
-//! callback only touches a `Cell`: it can run in the middle of a catalog access, so
-//! it must neither take a lock nor call SPI.
+//! A memo only remembers catalog reads: clearing it costs a re-read, never
+//! correctness. Each owner declares its memos next to the reads they remember
+//! (the catalog its rows and plans, the delta its queries, the SPI layer its kept
+//! statements); this module knows none of them. DDL on a watched relation (a
+//! TVIEW's table or backing view, `pg_tview_meta`, a base table a mapping query
+//! reads) invalidates its relcache entry in every backend; the relcache callback
+//! bumps this backend's generation, and the next lookup in any memo sees the bump
+//! and clears it. The callback only touches a `Cell`: it can run in the middle of
+//! a catalog access, so it must neither take a lock nor call SPI.
 
-use crate::catalog::EntityDepGraph;
-use crate::catalog::{PlanEntry, TviewMeta};
-use crate::lineage::plan::LocalPath;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -18,22 +18,42 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 /// A memo of catalog reads, keyed by `K`, bounded by `pg_tviews.cache_size`.
-pub struct Memo<K, V>(RefCell<HashMap<K, V>>);
+/// Cleared at the first lookup after an invalidation ([`invalidate_all`]), except
+/// the entries its `keep` keeps.
+pub struct Memo<K, V> {
+    map: RefCell<HashMap<K, V>>,
+    /// The epoch the entries were read in.
+    epoch: Cell<u64>,
+    keep: fn(&K) -> bool,
+}
 
 impl<K: Eq + Hash, V: Clone> Memo<K, V> {
-    fn new() -> Self {
-        Self(RefCell::new(HashMap::new()))
+    /// A memo cleared whole at an invalidation.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::keeping(|_| false)
+    }
+
+    /// A memo whose entries `keep` keeps outlive an invalidation.
+    #[must_use]
+    pub fn keeping(keep: fn(&K) -> bool) -> Self {
+        Self {
+            map: RefCell::new(HashMap::new()),
+            epoch: Cell::new(EPOCH.with(Cell::get)),
+            keep,
+        }
     }
 
     /// The value for `key`, after any pending invalidation.
     pub fn get(&self, key: &K) -> Option<V> {
-        sync_generation();
-        self.0.borrow().get(key).cloned()
+        self.sync();
+        self.map.borrow().get(key).cloned()
     }
 
     /// Remember `value` for `key`.
     pub fn insert(&self, key: K, value: V) {
-        let mut map = self.0.borrow_mut();
+        self.sync();
+        let mut map = self.map.borrow_mut();
         if map.len() >= crate::config::cache_size() {
             map.clear();
         }
@@ -57,141 +77,32 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
         Ok(value)
     }
 
-    fn clear(&self) {
-        self.0.borrow_mut().clear();
+    /// Forget what was read before the last invalidation.
+    fn sync(&self) {
+        sync_generation();
+        let epoch = EPOCH.with(Cell::get);
+        if self.epoch.get() != epoch {
+            let keep = self.keep;
+            self.map.borrow_mut().retain(|k, _| keep(k));
+            self.epoch.set(epoch);
+        }
     }
+}
 
-    fn retain(&self, keep: impl FnMut(&K, &mut V) -> bool) {
-        self.0.borrow_mut().retain(keep);
+impl<K: Eq + Hash, V: Clone> Default for Memo<K, V> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-thread_local! {
-    /// Every TVIEW's entity and plan (one entry, keyed by `()`).
-    pub static PLANS_BY_ENTITY: Memo<(), std::rc::Rc<[PlanEntry]>> = Memo::new();
-    /// The entity dependency graph (one entry, keyed by `()`).
-    pub static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
-    /// Table → the local paths starting at it.
-    pub static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
-    /// Every `TviewMeta` read so far (keyed by entity).
-    pub static METAS: Memo<String, std::rc::Rc<TviewMeta>> = Memo::new();
-    /// Relation → its column names, in order.
-    pub static COLUMNS: Memo<Oid, Vec<String>> = Memo::new();
-    /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
-    pub static MAPPINGS: Memo<(String, u32), Option<String>> = Memo::new();
-    /// `(entity, relid)` → the rendered lookup of a fan-out through a table in
-    /// between (`None`: a relation is gone).
-    pub static FANOUT_VIAS: Memo<(String, u32), Option<String>> = Memo::new();
-    /// `(entity, relid, attnum)` → the rendered read-set query (`None`: a
-    /// relation is gone).
-    pub static READ_SETS: Memo<(String, u32, i16), Option<String>> = Memo::new();
-    /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
-    pub static LOCK_VALUES: Memo<(u32, i16), Option<crate::concurrency::LockValue>> = Memo::new();
-    /// `(how it is planned, SQL)` → its kept statement, for the queries every
-    /// refresh runs and the catalog reads. Kept across [`invalidate_all`]:
-    /// PostgreSQL revalidates a kept plan when what it reads changes, and a TVIEW
-    /// changed changes the SQL generated for it.
-    pub static PLANS: Memo<(crate::utils::spi::Plan, String), std::rc::Rc<crate::utils::spi::KeptPlan>> =
-        Memo::new();
-    /// `(SQL, argument types, mutating, the table whose transition tables it
-    /// reads)` → the statement kept for the backend. Kept across
-    /// [`invalidate_all`] as [`PLANS`] are, but for the statements over transition
-    /// tables: PostgreSQL does not revalidate those when their table changes.
-    pub static STATEMENTS: Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
-        Memo::new();
-    /// `(table, attnums)` → how its old and new transition rows pair up, and the
-    /// names of those columns (`None`: they can't be paired).
-    pub static PAIRINGS: Memo<(Oid, Vec<i16>), Option<RowPairing>> = Memo::new();
-    /// Table → its primary key columns, each with whether the equality operator
-    /// of its type is in `pg_catalog`.
-    pub static PRIMARY_KEYS: Memo<Oid, std::rc::Rc<[(String, bool)]>> = Memo::new();
-    /// `(relid, event, attnums)` → the query of the changed rows.
-    pub static DELTAS: Memo<(u32, crate::queue::Event, Vec<i16>), String> = Memo::new();
-    /// Table → the select list computing its virtual generated columns (`None`:
-    /// it has none).
-    pub static COMPUTED: Memo<Oid, Option<String>> = Memo::new();
-    /// Table → the root of its partition tree (itself when it is no partition).
-    pub static PARTITION_ROOTS: Memo<Oid, Oid> = Memo::new();
-    /// The quoted schema of `jsonb_delta`.
-    pub static JSONB_DELTA_SCHEMA: Memo<(), String> = Memo::new();
-}
+/// How the catalog's OID is found: `None` before `CREATE EXTENSION`.
+type CatalogOid = fn() -> Option<Oid>;
 
-/// What a kept statement is found by: its SQL, its argument types, whether it
-/// may change data, and the table whose transition tables it reads.
-pub type StatementKey = (String, Vec<Oid>, bool, Option<Oid>);
-
-/// The condition pairing an updated row's two images in a mapped table's
-/// transition tables, and the names of the columns the TVIEW reads.
-pub type RowPairing = (String, Vec<String>);
-
-/// The entity dependency graph (cached per backend).
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn graph() -> crate::TViewResult<EntityDepGraph> {
-    if !crate::config::graph_cache_enabled() {
-        return EntityDepGraph::load();
-    }
-    if let Some(graph) = GRAPH.with(|m| m.get(&())) {
-        crate::metrics::metrics_api::record_graph_cache_hit();
-        return Ok(graph);
-    }
-    crate::metrics::metrics_api::record_graph_cache_miss();
-    let graph = EntityDepGraph::from_plans(&plans()?)?;
-    GRAPH.with(|m| m.insert((), graph.clone()));
-    Ok(graph)
-}
-
-/// The local paths starting at `table_oid`, across every TVIEW's plan (cached
-/// for the backend: a TVIEW created, changed or dropped anywhere writes
-/// `pg_tview_meta`, which invalidates it).
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPath]>> {
-    CASCADE_PATHS.with(|m| {
-        m.get_or_load(table_oid, || {
-            Ok(plans()?
-                .iter()
-                .flat_map(|entry| &entry.plan.paths)
-                .filter(|path| path.source_oid == table_oid)
-                .cloned()
-                .collect::<Vec<_>>()
-                .into())
-        })
-    })
-}
-
-/// Every TVIEW's entity and plan (cached for the backend), which the dependency
-/// graph and the cascade paths are built from: not the TVIEWs' full catalog rows
-/// ([`TviewMeta::load_plans`]).
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn plans() -> crate::TViewResult<std::rc::Rc<[PlanEntry]>> {
-    PLANS_BY_ENTITY.with(|m| m.get_or_load((), || Ok(TviewMeta::load_plans()?.into())))
-}
-
-/// Forget every cached value of this backend but its kept plans ([`PLANS`],
-/// [`STATEMENTS`] not over transition tables).
+/// Forget every memoized value of this backend (but what a memo keeps, see
+/// [`Memo::keeping`]).
 pub fn invalidate_all() {
     CHANGED_IN_XACT.with(|c| c.set(true));
-    PLANS_BY_ENTITY.with(Memo::clear);
-    GRAPH.with(Memo::clear);
-    CASCADE_PATHS.with(Memo::clear);
-    METAS.with(Memo::clear);
-    COLUMNS.with(Memo::clear);
-    MAPPINGS.with(Memo::clear);
-    FANOUT_VIAS.with(Memo::clear);
-    READ_SETS.with(Memo::clear);
-    LOCK_VALUES.with(Memo::clear);
-    STATEMENTS.with(|m| m.retain(|(_, _, _, over), _| over.is_none()));
-    DELTAS.with(Memo::clear);
-    PAIRINGS.with(Memo::clear);
-    PRIMARY_KEYS.with(Memo::clear);
-    COMPUTED.with(Memo::clear);
-    PARTITION_ROOTS.with(Memo::clear);
-    JSONB_DELTA_SCHEMA.with(Memo::clear);
+    EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
     // The catalog may have been dropped and created again under another OID.
     CATALOG_WATCHED.with(|w| w.set(false));
 }
@@ -199,6 +110,11 @@ pub fn invalidate_all() {
 // ── cross-backend invalidation ───────────────────────────────────────────────
 
 thread_local! {
+    /// The number of invalidations so far: what a memo read under one value
+    /// holds while it is unchanged.
+    static EPOCH: Cell<u64> = const { Cell::new(0) };
+    /// How this backend finds `pg_tview_meta`'s OID ([`set_catalog`]).
+    static CATALOG: Cell<Option<CatalogOid>> = const { Cell::new(None) };
     static GENERATION: Cell<u64> = const { Cell::new(0) };
     static SEEN_GENERATION: Cell<u64> = const { Cell::new(0) };
     static WATCHED: RefCell<HashSet<Oid>> = RefCell::new(HashSet::new());
@@ -236,6 +152,12 @@ pub fn end_transaction() {
     CHANGED_IN_XACT.with(|c| c.set(false));
 }
 
+/// How this backend finds `pg_tview_meta`'s OID, to watch it. Called once from
+/// `_PG_init`.
+pub fn set_catalog(oid: CatalogOid) {
+    CATALOG.with(|c| c.set(Some(oid)));
+}
+
 /// Watch `pg_tview_meta` itself: its statement trigger invalidates it on every
 /// write, which is how other backends learn about a created, changed or dropped
 /// TVIEW. Resolved again after every invalidation.
@@ -243,7 +165,7 @@ fn watch_catalog() {
     if CATALOG_WATCHED.with(Cell::get) {
         return;
     }
-    if let Some(oid) = crate::catalog::queries::meta_table_oid() {
+    if let Some(oid) = CATALOG.with(Cell::get).and_then(|catalog| catalog()) {
         watch(&[oid]);
         CATALOG_WATCHED.with(|w| w.set(true));
     }
@@ -260,7 +182,7 @@ pub fn generation() -> u64 {
     GENERATION.with(Cell::get)
 }
 
-/// Clear every cache if a relevant invalidation arrived since the last call.
+/// Invalidate every memo if a relevant invalidation arrived since the last call.
 pub fn sync_generation() {
     watch_catalog();
     let current = GENERATION.with(Cell::get);
@@ -296,14 +218,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalidate_all_clears_every_memo_and_the_catalog_watch() {
+    fn invalidate_all_clears_memos_but_what_they_keep_and_the_catalog_watch() {
+        let plain: Memo<u32, u32> = Memo::new();
+        let kept: Memo<u32, u32> = Memo::keeping(|k| *k > 1);
         // Filled directly: `insert` reads a GUC, which a test thread may not.
-        COLUMNS.with(|m| m.0.borrow_mut().insert(Oid::from(1), vec!["a".into()]));
-        PARTITION_ROOTS.with(|m| m.0.borrow_mut().insert(Oid::from(2), Oid::from(3)));
+        plain.map.borrow_mut().insert(1, 1);
+        kept.map.borrow_mut().extend([(1, 1), (2, 2)]);
         CATALOG_WATCHED.with(|w| w.set(true));
         invalidate_all();
-        assert!(COLUMNS.with(|m| m.0.borrow().is_empty()));
-        assert!(PARTITION_ROOTS.with(|m| m.0.borrow().is_empty()));
+        CATALOG_WATCHED.with(|w| w.set(true));
+        assert_eq!(plain.get(&1), None);
+        assert_eq!((kept.get(&1), kept.get(&2)), (None, Some(2)));
+        invalidate_all();
         assert!(!CATALOG_WATCHED.with(Cell::get));
     }
 }

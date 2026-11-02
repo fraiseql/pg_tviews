@@ -18,6 +18,11 @@ use pgrx::prelude::*;
 pub use registry::Mark;
 use registry::{Held, REGISTRY};
 
+thread_local! {
+    /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
+    static LOCK_VALUES: crate::cache::Memo<(u32, i16), Option<LockValue>> = crate::cache::Memo::new();
+}
+
 /// `field4` of a value lock's tag. `pg_advisory_lock()` uses 1 and 2.
 pub const VALUE_TAG: u16 = 0x5476;
 /// `field4` of a relation's intent and escalated locks.
@@ -354,7 +359,7 @@ pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValu
                                     ELSE a.atttypid END AS base) t \
          WHERE a.attrelid = $1 AND a.attnum = $2 AND NOT a.attisdropped";
     let key = (relid, attnum);
-    if let Some(value) = crate::cache::LOCK_VALUES.with(|m| m.get(&key)) {
+    if let Some(value) = LOCK_VALUES.with(|m| m.get(&key)) {
         return Ok(value);
     }
     let args = [
@@ -392,7 +397,7 @@ pub fn lock_value(relid: u32, attnum: i16) -> crate::TViewResult<Option<LockValu
         })
     });
     crate::cache::watch(&[pg_sys::Oid::from(relid)]);
-    crate::cache::LOCK_VALUES.with(|m| m.insert(key, value.clone()));
+    LOCK_VALUES.with(|m| m.insert(key, value.clone()));
     Ok(value)
 }
 
@@ -431,6 +436,13 @@ pub fn rollback(mark: Mark) {
 /// (#263). From now on its refreshes lock the values they read.
 pub fn note_link_change() {
     REGISTRY.with_borrow_mut(|r| r.links_changed = true);
+}
+
+/// Enqueue a refresh of every row of `entity`'s TVIEW: rows rebuilt in full may
+/// come and go, a link change ([`note_link_change`]).
+pub fn enqueue_refresh_all(entity: &str) {
+    note_link_change();
+    crate::queue::enqueue_refresh_all(entity);
 }
 
 /// Whether the transaction changed a link ([`note_link_change`]).

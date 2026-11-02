@@ -152,7 +152,7 @@ impl TviewMeta {
     #[must_use]
     pub fn publishes_collections(&self) -> bool {
         !self.collections.is_empty()
-            && crate::config::publish_changes() == Some(crate::queue::published::Publish::Rows)
+            && crate::config::publish_changes() == Some(crate::config::Publish::Rows)
     }
 
     /// When the change feed names collections, per reference of the row written

@@ -234,7 +234,7 @@ fn count_check() -> Check {
 /// Get current queue statistics
 /// Returns metrics about the current transaction's refresh operations
 pub(crate) fn queue_stats() -> serde_json::Value {
-    let stats = crate::metrics::metrics_api::get_queue_stats();
+    let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
     let json_value = serde_json::json!({
         "queue_size": stats.queue_size,
@@ -271,7 +271,7 @@ pub(crate) fn queue_stats() -> serde_json::Value {
 /// Debug function: View current queue contents
 /// Returns the entities and PKs currently in the refresh queue
 pub(crate) fn debug_queue() -> serde_json::Value {
-    let contents = crate::metrics::metrics_api::get_queue_contents();
+    let contents = crate::queue::get_queue_contents();
 
     let json_contents: Vec<serde_json::Value> = contents
         .into_iter()

@@ -14,8 +14,6 @@
 //! - the refresh and cache counters belong to the transaction and reset when it ends;
 //! - the direct-patch counters are cumulative for the session.
 
-use crate::queue::key::RefreshKey;
-
 // Metrics tracking for TVIEW operations
 // Thread-local storage to avoid contention between transactions
 thread_local! {
@@ -176,48 +174,39 @@ pub mod metrics_api {
         });
     }
 
-    /// Record an eligible direct-patch capture of `entity`'s TVIEW.
-    /// Session-cumulative, and counted in `tviews.stats`.
-    pub fn record_direct_patch_captured(entity: &str) {
+    /// Record an eligible direct-patch capture. Session-cumulative.
+    pub fn record_direct_patch_captured() {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().captured += 1;
         });
-        crate::stats::add(entity, crate::stats::Counter::PatchCaptured, 1);
     }
 
-    /// Record `n` rows of `entity`'s TVIEW updated directly by a patch.
-    pub fn record_direct_patches_applied(entity: &str, n: u64) {
+    /// Record `n` rows updated directly by a patch.
+    pub fn record_direct_patches_applied(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().applied += n;
         });
-        crate::stats::add(entity, crate::stats::Counter::PatchApplied, n);
     }
 
-    /// Record `n` patched keys of `entity`'s TVIEW that fell back to recompute.
-    pub fn record_direct_patch_fallbacks(entity: &str, n: u64) {
+    /// Record `n` patched keys that fell back to recompute.
+    pub fn record_direct_patch_fallbacks(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().fallbacks += n;
         });
-        crate::stats::add(entity, crate::stats::Counter::PatchFallbacks, n);
     }
 
-    /// Record `n` rows of `entity`'s TVIEW recomputed from the backing view.
-    pub fn record_view_recomputes(entity: &str, n: u64) {
+    /// Record `n` rows recomputed from a backing view.
+    pub fn record_view_recomputes(n: u64) {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().view_recomputes += n;
         });
-        crate::stats::add(entity, crate::stats::Counter::ViewRecomputes, n);
     }
 
-    /// Record `n` refresh writes to `entity`'s TVIEW skipped because nothing
-    /// changed.
-    pub fn record_noop_skipped(entity: &str, n: u64) {
-        if n > 0 {
-            DIRECT_PATCH_METRICS.with(|m| {
-                m.borrow_mut().noop_skipped += n;
-            });
-            crate::stats::add(entity, crate::stats::Counter::NoopSkipped, n);
-        }
+    /// Record `n` refresh writes skipped because nothing changed.
+    pub fn record_noop_skipped(n: u64) {
+        DIRECT_PATCH_METRICS.with(|m| {
+            m.borrow_mut().noop_skipped += n;
+        });
     }
 
     /// Record one statement prepared and kept for the backend.
@@ -241,13 +230,11 @@ pub mod metrics_api {
         });
     }
 
-    /// Record one propagation edge into `parent`'s TVIEW skipped at an unchanged
-    /// child row.
-    pub fn record_propagation_pruned(parent: &str) {
+    /// Record one propagation edge skipped at an unchanged child row.
+    pub fn record_propagation_pruned() {
         DIRECT_PATCH_METRICS.with(|m| {
             m.borrow_mut().propagation_pruned += 1;
         });
-        crate::stats::add(parent, crate::stats::Counter::PropagationPruned, 1);
     }
 
     /// A value or key lock taken (ADR 0207).
@@ -269,11 +256,8 @@ pub mod metrics_api {
         });
     }
 
-    /// Get current queue statistics
-    pub fn get_queue_stats() -> QueueStats {
-        // Get current queue size from state
-        let queue_size = crate::queue::get_queue_size();
-
+    /// The transaction's counters, with `queue_size`, the refresh queue's size.
+    pub fn get_queue_stats(queue_size: usize) -> QueueStats {
         let dp = DIRECT_PATCH_METRICS.with(|m| *m.borrow());
 
         METRICS.with(|m| {
@@ -304,11 +288,6 @@ pub mod metrics_api {
                 propagation_pruned: dp.propagation_pruned,
             }
         })
-    }
-
-    /// Get current queue contents for debugging
-    pub fn get_queue_contents() -> Vec<RefreshKey> {
-        crate::queue::get_queue_contents()
     }
 
     /// Reset metrics (called after transaction completes)
