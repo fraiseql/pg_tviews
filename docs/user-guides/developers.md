@@ -255,7 +255,7 @@ rows refreshes each affected TVIEW row once, not 10,000 times. For a large load,
 ```sql
 BEGIN;
 UPDATE tb_user SET name = 'Alice Liddell' WHERE identifier = 'alice';
-SELECT tviews.pg_tviews_queue_stats();  -- this session's refreshes
+SELECT tviews.pg_tviews_show_queue();  -- this session's refreshes
 COMMIT;
 
 SELECT entity, view_recomputes, noop_skipped, rows_written, refresh_ms
@@ -264,7 +264,7 @@ FROM tviews.stats WHERE entity = 'post';
 SELECT entity, rows_estimate, warnings FROM tviews.pg_tviews_profile('post');
 ```
 
-`pg_tviews_queue_stats()` reports the current transaction's queued refreshes
+`pg_tviews_show_queue()` reports the current transaction's queued refreshes
 (`total_refreshes`, `total_timing_ms`) and, cumulated over the session, how many rows were
 patched in place (`direct_patches_applied`) or recomputed from the definition
 (`view_recomputes`), for debugging. `tviews.stats` holds the same work per TVIEW,
@@ -351,7 +351,7 @@ table before and after is a way to check that writes kept it exact.
 
 ```sql
 -- Errors and warnings only (an empty result is healthy)
-SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE status <> 'OK';
 
 -- The TVIEW's registration: the tables it reads and how each refreshes it
 SELECT name, base_tables, cascade_kinds, uncascaded_tables, needs_reregister
@@ -372,7 +372,7 @@ disabled (`session_replication_role = replica`) are repaired with
 ```sql
 EXPLAIN SELECT data FROM tv_post WHERE identifier = 'hello-world';
 
-SELECT tviews.pg_tviews_debug_queue();  -- keys queued in this transaction
+SELECT tviews.pg_tviews_show_queue()->'queued';  -- keys queued in this transaction
 SELECT entity, heap_bytes, hot_ratio, fanout, warnings FROM tviews.pg_tviews_profile();
 ```
 

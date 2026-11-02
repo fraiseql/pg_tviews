@@ -2,7 +2,7 @@
 # Physical-replication contract for UNLOGGED TVIEWs (issue #75), on a real standby.
 #
 #   1. On a hot standby, an UNLOGGED tv_* cannot be read, a LOGGED one can, and
-#      pg_tviews_replication_status() works (read-only).
+#      pg_tviews_show_replication() works (read-only).
 #   2. After promotion, the rebuild launcher (pg_tviews.auto_rebuild_databases,
 #      `*` by default: no configuration) repopulates the UNLOGGED TVIEW without
 #      any write.
@@ -87,7 +87,7 @@ out="$(node -c "SELECT count(*) FROM tv_post" || true)"
 [[ "$out" == *"cannot access temporary or unlogged relations during recovery"* ]] \
   || fail "reading the UNLOGGED tv_post on the standby: $out"
 [[ "$(node -c "SELECT count(*) FROM tv_tag")" == "1" ]] || fail "LOGGED tv_tag not readable on the standby"
-status="$(node -c "SELECT string_agg(concat_ws(':', entity, persistence, replica_readable, coalesce(is_empty::text, 'null'), coalesce(needs_rebuild::text, 'null')), ',' ORDER BY entity) FROM pg_tviews_replication_status()")"
+status="$(node -c "SELECT string_agg(concat_ws(':', entity, persistence, replica_readable, coalesce(is_empty::text, 'null'), coalesce(needs_rebuild::text, 'null')), ',' ORDER BY entity) FROM pg_tviews_show_replication()")"
 [[ "$status" == "post:unlogged:f:null:null,tag:logged:t:false:null" ]] \
   || fail "replication_status on the standby: $status"
 profile="$(node -c "SELECT string_agg(entity || ':' || persistence, ',' ORDER BY entity) FROM pg_tviews_profile()")"

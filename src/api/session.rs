@@ -26,18 +26,12 @@ fn pg_tviews_resume_triggers() -> Result<(), ErrorReport> {
     Ok(())
 }
 
-/// Whether this transaction's trigger-based refresh is suspended.
-#[pg_extern]
-fn pg_tviews_is_suspended() -> bool {
+/// The TVIEWs changed while this transaction's refresh is suspended (empty when
+/// none yet); NULL when it is not suspended.
+#[pg_extern(name = "pg_tviews_show_suspended")]
+fn pg_tviews_suspended_entities() -> Option<Vec<String>> {
     let _path = crate::owner::CatalogPath::pin();
-    crate::suspend::is_suspended()
-}
-
-/// The TVIEWs changed while this transaction's refresh is suspended.
-#[pg_extern]
-fn pg_tviews_suspended_entities() -> Vec<String> {
-    let _path = crate::owner::CatalogPath::pin();
-    crate::suspend::get_changed_entities()
+    crate::suspend::is_suspended().then(crate::suspend::get_changed_entities)
 }
 
 /// Flush the transaction's refresh queue and report the TVIEW rows it changed,
@@ -59,9 +53,9 @@ fn pg_tviews_flush_and_report(
     )?))
 }
 
-/// The session's refresh counters (debugging; `tviews.stats` is per TVIEW and
-/// readable from any session).
-#[pg_extern]
+/// The session's refresh counters and the transaction's refresh queue
+/// (debugging; `tviews.stats` is per TVIEW and readable from any session).
+#[pg_extern(name = "pg_tviews_show_queue")]
 fn pg_tviews_queue_stats() -> pgrx::JsonB {
     let _path = crate::owner::CatalogPath::pin();
     pgrx::JsonB(crate::health::queue_stats())
@@ -71,16 +65,9 @@ fn pg_tviews_queue_stats() -> pgrx::JsonB {
 /// the change feed (the NOTIFY queue being nearly full), since the server
 /// started (#247). A listener reads it when it connects and on each heartbeat,
 /// and evicts everything when it moved.
-#[pg_extern]
+#[pg_extern(name = "pg_tviews_count_feed_gaps")]
 fn pg_tviews_feed_gaps() -> Result<i64, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     let gaps = crate::stats::feed_gaps()?;
     Ok(i64::try_from(gaps).unwrap_or(i64::MAX))
-}
-
-/// The transaction's refresh queue (debugging).
-#[pg_extern]
-fn pg_tviews_debug_queue() -> pgrx::JsonB {
-    let _path = crate::owner::CatalogPath::pin();
-    pgrx::JsonB(crate::health::debug_queue())
 }

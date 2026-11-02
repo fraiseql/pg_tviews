@@ -12,7 +12,7 @@
 SELECT pg_catalog.current_setting('server_version') AS postgresql,
        tviews.pg_tviews_version() AS library,
        (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
-SELECT status, message FROM tviews.pg_tviews_health_check() WHERE component = 'catalog';
+SELECT status, message FROM tviews.pg_tviews_check_health() WHERE component = 'catalog';
 
 \echo ''
 \echo '2. TVIEWs still to re-register (run SELECT * FROM tviews.pg_tviews_reregister_all())'
@@ -21,7 +21,7 @@ SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema,
 \echo ''
 \echo '3. Everything the health check reports'
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, component;
 
 \echo ''

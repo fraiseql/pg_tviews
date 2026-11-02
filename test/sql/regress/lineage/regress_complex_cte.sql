@@ -111,9 +111,9 @@ SELECT must((SELECT data->'texts' ? 'one' FROM tv_sheet WHERE pk_sheet = 1),
 -- ========================================================================
 -- Cycle 4: every TVIEW matches its view; an unrelated table changes nothing
 -- ========================================================================
-SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint AS r0 \gset
+SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint AS r0 \gset
 UPDATE tb_other SET x = x + 1;
-SELECT must((pg_tviews_queue_stats()->>'view_recomputes')::bigint = :r0,
+SELECT must((pg_tviews_show_queue()->>'view_recomputes')::bigint = :r0,
             'an unrelated table change recomputed TVIEW rows');
 SELECT must((SELECT count(*) FROM tviews.public__tv_item v FULL JOIN tv_item t USING (pk_item)
              WHERE t.data IS DISTINCT FROM v.data) = 0, 'tv_item out of sync');

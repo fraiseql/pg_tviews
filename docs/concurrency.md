@@ -33,7 +33,7 @@ whoever the writer is, and renders values under fixed settings (see
 
 Nothing is queued across transactions. A transaction that would commit with refresh
 work still queued (a flush trigger dropped or disabled) fails instead, with SQLSTATE
-`55000`, naming the TVIEWs; `pg_tviews_health_check()` reports the missing trigger.
+`55000`, naming the TVIEWs; `pg_tviews_check_health()` reports the missing trigger.
 
 ## Guarantees
 
@@ -54,7 +54,7 @@ a new group of an aggregate TVIEW. Each case is an isolation spec in
 
 | What | Consequence | See |
 |---|---|---|
-| A pg_tviews trigger disabled (`ALTER TABLE … DISABLE TRIGGER`, `ENABLE REPLICA`), or a write under `session_replication_role = replica` | the write is not seen: the TVIEW stays as it was until `pg_tviews_refresh()`; `pg_tviews_health_check()` reports disabled triggers | [operators guide](user-guides/operators.md) |
+| A pg_tviews trigger disabled (`ALTER TABLE … DISABLE TRIGGER`, `ENABLE REPLICA`), or a write under `session_replication_role = replica` | the write is not seen: the TVIEW stays as it was until `pg_tviews_refresh()`; `pg_tviews_check_health()` reports disabled triggers | [operators guide](user-guides/operators.md) |
 | A table a logical replication subscription writes | refused at create (`0A000`); a table subscribed later is reported by the health check: the apply worker fires no statement trigger | [replication](operations/replication.md) |
 | Refresh suspended (`pg_tviews_suspend_triggers()`) | the TVIEWs are rebuilt at resume or at an explicit `COMMIT`; an implicit commit of suspended writes (a procedure's `COMMIT`, several statements in one query string) fails with `55000` | [Suspended refresh](#suspended-refresh) |
 | A table under the `full_refresh` policy | each write refreshes the whole TVIEW, locking it and every relation it reads | [DDL reference](reference/ddl.md) |
@@ -148,7 +148,7 @@ WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
 ORDER BY l.granted, l.pid;
 ```
 
-`pg_tviews_queue_stats()` counts a transaction's `value_locks`,
+`pg_tviews_show_queue()` counts a transaction's `value_locks`,
 `value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`.
 
 ## Suspended refresh
@@ -164,9 +164,9 @@ The settings are listed in the [README's Configuration table](../README.md#confi
 The ones that bear on concurrent writers:
 
 - `pg_tviews.lock_escalation_threshold` (superuser): value locks per relation before a transaction
-  locks the relation (0 always locks relations; -1 never does, which can exhaust the
-  shared lock table on a bulk write);
-- `pg_tviews.max_queue_size` (superuser): refreshes one transaction may queue before it fails;
+  locks the relation (minimum 0, which always locks relations);
+- `pg_tviews.max_queue_size` (superuser, hidden): refresh keys one transaction may queue
+  before it fails;
 - `pg_tviews.direct_patch_enabled` (superuser, hidden): the direct-patch fast path (on
   by default).
 

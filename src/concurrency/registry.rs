@@ -86,13 +86,9 @@ impl Registry {
         space: Space,
         side: Side,
         new: usize,
-        threshold: i32,
+        threshold: usize,
     ) -> bool {
-        match usize::try_from(threshold) {
-            Err(_) => false,
-            Ok(0) => true,
-            Ok(limit) => self.values(relid, space, side) + new > limit,
-        }
+        threshold == 0 || self.values(relid, space, side) + new > threshold
     }
 
     pub(super) const fn mark(&self) -> Mark {
@@ -185,7 +181,6 @@ mod tests {
         assert!(!r.should_escalate(USERS, V, Side::Writer, 1, 4));
         assert!(r.should_escalate(USERS, V, Side::Writer, 2, 4));
         assert!(r.should_escalate(USERS, V, Side::Writer, 1, 0));
-        assert!(!r.should_escalate(USERS, V, Side::Writer, 1_000_000, -1));
         assert!(!r.should_escalate(USERS, V, Side::Refresh, 4, 4));
         assert!(!r.should_escalate(USERS, Space::Keys, Side::Writer, 4, 4));
     }

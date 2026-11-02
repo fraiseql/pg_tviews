@@ -20,14 +20,14 @@ Contents of the queue in the current transaction (normally `[]` when called from
 because the previous statement already flushed it):
 
 ```sql
-SELECT tviews.pg_tviews_debug_queue();
+SELECT tviews.pg_tviews_show_queue()->'queued';
 ```
 
 Counters for the current session, including `queue_size`, `total_refreshes`,
 `max_iterations` and `total_timing_ms`:
 
 ```sql
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 The counters cover this session only; read them before and after a write in the same
@@ -43,7 +43,8 @@ SELECT tviews.pg_tviews_flush_and_report();
 
 `pg_tviews.max_queue_size` (default 1,000,000) caps the number of keys one transaction may
 queue. Beyond it the write fails with
-`refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`.
+`refresh queue backpressure: queue size (N) would exceed max_queue_size (M)`.
+The setting is hidden from `SHOW ALL` and only a superuser may change it.
 
 Options, in order of preference:
 1. Split the bulk write into smaller transactions.
@@ -56,8 +57,8 @@ Options, in order of preference:
    COMMIT;
    ```
    Suspension ends with the transaction if `pg_tviews_resume_triggers()` is not called.
-   `tviews.pg_tviews_is_suspended()` and `tviews.pg_tviews_suspended_entities()` show the
-   current state.
+   `tviews.pg_tviews_show_suspended()` shows the TVIEWs changed so far, and is NULL
+   when the transaction is not suspended.
 3. Raise the limit for the session, as a superuser: `SET pg_tviews.max_queue_size = 10000000;`
 
 ## Writes that look stuck

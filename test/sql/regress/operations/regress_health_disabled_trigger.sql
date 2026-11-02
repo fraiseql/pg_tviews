@@ -24,15 +24,15 @@ DECLARE t name := (SELECT tgname FROM pg_trigger
                    WHERE tgrelid = 'tb_user'::regclass AND tgname LIKE 'trg_tview_row_%');
 BEGIN
     EXECUTE format('ALTER TABLE tb_user DISABLE TRIGGER %I', t);
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE component = 'triggers' AND status = 'ERROR'
                      AND message LIKE '%disabled%' AND message LIKE '%' || t || '%') THEN
         RAISE EXCEPTION 'FAIL: the health check does not report the disabled trigger: %',
             (SELECT string_agg(status || ' ' || component || ': ' || message, '; ')
-               FROM tviews.pg_tviews_health_check());
+               FROM tviews.pg_tviews_check_health());
     END IF;
     EXECUTE format('ALTER TABLE tb_user ENABLE TRIGGER %I', t);
-    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                WHERE component = 'triggers' AND status <> 'OK') THEN
         RAISE EXCEPTION 'FAIL: the health check still reports the re-enabled trigger';
     END IF;

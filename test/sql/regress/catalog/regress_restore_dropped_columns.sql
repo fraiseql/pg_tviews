@@ -135,16 +135,16 @@ UPDATE tviews.pg_tview_meta
    SET plan = jsonb_set(plan, '{tables,0,attnums,1}', '3')
  WHERE entity = 'user';
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+  IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                   WHERE component = 'columns' AND status = 'ERROR'
                     AND message LIKE '%tv_user (public.tb_user.id)%') THEN
     RAISE EXCEPTION 'A2 FAIL: the health check misses a stale column number: %',
-      (SELECT array_agg(message) FROM tviews.pg_tviews_health_check() WHERE component = 'columns');
+      (SELECT array_agg(message) FROM tviews.pg_tviews_check_health() WHERE component = 'columns');
   END IF;
 END $$;
 SELECT tviews.pg_tviews_reregister('user') \g /dev/null
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+  IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                   WHERE component = 'columns' AND status = 'OK') THEN
     RAISE EXCEPTION 'A2 FAIL: the health check still reports stale column numbers after reregister';
   END IF;

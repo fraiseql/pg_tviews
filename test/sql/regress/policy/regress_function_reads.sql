@@ -68,8 +68,8 @@ FROM tviews.registry WHERE entity = 'contract';
 UPDATE tb_setting SET value = ' (b)';
 SELECT assert_fresh('tv_contract', 'pk_contract', 'a write to the table the function reads');
 SELECT must((SELECT label FROM tv_contract WHERE pk_contract = 1) = 'C1 (b)', 'the label');
-SELECT must((SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') = 'OK',
-            'health: ' || (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers'));
+SELECT must((SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'triggers') = 'OK',
+            'health: ' || (SELECT message FROM tviews.pg_tviews_check_health() WHERE component = 'triggers'));
 -- The same again: unchanged; re-registration keeps it.
 SELECT must(tviews.pg_tviews_create_or_replace('tv_contract', :'def', '{
   "function_reads": {"public.label_suffix()": ["public.tb_setting"]},

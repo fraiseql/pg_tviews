@@ -126,9 +126,9 @@ BEGIN
             (SELECT cascade_kinds FROM tviews.registry WHERE entity = 'nbadge');
     END IF;
     -- The ancestor read maps through the array membership.
-    IF tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf'::regclass) NOT LIKE '%ANY%' THEN
+    IF tviews.pg_tviews_show_mapping_query('tv_nsrf', 'tb_nsrf'::regclass) NOT LIKE '%ANY%' THEN
         RAISE EXCEPTION '#182 FAIL: the ancestor mapping of tv_nsrf is %',
-            tviews.pg_tviews_mapping_query('tv_nsrf', 'tb_nsrf'::regclass);
+            tviews.pg_tviews_show_mapping_query('tv_nsrf', 'tb_nsrf'::regclass);
     END IF;
 END $$;
 
@@ -177,7 +177,7 @@ DECLARE plan text := '';
 DECLARE line text;
 BEGIN
     FOR line IN EXECUTE 'EXPLAIN WITH pg_tviews_delta AS (SELECT * FROM tb_area WHERE pk_area = 7) '
-                        || tviews.pg_tviews_mapping_query('tv_area', 'tb_area'::regclass) LOOP
+                        || tviews.pg_tviews_show_mapping_query('tv_area', 'tb_area'::regclass) LOOP
         plan := plan || line || E'\n';
     END LOOP;
     IF plan NOT LIKE '%tb_area_path_ids%' THEN

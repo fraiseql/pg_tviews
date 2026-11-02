@@ -168,7 +168,7 @@ SELECT must(NOT EXISTS (
     WHERE d.classid = 'pg_rewrite'::regclass
       AND d.objid IN (SELECT oid FROM pg_rewrite
                       WHERE ev_class IN ('tviews.registry'::regclass,
-                                         'tviews.pg_tview_references'::regclass))
+                                         'tviews.references'::regclass))
       AND p.prolang = (SELECT oid FROM pg_language WHERE lanname = 'c')),
     'the references call a C function');
 
@@ -183,10 +183,10 @@ SELECT tviews.pg_tviews_create('tv_member', $$
 SELECT tviews.pg_tviews_drop('tv_user');
 SELECT must(refs('post')->'fk_author'->>'entity' = 'account',
             'without one named like the key, not the first by entity: ' || refs('post')::text);
-SELECT must((SELECT count(*) FROM tviews.pg_tview_references
+SELECT must((SELECT count(*) FROM tviews.references
              WHERE entity = 'post' AND column_name = 'fk_author') = 2,
             'the candidates are not both listed');
-SELECT must((SELECT array_agg(parent) FROM tviews.pg_tview_references
+SELECT must((SELECT array_agg(parent) FROM tviews.references
              WHERE entity = 'post' AND column_name = 'fk_author' AND chosen)
             = ARRAY[refs('post')->'fk_author'->>'entity'],
             'not exactly one candidate chosen, the one the registry names');

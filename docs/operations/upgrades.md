@@ -65,7 +65,7 @@ Details: [Extension Updates](upgrade/extension/extension-minor-update.md).
 After any restart that was not a clean shutdown, or a physical restore, UNLOGGED TVIEWs
 are empty:
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
@@ -87,7 +87,7 @@ SELECT tviews.pg_tviews_version(),
 
 -- 2. Health check: nothing above info
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 -- 3. Registered TVIEWs, none waiting for re-registration

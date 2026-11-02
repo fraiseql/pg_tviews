@@ -70,7 +70,7 @@ END $$;
 
 -- Counters are per transaction: read them in the same DO block as the write.
 CREATE FUNCTION stat(name text) RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>name)::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>name)::bigint $$;
 
 -- (1) A copied column: one statement patches alice's 10 posts, no post recompute
 --     (the feeds embedding them are recomputed through propagation).

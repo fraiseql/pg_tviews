@@ -15,24 +15,22 @@ many TVIEWs up to date at once.
   each statement and on `COMMIT`. There is no queue table and no background job.
 - `pg_tviews.max_queue_size` (default 1,000,000) caps the keys queued before a flush. A
   statement that queues more fails with
-  `ERROR: refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`
+  `ERROR: refresh queue backpressure: queue size (N) would exceed max_queue_size (M)`
   and rolls back.
-- `pg_tviews.batch_size` (default 1000) is the number of keys recomputed per
-  refresh statement during a flush; larger flushes are split into chunks.
+- A flush recomputes keys in batches of 1,000 per refresh statement; larger flushes are
+  split into batches.
 - A refresh error fails the writing statement, which rolls back with it.
 
 ## Option 1: Let the triggers refresh (default)
 
-Write in statements of a size the flush handles, and raise the limits for the
-session if one statement must touch more keys (`max_queue_size` is a superuser's
-setting; `batch_size` any role's):
+Write in statements of a size the flush handles. A transaction that must queue more
+keys than `max_queue_size` is better made with refresh suspended (Option 2); a
+superuser can also raise the limit for the session:
 
 ```sql
 SET pg_tviews.max_queue_size = 10000000;  -- this session only; superuser
-SET pg_tviews.batch_size = 5000;        -- larger refresh chunks
 -- ... bulk statements ...
 RESET pg_tviews.max_queue_size;
-RESET pg_tviews.batch_size;
 ```
 
 ## Option 2: Suspend refresh for one transaction
@@ -45,7 +43,7 @@ those TVIEWs and every TVIEW that embeds them.
 BEGIN;
 SELECT tviews.pg_tviews_suspend_triggers();
 -- ... bulk statements ...
-SELECT tviews.pg_tviews_is_suspended(), tviews.pg_tviews_suspended_entities();
+SELECT tviews.pg_tviews_show_suspended();     -- TVIEWs changed so far
 SELECT tviews.pg_tviews_resume_triggers();   -- rebuilds the recorded TVIEWs
 COMMIT;
 ```
@@ -104,10 +102,10 @@ traffic.
 - Compare each TVIEW with its view: step 4 of
   [post-upgrade-validation.sql](../../upgrade/scripts/post-upgrade-validation.sql)
   (expect 0 differing rows).
-- `SELECT * FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';`
+- `SELECT * FROM tviews.pg_tviews_check_health() WHERE severity <> 'info';`
   returns nothing.
 - Confirm the session is not left suspended:
-  `SELECT tviews.pg_tviews_is_suspended();`
+  `SELECT tviews.pg_tviews_show_suspended() IS NULL;` returns true.
 
 ## Related Runbooks
 - [Manual Refresh](manual-refresh.md) - Refresh one TVIEW

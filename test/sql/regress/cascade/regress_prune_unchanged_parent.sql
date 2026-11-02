@@ -56,7 +56,7 @@ SELECT c.pk_comment, c.id, c.fk_post,
 FROM tb_comment c JOIN tv_post ON tv_post.pk_post = c.fk_post;
 
 CREATE FUNCTION stat(k TEXT) RETURNS BIGINT LANGUAGE sql AS
-$$ SELECT (pg_tviews_queue_stats()->>k)::bigint $$;
+$$ SELECT (pg_tviews_show_queue()->>k)::bigint $$;
 CREATE FUNCTION must(ok BOOLEAN, msg TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF NOT ok THEN RAISE EXCEPTION '#85 FAIL: %', msg; END IF; END $$;
 CREATE FUNCTION in_sync() RETURNS BOOLEAN LANGUAGE sql AS $$

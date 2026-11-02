@@ -458,7 +458,7 @@ pub fn reading_column(relid: Oid, column: &str) -> TViewResult<Vec<(String, Stri
 pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Vec<(String, Oid)>> {
     let (meta_table, reads) = (
         super::meta_table(),
-        format!("{}.pg_tview_reads", crate::utils::ext_schema()),
+        format!("{}.reads", crate::utils::ext_schema()),
     );
     // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
     // their views: it reads more of the others' views and tables than any of them.

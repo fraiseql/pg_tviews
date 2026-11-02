@@ -98,7 +98,7 @@ psql -v ON_ERROR_STOP=1 -d "$db" -f schema/03_seed_data.sql   # TVIEWs follow th
 SELECT schema, name, base_tables, cascade_kinds FROM tviews.registry;
 
 -- Health
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 
 -- Automatic refresh
 INSERT INTO tb_user (email, name) VALUES ('alice@example.com', 'Alice');
@@ -123,7 +123,7 @@ between releases.
 ## Next steps
 
 1. **Monitor refresh**: run `docs/operations/runbooks/scripts/health-check.sql` and
-   `tviews.pg_tviews_health_check()`.
+   `tviews.pg_tviews_check_health()`.
 2. **Grant operators** the maintenance functions
    ([docs/user-guides/operators.md](docs/user-guides/operators.md)).
 3. **Index propagation lookups** on large TVIEWs:

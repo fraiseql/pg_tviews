@@ -30,6 +30,8 @@ default = ["pg18"]
 pg16 = ["pgrx/pg16"]
 pg17 = ["pgrx/pg17"]
 pg18 = ["pgrx/pg18"]
+# Test builds only: pg_tviews.test_skip_ctas_intercept (regress_missed_interception).
+test-hooks = []
 
 [profile.dev]
 panic = "unwind"

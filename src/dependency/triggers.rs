@@ -225,7 +225,7 @@ pub struct TriggerProblems {
 }
 
 /// Check `pg_tviews`' triggers against the tables each registered TVIEW reads
-/// (`tviews.pg_tview_reads`: ordinary and partitioned tables reached from the
+/// (`tviews.reads`: ordinary and partitioned tables reached from the
 /// backing view through views, other TVIEWs' tables excepted) and the triggers
 /// its lineage gives each table ([`TriggerSet`]). Every partition of
 /// a partitioned table carrying a row trigger expects the `PARTITION_MEMBER`

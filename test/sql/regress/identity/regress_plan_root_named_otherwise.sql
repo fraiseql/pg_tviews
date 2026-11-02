@@ -34,7 +34,7 @@ SELECT pg_tviews_create('tv_purchase', $$
 $$);
 
 CREATE FUNCTION applied() RETURNS bigint LANGUAGE sql AS
-    $f$ SELECT (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $f$;
+    $f$ SELECT (pg_tviews_show_queue()->>'direct_patches_applied')::bigint $f$;
 CREATE TEMP TABLE before AS SELECT applied() AS n;
 
 UPDATE tb_order SET ref = 'R-1b' WHERE pk_order = 1;

@@ -83,7 +83,7 @@ END $$;
 DO $$
 DECLARE report text;
 BEGIN
-    SELECT pg_catalog.string_agg(c::text, ' ') INTO report FROM tviews.pg_tviews_health_check() c;
+    SELECT pg_catalog.string_agg(c::text, ' ') INTO report FROM tviews.pg_tviews_check_health() c;
     IF report NOT LIKE '%trg_tview_row_feel_%tb_feel%ENABLE REPLICA%' THEN
         RAISE EXCEPTION 'value-rewriting DDL FAIL: the health check misses an ENABLE REPLICA trigger: %',
             report;

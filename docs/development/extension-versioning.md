@@ -84,7 +84,7 @@ Before pg_tviews does real work in a backend (the row trigger, a non-empty flush
 with the hint `run ALTER EXTENSION pg_tviews UPDATE`; a `0.1.0` catalog, which has no
 revision function, gets the migration script as the hint instead. Only a match is
 cached, so the first call after the update passes. The check is skipped while the
-extension's own install or upgrade script runs. `pg_tviews_health_check()` reports the
+extension's own install or upgrade script runs. `pg_tviews_check_health()` reports the
 comparison without raising.
 
 ## CI

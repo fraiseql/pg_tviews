@@ -160,7 +160,14 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
         "src/revision.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "The library's catalog revision does not match the installed extension, or cannot be \
-         read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix).",
+         read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). Also: the \
+         library is not in `shared_preload_libraries`.",
+    ),
+    (
+        "src/api/removed.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
+        "A catalog not yet updated calls a function this release removed: run \
+         `ALTER EXTENSION pg_tviews UPDATE`.",
     ),
     (
         "src/owner.rs",

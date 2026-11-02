@@ -16,7 +16,7 @@ SELECT tviews.pg_tviews_create('app.tv_post',
 The read side:
 
 ```sql
-SELECT tviews.contract_version();   -- integer, currently 2
+SELECT tviews.contract_version();   -- integer, currently 3
 SELECT * FROM tviews.registry;      -- one row per registered TVIEW: what is declared
 SELECT * FROM tviews.stats;         -- one row per registered TVIEW: what happened
 ```
@@ -133,7 +133,7 @@ declared `idx_<tv>_data_<keys>` included) are
 reserved: a user's `CREATE INDEX` or `ALTER INDEX … RENAME TO` under one is refused
 with `42939`, unless the statement creates exactly the index pg_tviews creates under
 that name (same method and columns or expressions, nothing else): what
-`pg_tviews_ensure_propagation_indexes(dry_run => true)` reports, run by hand
+`pg_tviews_ensure_propagation_indexes_all(dry_run => true)` reports, run by hand
 (`CONCURRENTLY` too), or what a dump restores. That index is pg_tviews', and recorded. A TVIEW registered by an earlier release gets its record
 when the upgrade re-registers it: the indexes that are exactly those pg_tviews
 creates, under their names. The upgrade warns about any other index under such a
@@ -237,8 +237,9 @@ One row per registered TVIEW of the current database: what its refreshes did
 | `stats_reset` | `timestamptz` | when its counters started; NULL since the server started |
 | `untracked` | `boolean` | the shared table (4096 TVIEWs per cluster) was full when it first refreshed: its counters are NULL |
 
-The counters are cumulative since the server started or
-`tviews.pg_tviews_stats_reset(tview)` (an operator function), not kept across restarts,
+The counters are cumulative since the server started or the last reset
+(`tviews.pg_tviews_reset_stats(tview)` by the TVIEW's owner, or
+`tviews.pg_tviews_reset_stats_all()`, an operator function), not kept across restarts,
 and counted when each transaction ends, committed or aborted. A `rebuilt` replace
 creates a new table, whose counters start over. On a standby every counter is zero.
 
@@ -344,7 +345,8 @@ an existing TVIEW cannot be prepared with `PREPARE TRANSACTION`.
 calls for one entity run one after the other.
 
 It works in any transaction, `DO` block or multi-statement batch (including the one that
-runs `CREATE EXTENSION`), and in a session where the library is not preloaded.
+runs `CREATE EXTENSION`). Like every pg_tviews function it needs the library in
+`shared_preload_libraries`; without it, it fails with `55000`.
 
 ## Stability rules
 
@@ -358,8 +360,20 @@ and their meaning, the round-trip property, and the signature, "same" rules and 
   functions return. A bump is called out in the CHANGELOG's upgrade notes. While
   pg_tviews is in beta, the previous contract is not kept alongside the new one.
 
+### Versions
+
+- **3** (0.1.0-beta.35): the public functions, views and settings were renamed to one
+  rule ([ADR 0211](../adr/0211-api-surface.md)); the table of renames is in
+  [Deprecations and removals](../DEPRECATION_WARNINGS.md#renamed-and-removed-in-010-beta35). The `registry` columns,
+  the `options` keys and the behaviour of `pg_tviews_create_or_replace()` are
+  unchanged.
+- **2**: the `registry` columns `logged`, `uncascaded_policy`,
+  `uncascaded_table_policies`, `function_reads` and `time_refresh` became `options`
+  keys ([above](#tviewsregistry)).
+- **1**: the first contract.
+
 ## Internal tables
 
-`tviews.pg_tview_meta`, `tviews.pg_tview_helpers`, `tviews.pg_tview_audit_log` and the
+`tviews.pg_tview_meta`, `tviews.pg_tview_audit_log` and the
 other `pg_tview_*` objects are internal. They may change in any release; tools must not
 read them.

@@ -1,7 +1,7 @@
 //! Metrics Collection: Performance Monitoring and Statistics
 //!
 //! This module tracks performance metrics for TVIEW operations, read with
-//! `pg_tviews_queue_stats()`:
+//! `pg_tviews_show_queue()`:
 //! - **Refresh Statistics**: count and timing of refreshes
 //! - **Cache Performance**: hit rates of the graph and table caches
 //! - **Propagation Metrics**: iterations per flush
@@ -23,7 +23,7 @@ thread_local! {
     ///
     /// Unlike `METRICS`, these are **not** reset at transaction boundaries, so a
     /// counter set by a trigger during an auto-commit statement is still readable
-    /// via `pg_tviews_queue_stats()` in a following statement. Tests assert on the
+    /// via `pg_tviews_show_queue()` in a following statement. Tests assert on the
     /// delta across a mutation.
     static DIRECT_PATCH_METRICS: std::cell::RefCell<DirectPatchMetrics> =
         const { std::cell::RefCell::new(DirectPatchMetrics::new_const()) };

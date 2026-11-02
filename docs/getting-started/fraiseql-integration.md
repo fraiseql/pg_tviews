@@ -181,13 +181,13 @@ a materialized view) is refused unless it declares what a write to that table do
 - With the `jsonb_delta` extension installed, eligible single-row updates patch the
   stored documents instead of recomputing them
   ([Installation](installation.md#jsonb_delta)).
-- `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes()` find the
+- `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes_all()` find the
   indexes a TVIEW's lookups need ([Profile](../reference/profile.md)).
 
 ## Monitoring
 
 ```sql
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 SELECT * FROM pg_tviews_profile();   -- size, HOT ratio, missing indexes per TVIEW
 SELECT * FROM tviews.stats;          -- refresh counters per TVIEW, from any session
 ```
@@ -201,7 +201,7 @@ SELECT * FROM tviews.stats;          -- refresh counters per TVIEW, from any ses
 SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
 -- missing triggers, unreadable plans
-SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM pg_tviews_check_health() WHERE status <> 'OK';
 ```
 
 `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs missing triggers (it is

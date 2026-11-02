@@ -12,7 +12,7 @@
 //! a rollback to it truncates back, so rolled-back writes are never reported. A
 //! report with reset hides what it reported; inside a subtransaction the entries are
 //! kept until no subtransaction is open, so rolling one back undoes its resets. The
-//! journal is cleared when the transaction ends. Past `pg_tviews.report_max_tracked`
+//! journal is cleared when the transaction ends. Past [`MAX_TRACKED`]
 //! unreported entries only the entity names are kept and the report says it was
 //! truncated.
 
@@ -141,15 +141,15 @@ pub(super) fn note_flush_change(recorded: &Recorded) {
     });
 }
 
-/// Keep a refresh write for the report, within `pg_tviews.report_max_tracked`.
+/// Rows the report keeps per transaction; past it only their types are kept and
+/// the report says it was truncated.
+const MAX_TRACKED: usize = 10_000;
+
+/// Keep a refresh write for the report, within [`MAX_TRACKED`].
 pub(super) fn append(recorded: Recorded) {
-    let cap = crate::config::report_max_tracked();
-    if cap == 0 {
-        return;
-    }
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
-        if j.base + j.entries.len() - j.reported < cap {
+        if j.base + j.entries.len() - j.reported < MAX_TRACKED {
             j.entries.push(recorded);
         } else {
             j.overflow.insert(recorded.entity);
@@ -160,9 +160,7 @@ pub(super) fn append(recorded: Recorded) {
 /// `entity`'s TVIEW was rebuilt or refilled whole: the report lists its type in
 /// `invalidated_types`.
 pub(super) fn append_rebuilt(entity: &str) {
-    if crate::config::report_max_tracked() > 0 {
-        JOURNAL.with(|j| j.borrow_mut().overflow.insert(entity.to_string()));
-    }
+    JOURNAL.with(|j| j.borrow_mut().overflow.insert(entity.to_string()));
 }
 
 /// A subtransaction started: where the journal stands.

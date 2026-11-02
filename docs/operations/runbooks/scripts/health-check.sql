@@ -15,7 +15,7 @@ SELECT tviews.pg_tviews_version() AS library,
 \echo ''
 \echo '2. Health check (status ok / warning / error per component)'
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, component;
 
 \echo ''
@@ -40,7 +40,7 @@ ORDER BY entity;
 
 \echo ''
 \echo '6. Replication readiness (UNLOGGED TVIEWs are empty on a standby)'
-SELECT * FROM tviews.pg_tviews_replication_status() ORDER BY entity;
+SELECT * FROM tviews.pg_tviews_show_replication() ORDER BY entity;
 
 \echo ''
 \echo '7. Refresh activity per TVIEW since the server started or the last reset'

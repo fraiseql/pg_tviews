@@ -4,7 +4,7 @@
 //! recorded, or one it creates or would create for the definition): its
 //! `CREATE INDEX IF NOT EXISTS` would then find the user's index in its place. A
 //! statement creating exactly `pg_tviews`' index under its name is the exception
-//! (what `pg_tviews_ensure_propagation_indexes()` reports, run by hand, or what a
+//! (what `pg_tviews_ensure_propagation_indexes_all()` reports, run by hand, or what a
 //! dump restores), and is recorded. A rename or drop of a recorded index is
 //! followed.
 

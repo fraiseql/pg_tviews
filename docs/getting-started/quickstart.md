@@ -50,7 +50,8 @@ database's name):
 psql -d your_database -c 'ALTER DATABASE your_database SET search_path = "$user", public, tviews;'
 ```
 
-Then, connected to your database, create the extension:
+Then, connected to your database as a superuser, create the extension (without the
+preload it fails with `55000`):
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
@@ -185,7 +186,7 @@ Nothing needs enabling: the triggers were installed when the TVIEW was created.
 To check them:
 
 ```sql
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 ```
 
 ## 6. Query It
@@ -244,7 +245,7 @@ If TVIEWs aren't updating:
 SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
 -- Check for errors
-SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM pg_tviews_check_health() WHERE status <> 'OK';
 ```
 
 For more help, see the [troubleshooting guide](../operations/troubleshooting.md).

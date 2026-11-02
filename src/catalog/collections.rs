@@ -2,7 +2,7 @@
 //! (ADR 0231, payload version 2).
 //!
 //! Each reference of the TVIEW to another one ([`crate::lineage::Reference`],
-//! resolved by `tviews.pg_tview_references`) makes a collection: the comments of
+//! resolved by `tviews.references`) makes a collection: the comments of
 //! post P are the `tv_comment` rows whose `fk_post` holds P's key, and their
 //! collection key is `Comment.fk_post:<P's public id>`. A write of a child row
 //! returns, per reference, the parent's key and, when it recomputes the row, the
@@ -53,7 +53,7 @@ pub type OldKeys = std::collections::HashMap<i64, Vec<Option<String>>>;
 /// SQL over the catalog row of [`super::meta_select`]: the TVIEW's collections, a
 /// `jsonb` array of `[column, parent table, parent oid, parent column, its type,
 /// id kind, parent entity, parent typename option]`, the parent of each reference
-/// the one `tviews.pg_tview_references` marks `chosen`, as `tviews.registry` publishes.
+/// the one `tviews.references` marks `chosen`, as `tviews.registry` publishes.
 pub(super) fn collections_sql() -> String {
     let schema = crate::utils::ext_schema();
     format!(
@@ -71,7 +71,7 @@ pub(super) fn collections_sql() -> String {
                         AND ia.attnum > 0 AND NOT ia.attisdropped), \
                      x.parent, pm.graphql_typename) \
                  ORDER BY x.column_name) \
-          FROM {schema}.pg_tview_references x \
+          FROM {schema}.references x \
           JOIN {schema}.pg_tview_meta pm ON pm.entity = x.parent \
           JOIN pg_catalog.pg_class pc ON pc.oid = x.parent_table \
           JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace \

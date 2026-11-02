@@ -18,7 +18,7 @@ controls exist today. How the extension works is in
 | Privilege escalation in the database | A role making a TVIEW owner's code run with its privileges, or the reverse; planting a function on a `search_path` the flush uses | Owner execution, fixed `search_path`, ownership checks (below) |
 | Data leakage | A role reading a TVIEW or its backing view without a grant | Backing view privileges follow the table's |
 | SQL injection | Identifiers and definitions passed to pg_tviews functions | Identifiers quoted with `quote_identifier`, values bound as parameters or quoted with `quote_literal`; a definition must be exactly one SELECT (42601) |
-| Denial of service | Unbounded queues or recursion | `pg_tviews.max_queue_size` (54000), `max_propagation_depth` and `max_dependency_depth` (54001), stack-depth checks in the query-tree walkers |
+| Denial of service | Unbounded queues or recursion | `pg_tviews.max_queue_size` (54000), at most 1,000 entity batches per flush and 64 nested views (54001), stack-depth checks in the query-tree walkers |
 | Supply chain | Compromised crates or CI | `cargo deny check` (`deny.toml`) and `cargo audit` on every pull request and daily (`security-audit.yml`), pinned toolchain and pgrx |
 | Build tampering | Modified release tarball | Sigstore keyless signatures, GitHub build provenance, reproducible build script |
 | Memory corruption | `unsafe` FFI into PostgreSQL | `unsafe` confined to pgrx FFI, audited in [UNSAFE_AUDIT.md](UNSAFE_AUDIT.md) |
@@ -53,11 +53,13 @@ controls exist today. How the extension works is in
   `scripts/check-name-resolution.sh` fails on an entry point that does not pin it.
 - **No `SECURITY DEFINER` functions.** Every function checks as the caller; the
   catalog and audit-log writes then run as the extension's owner inside the library.
-- **Ownership checks before any lock.** Every function acting on one TVIEW requires
-  owning it or the extension (42501).
-- **Maintenance functions acting on every TVIEW are revoked from `PUBLIC`**
-  (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`
-  and the others listed in the ADR); an operator role is granted them
+- **Ownership checks before any lock.** Every function acting on, or showing, one
+  TVIEW requires owning it or the extension (42501).
+- **Functions acting on every TVIEW end in `_all` and are revoked from `PUBLIC`**
+  (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`,
+  `pg_tviews_ensure_propagation_indexes_all()`, `pg_tviews_reset_stats_all()`, with the
+  internal `pg_tviews_invalidate_caches()` and `pg_tviews_audit_write()`); an operator
+  role is granted them
   ([docs/user-guides/operators.md](../user-guides/operators.md)).
   `regress_security_surface.sql` fails when a new function is not classified.
 - **Catalog.** `pg_tview_meta` is writable only by the extension's owner; `PUBLIC` can

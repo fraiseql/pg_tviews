@@ -7,7 +7,7 @@
 CREATE FUNCTION @extschema@.contract_version()
 RETURNS integer
 LANGUAGE sql STABLE PARALLEL SAFE
-AS 'SELECT 2';
+AS 'SELECT 3';
 
 COMMENT ON FUNCTION @extschema@.contract_version() IS
 'Version of the read contract: @extschema@.registry and pg_tviews_create_or_replace()';
@@ -22,7 +22,7 @@ COMMENT ON FUNCTION @extschema@.contract_version() IS
 -- (`preferred`; a parent without an identity never wins), else the first by entity.
 -- The registry and the change feed both publish the chosen one.
 -- `index_name` is the managed index (or a constraint's) leading with the column.
-CREATE VIEW @extschema@.pg_tview_references AS
+CREATE VIEW @extschema@.references AS
 SELECT x.*,
        pg_catalog.row_number() OVER (PARTITION BY x.entity, x.column_name
                                      ORDER BY x.preferred DESC NULLS LAST, x.parent) = 1
@@ -60,9 +60,9 @@ FROM (SELECT m.entity,
                                    AND pg_catalog.format('%I.%I', sn.nspname, sc.relname)
                                        = r.table_name))) x;
 
-COMMENT ON VIEW @extschema@.pg_tview_references IS
+COMMENT ON VIEW @extschema@.references IS
 'Internal: the references tviews.registry publishes; may change in any release';
-GRANT SELECT ON @extschema@.pg_tview_references TO PUBLIC;
+GRANT SELECT ON @extschema@.references TO PUBLIC;
 
 -- A registration whose table is gone stays visible, with NULL for what the table
 -- would tell; `view` is NULL once the view is gone. managed_indexes are the
@@ -129,7 +129,7 @@ SELECT
                     FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
     COALESCE(
         (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
-         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.reads r
                WHERE r.entity = m.entity) x
          JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
          JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
@@ -154,7 +154,7 @@ SELECT
                     'entity', x.parent, 'column', x.parent_column, 'unique', x.is_unique,
                     'nullable', x.is_nullable, 'index', x.index_name,
                     'order', pg_catalog.to_jsonb(x.order_by)))
-         FROM @extschema@.pg_tview_references x
+         FROM @extschema@.references x
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
     -- The type name the report and the change feed use, as crate::catalog::typename

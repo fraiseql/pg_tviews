@@ -36,15 +36,15 @@ $TVIEW$);
 DO $$
 DECLARE cap0 bigint; app0 bigint;
 BEGIN
-  cap0 := (pg_tviews_queue_stats()->>'direct_patch_captured')::bigint;
-  app0 := (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint;
+  cap0 := (pg_tviews_show_queue()->>'direct_patch_captured')::bigint;
+  app0 := (pg_tviews_show_queue()->>'direct_patches_applied')::bigint;
 
   UPDATE tb_user SET bio = 'b1' WHERE pk_user = 1;
 
-  IF (pg_tviews_queue_stats()->>'direct_patch_captured')::bigint <> cap0 THEN
+  IF (pg_tviews_show_queue()->>'direct_patch_captured')::bigint <> cap0 THEN
     RAISE EXCEPTION '#56 no-delta FAIL: a patch was captured without jsonb_delta';
   END IF;
-  IF (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint <> app0 THEN
+  IF (pg_tviews_show_queue()->>'direct_patches_applied')::bigint <> app0 THEN
     RAISE EXCEPTION '#56 no-delta FAIL: a patch was applied without jsonb_delta';
   END IF;
   IF (SELECT data->>'bio' FROM tv_user WHERE pk_user = 1) <> 'b1'

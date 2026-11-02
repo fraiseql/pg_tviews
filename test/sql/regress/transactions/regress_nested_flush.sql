@@ -74,12 +74,12 @@ END $$;
 CREATE TRIGGER log_account_change AFTER INSERT OR UPDATE OR DELETE ON tv_account
     FOR EACH STATEMENT EXECUTE FUNCTION log_account_change();
 DO $$
-DECLARE before bigint := (pg_tviews_queue_stats()->>'flushes')::bigint;
+DECLARE before bigint := (pg_tviews_show_queue()->>'flushes')::bigint;
 BEGIN
     TRUNCATE tb_account;
-    IF (pg_tviews_queue_stats()->>'flushes')::bigint - before IS DISTINCT FROM 1 THEN
+    IF (pg_tviews_show_queue()->>'flushes')::bigint - before IS DISTINCT FROM 1 THEN
         RAISE EXCEPTION 'expected one flush for the TRUNCATE, got %',
-            (pg_tviews_queue_stats()->>'flushes')::bigint - before;
+            (pg_tviews_show_queue()->>'flushes')::bigint - before;
     END IF;
 END $$;
 SELECT assert_fresh('tv_account', 'pk_account', 'TRUNCATE tb_account');

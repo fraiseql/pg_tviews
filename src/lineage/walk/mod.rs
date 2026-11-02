@@ -29,7 +29,7 @@ pub(super) fn index(n: impl TryInto<usize>) -> usize {
 /// What the walk needs to know about the registered TVIEWs.
 pub struct Context<'a> {
     /// Tables of TVIEWs (`tv_*`) → their entity: not base tables, as in
-    /// `pg_tview_reads`.
+    /// `tviews.reads`.
     pub tview_tables: &'a HashMap<Oid, String>,
     /// Backing views of other TVIEWs → their entity.
     pub tview_views: &'a HashMap<Oid, String>,

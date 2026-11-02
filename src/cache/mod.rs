@@ -17,7 +17,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-/// A memo of catalog reads, keyed by `K`, bounded by `pg_tviews.cache_size`.
+/// Entries a memo holds before it is cleared and refilled lazily: bounds a
+/// backend's memory on high-cardinality workloads.
+const MAX_ENTRIES: usize = 10_000;
+
+/// A memo of catalog reads, keyed by `K`, bounded by [`MAX_ENTRIES`].
 /// Cleared at the first lookup after an invalidation ([`invalidate_all`]), except
 /// the entries its `keep` keeps.
 pub struct Memo<K, V> {
@@ -54,7 +58,7 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
     pub fn insert(&self, key: K, value: V) {
         self.sync();
         let mut map = self.map.borrow_mut();
-        if map.len() >= crate::config::cache_size() {
+        if map.len() >= MAX_ENTRIES {
             map.clear();
         }
         map.insert(key, value);

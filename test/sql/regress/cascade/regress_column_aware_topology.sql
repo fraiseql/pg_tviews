@@ -59,7 +59,7 @@ SELECT pg_tviews_create('order', $TVIEW$
 $TVIEW$);
 
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 -- Products embedded in order 1 (through the 2-hop cascade).
 CREATE FUNCTION _o1_products() RETURNS text[] LANGUAGE sql AS
   $$ SELECT array_agg(x->>'product' ORDER BY x->>'product')

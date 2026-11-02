@@ -4,7 +4,7 @@
 -- the renamed index stays managed, a dropped one is forgotten. A user's index may
 -- not take a name pg_tviews manages or would create for the TVIEW, so a managed
 -- CREATE INDEX IF NOT EXISTS never finds a user's index in its place. The
--- statements pg_tviews_ensure_propagation_indexes() reports for running by hand
+-- statements pg_tviews_ensure_propagation_indexes_all() reports for running by hand
 -- (with CONCURRENTLY) are the exception: accepted, and recorded as managed.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/ddl/regress_managed_index_names.sql
@@ -68,7 +68,7 @@ SELECT must(error_of($$CREATE INDEX idx_tv_post_author_pk_pk_post ON tv_post (au
 SELECT must(error_of($$ALTER INDEX post_data_gin RENAME TO idx_tv_post_author_pk_pk_post$$)
             LIKE '42939: %', 'rename into a managed name');
 
--- 3. What pg_tviews_ensure_propagation_indexes() reports, run by hand, is accepted
+-- 3. What pg_tviews_ensure_propagation_indexes_all() reports, run by hand, is accepted
 --    and recorded.
 RESET ROLE;
 SELECT must((SELECT array_agg(s) FROM tviews.pg_tviews_ensure_propagation_indexes('post', true) s)

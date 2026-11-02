@@ -12,7 +12,7 @@ fn pg_tviews_version() -> &'static str {
 
 /// The entity of the TVIEW `tview` names (ADR 0211): its entity, `tv_<entity>`
 /// or `schema.tv_<entity>`, quoted or not. 42704 when it names no TVIEW.
-#[pg_extern(stable, parallel_safe)]
+#[pg_extern(stable, parallel_safe, name = "pg_tviews_resolve")]
 fn pg_tviews_entity_of(tview: &str) -> Result<String, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     Ok(crate::catalog::resolve::find(tview)?.entity)
@@ -20,7 +20,7 @@ fn pg_tviews_entity_of(tview: &str) -> Result<String, ErrorReport> {
 
 /// Health of the installation: version, catalog revision, the
 /// catalog's consistency, triggers, TVIEW count.
-#[pg_extern]
+#[pg_extern(name = "pg_tviews_check_health")]
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_health_check() -> TableIterator<
     'static,
@@ -38,7 +38,7 @@ fn pg_tviews_health_check() -> TableIterator<
 /// Replication state of every TVIEW, safe to call on a standby. `is_empty` and
 /// `needs_rebuild` are NULL for an UNLOGGED TVIEW during recovery, where its table
 /// cannot be read; `needs_rebuild` is NULL for every TVIEW during recovery.
-#[pg_extern]
+#[pg_extern(name = "pg_tviews_show_replication")]
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_replication_status() -> Result<
     TableIterator<
@@ -141,7 +141,7 @@ extension_sql!(
 -- no data: readable by every role.
 CREATE VIEW @extschema@.stats AS SELECT * FROM @extschema@.pg_tviews_stats_rows();
 COMMENT ON VIEW @extschema@.stats IS
-'Refresh statistics of each TVIEW since the server started or pg_tviews_stats_reset()';
+'Refresh statistics of each TVIEW since the server started or pg_tviews_reset_stats()';
 GRANT SELECT ON @extschema@.stats TO PUBLIC;
     ",
     name = "stats_view",

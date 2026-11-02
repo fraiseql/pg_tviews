@@ -14,7 +14,7 @@ Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`); substitute your
 ```sql
 -- 1. Health check: triggers, catalog revision, re-registration
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 
@@ -41,7 +41,7 @@ Expect a row trigger (`tviews.pg_tview_trigger_handler`), a statement trigger
 
 ```sql
 -- 4. Is refresh suspended in this transaction?
-SELECT tviews.pg_tviews_is_suspended();
+SELECT tviews.pg_tviews_show_suspended() IS NOT NULL;
 ```
 
 **Resolution**:
@@ -87,8 +87,8 @@ EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_user WHERE pk_user = 
 
 1. Create the indexes cascades need:
    ```sql
-   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
-   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all();
    ```
 2. Index the join and foreign-key columns the view uses in its base tables.
 3. Reduce fan-out or nesting depth in the view definitions.
@@ -100,7 +100,7 @@ See [Performance Monitoring](runbooks/01-health-monitoring/performance-monitorin
 ## Runbook 3: Out of Memory or Queue Limit During a Bulk Write
 
 **Symptom**: "out of memory", or
-`refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`.
+`refresh queue backpressure: queue size (N) would exceed max_queue_size (M)`.
 
 **Diagnosis**:
 
@@ -139,7 +139,7 @@ catalog revision mismatch.
 ```sql
 SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
 SELECT tviews.pg_tviews_version(), tviews.pg_tviews_catalog_revision();
-SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+SELECT component, severity, message FROM tviews.pg_tviews_check_health()
 WHERE component IN ('extension', 'catalog', 'reregister');
 ```
 
@@ -166,7 +166,7 @@ WHERE component IN ('extension', 'catalog', 'reregister');
 
 ```sql
 SELECT status, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE component = 'triggers';
 -- WARNING | 1 orphaned trigger found: trg_tview_row_post_on_app_tb_user on app.tb_user
 ```
@@ -229,7 +229,7 @@ ORDER BY query_start;
 
 ```sql
 -- Refresh counters of this session: run before and after one write and compare
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 A large increase in `view_recomputes` relative to `direct_patches_applied` means rows
@@ -256,7 +256,7 @@ SELECT tviews.pg_tviews_refresh_all();
 ### Rebuild TVIEWs emptied by a crash or promotion (UNLOGGED)
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+SELECT * FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild;
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
@@ -271,7 +271,7 @@ See `runbooks/scripts/emergency-disable.sql` and
 #!/bin/bash
 # Exit non-zero when the health check reports a warning or an error.
 problems=$(psql -X -At -d "$DB_NAME" -c \
-  "SELECT component || ': ' || message FROM tviews.pg_tviews_health_check() WHERE severity <> 'info'")
+  "SELECT component || ': ' || message FROM tviews.pg_tviews_check_health() WHERE severity <> 'info'")
 if [ -n "$problems" ]; then
     echo "$problems"
     exit 1
@@ -279,8 +279,8 @@ fi
 ```
 
 What to alert on:
-- Any `pg_tviews_health_check()` row with severity `error` (critical) or `warning`
-- `needs_rebuild` in `pg_tviews_replication_status()` after a failover
+- Any `pg_tviews_check_health()` row with severity `error` (critical) or `warning`
+- `needs_rebuild` in `pg_tviews_show_replication()` after a failover
 - Writes failing with pg_tviews errors in the server log
 
 ## See Also

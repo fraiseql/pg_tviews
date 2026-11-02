@@ -1,6 +1,6 @@
 //! Health checks, diagnostics, and performance monitoring.
 
-/// One row of `pg_tviews_health_check()`: status, component, message, severity.
+/// One row of `pg_tviews_check_health()`: status, component, message, severity.
 type Check = (String, String, String, String);
 
 fn ok(component: &str, message: impl Into<String>) -> Check {
@@ -45,6 +45,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             metadata_check(),
             plan_check(),
             columns_check(),
+            seq_scan_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -156,6 +157,61 @@ fn columns_check() -> Check {
     }
 }
 
+/// Mapping queries that scan a large table: the advice registration printed,
+/// re-evaluated with today's indexes and statistics (an index dropped later).
+/// Each is planned as its TVIEW's owner, as the trigger runs it.
+fn seq_scan_check() -> Check {
+    let mut found = Vec::new();
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
+    };
+    for meta in &metas {
+        let Ok(_owner) = crate::owner::AsOwner::of_entity(&meta.entity_name) else {
+            continue;
+        };
+        for mapping in &meta.plan.tables {
+            let Some(template) = mapping
+                .sql
+                .as_deref()
+                .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
+            else {
+                continue;
+            };
+            match crate::lineage::large_seq_scans(&mapping.table, template) {
+                Ok(scans) => found.extend(scans.into_iter().map(|(relation, rows)| {
+                    format!(
+                        "tv_{} (writes to {} scan {relation}, about {rows} rows)",
+                        meta.entity_name, mapping.table
+                    )
+                })),
+                Err(e) => {
+                    return error(
+                        "seq_scans",
+                        format!(
+                            "the mapping of {} in tv_{}: {e}",
+                            mapping.table, meta.entity_name
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    if found.is_empty() {
+        ok("seq_scans", "No mapping query scans a large table")
+    } else {
+        warning(
+            "seq_scans",
+            format!(
+                "writes map to keys with a sequential scan: {}; an index on the columns each \
+                 joins on makes them cheaper (SELECT * FROM \
+                 tviews.pg_tviews_ensure_propagation_indexes(tview) creates the propagation ones)",
+                sample(&found)
+            ),
+        )
+    }
+}
+
 /// TVIEWs registered before a release that changed what registration derives.
 fn reregister_check() -> Check {
     let stale = match registered("reregister") {
@@ -231,8 +287,8 @@ fn count_check() -> Check {
     }
 }
 
-/// Get current queue statistics
-/// Returns metrics about the current transaction's refresh operations
+/// The session's refresh counters, and the keys queued in the transaction
+/// (`queued`).
 pub(crate) fn queue_stats() -> serde_json::Value {
     let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
@@ -262,18 +318,15 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "plans_prepared": stats.plans_prepared,
         "per_execution_plans": stats.per_execution_plans,
         "propagation_pruned": stats.propagation_pruned,
-        "feed_gaps": crate::stats::feed_gaps().ok()
+        "queued": queued(),
     });
 
     json_value
 }
 
-/// Debug function: View current queue contents
-/// Returns the entities and PKs currently in the refresh queue
-pub(crate) fn debug_queue() -> serde_json::Value {
-    let contents = crate::queue::get_queue_contents();
-
-    let json_contents: Vec<serde_json::Value> = contents
+/// The keys queued in the transaction, as `{entity, pk}`.
+fn queued() -> Vec<serde_json::Value> {
+    crate::queue::get_queue_contents()
         .into_iter()
         .map(|key| {
             serde_json::json!({
@@ -284,9 +337,7 @@ pub(crate) fn debug_queue() -> serde_json::Value {
                 }
             })
         })
-        .collect();
-
-    serde_json::json!(json_contents)
+        .collect()
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.

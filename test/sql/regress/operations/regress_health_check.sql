@@ -1,4 +1,4 @@
--- Regression test (#139): pg_tviews_health_check() checks pg_tviews' own triggers.
+-- Regression test (#139): pg_tviews_check_health() checks pg_tviews' own triggers.
 --
 -- The orphaned-trigger check matched `tview_%`, which no pg_tviews trigger is named,
 -- and resolved each TVIEW's base table as ('tb_' || entity)::regclass: wrong for an
@@ -56,7 +56,7 @@ CREATE TRIGGER tview_orphan AFTER INSERT ON public.audit_me
     FOR EACH ROW EXECUTE FUNCTION public.noop();
 
 CREATE FUNCTION public.trigger_check() RETURNS text LANGUAGE sql AS $$
-    SELECT status || ': ' || message FROM tviews.pg_tviews_health_check()
+    SELECT status || ': ' || message FROM tviews.pg_tviews_check_health()
     WHERE component = 'triggers' $$;
 
 -- 1. Healthy: the call succeeds, and every pg_tviews trigger is accounted for.

@@ -1,9 +1,8 @@
--- Regression test for issue #27:
---   "Runtime configuration limits are hardcoded — no GUC tunability."
---
--- Verifies the three limits called out by the issue are now GUC-tunable and
--- honored at runtime: pg_tviews.max_dependency_depth, pg_tviews.batch_size,
--- pg_tviews.cache_size (queue_depth already shipped as pg_tviews.max_queue_size).
+-- The settings (ADR 0220, decision D11 of the 2026-11 architecture review): five a
+-- user decides; hidden and superuser-only, three diagnostic switches and the queue
+-- bound (kept so its error can be tested); nothing else. Every other
+-- limit is a constant named by its error. A removed or misspelled pg_tviews.*
+-- name is refused, not silently ignored.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/operations/regress_gucs.sql
 -- expect-output: gucs: PASS
@@ -16,56 +15,61 @@ DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
--- All three new GUCs registered with the documented defaults.
-DO $$
-BEGIN
-  IF current_setting('pg_tviews.max_dependency_depth') <> '10' THEN
-    RAISE EXCEPTION '#27 FAIL: max_dependency_depth default = % (expected 10)',
-      current_setting('pg_tviews.max_dependency_depth');
-  END IF;
-  IF current_setting('pg_tviews.batch_size') <> '1000' THEN
-    RAISE EXCEPTION '#27 FAIL: batch_size default = % (expected 1000)',
-      current_setting('pg_tviews.batch_size');
-  END IF;
-  IF current_setting('pg_tviews.cache_size') <> '10000' THEN
-    RAISE EXCEPTION '#27 FAIL: cache_size default = % (expected 10000)',
-      current_setting('pg_tviews.cache_size');
-  END IF;
-END $$;
+CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'gucs FAIL: %', what; END IF; END $$;
+-- The SQLSTATE `stmt` fails with, or 'ok'.
+CREATE FUNCTION outcome(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN EXECUTE stmt; RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
 
--- pg_tviews.lock_escalation_threshold (ADR 0207): 64 by default, -1 to
--- 1000000, settable per session.
-DO $$
-BEGIN
-  IF current_setting('pg_tviews.lock_escalation_threshold') <> '64' THEN
-    RAISE EXCEPTION 'gucs FAIL: lock_escalation_threshold default = % (expected 64)',
-      current_setting('pg_tviews.lock_escalation_threshold');
-  END IF;
-  PERFORM set_config('pg_tviews.lock_escalation_threshold', '-1', true);
-  PERFORM set_config('pg_tviews.lock_escalation_threshold', '0', true);
-  BEGIN
-    PERFORM set_config('pg_tviews.lock_escalation_threshold', '-2', true);
-    RAISE EXCEPTION 'gucs FAIL: lock_escalation_threshold accepted -2';
-  EXCEPTION WHEN invalid_parameter_value THEN NULL;
-  END;
-END $$;
+-- 1. The user settings: exactly these, each superuser-set (or postmaster).
+SELECT must((SELECT string_agg(name || '=' || context, ', ' ORDER BY name)
+               FROM pg_settings WHERE name LIKE 'pg_tviews.%')
+            = 'pg_tviews.audit_enabled=superuser, '
+              'pg_tviews.auto_rebuild_databases=postmaster, '
+              'pg_tviews.lock_escalation_threshold=superuser, '
+              'pg_tviews.max_refresh_rows=superuser, '
+              'pg_tviews.publish_changes=superuser',
+            'visible settings: ' || (SELECT string_agg(name || '=' || context, ', ' ORDER BY name)
+                                       FROM pg_settings WHERE name LIKE 'pg_tviews.%'));
 
--- Each is settable within bounds.
-SET pg_tviews.max_dependency_depth = 5;
-SET pg_tviews.batch_size = 2;
-SET pg_tviews.cache_size = 3;
-DO $$ BEGIN
-  IF current_setting('pg_tviews.batch_size') <> '2'
-     OR current_setting('pg_tviews.cache_size') <> '3'
-     OR current_setting('pg_tviews.max_dependency_depth') <> '5' THEN
-    RAISE EXCEPTION '#27 FAIL: a GUC did not take effect via SET';
-  END IF;
-END $$;
+-- 2. The diagnostic switches and the queue bound exist, are hidden from SHOW ALL
+--    and pg_settings, and only a superuser sets them (the test switch exists in
+--    test builds only).
+SELECT must(current_setting(n, true) = 'on' AND n NOT IN (SELECT name FROM pg_settings),
+            n || ' missing or shown')
+  FROM unnest(ARRAY['pg_tviews.graph_cache_enabled', 'pg_tviews.table_cache_enabled',
+                    'pg_tviews.direct_patch_enabled']) n;
+SELECT must(current_setting('pg_tviews.max_queue_size', true) = '1000000'
+            AND 'pg_tviews.max_queue_size' NOT IN (SELECT name FROM pg_settings),
+            'max_queue_size missing or shown');
+DROP ROLE IF EXISTS regress_gucs_user;
+CREATE ROLE regress_gucs_user;
+SET ROLE regress_gucs_user;
+SELECT must(outcome(format('SET %s = off', n)) = '42501', n || ' settable by a user')
+  FROM unnest(ARRAY['pg_tviews.graph_cache_enabled', 'pg_tviews.table_cache_enabled',
+                    'pg_tviews.direct_patch_enabled', 'pg_tviews.max_queue_size',
+                    'pg_tviews.publish_changes',
+                    'pg_tviews.max_refresh_rows', 'pg_tviews.audit_enabled',
+                    'pg_tviews.lock_escalation_threshold']) n;
+RESET ROLE;
+DROP ROLE regress_gucs_user;
 
--- Behavioural: batch_size chunking must stay correct. With batch_size = 2 a
--- 5-row multi-row INSERT is refreshed in chunks of [2,2,1]; all 5 must appear,
--- and the low cache_size = 3 (caches clear-and-repopulate) must not corrupt
--- lookups across more than 3 distinct tviews.
+-- 3. lock_escalation_threshold: 64 by default, 0 (always escalate) at least;
+--    "never escalate" (-1) is gone: it could exhaust the shared lock table.
+SELECT must(current_setting('pg_tviews.lock_escalation_threshold') = '64', 'threshold default');
+SELECT must(outcome($$SET pg_tviews.lock_escalation_threshold = 0$$) = 'ok', 'threshold 0');
+SELECT must(outcome($$SET pg_tviews.lock_escalation_threshold = -1$$) = '22023',
+            'threshold -1 accepted');
+RESET pg_tviews.lock_escalation_threshold;
+
+-- 4. The settings that became constants are refused by name.
+SELECT must(outcome(format('SET %s = 1', n)) = '42602', n || ' still accepted')
+  FROM unnest(ARRAY['pg_tviews.max_propagation_depth', 'pg_tviews.max_dependency_depth',
+                    'pg_tviews.batch_size',
+                    'pg_tviews.cache_size', 'pg_tviews.report_max_tracked']) n;
+
+-- 5. A bulk change past one batch (1,000 keys) is refreshed whole, in batches.
 CREATE TABLE tb_tenant (
     pk_tenant INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id        UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
@@ -87,23 +91,13 @@ SELECT pg_tviews_create('tv_order', $TVIEW$
     FROM tb_order o JOIN tb_tenant t ON t.pk_tenant = o.fk_tenant
 $TVIEW$);
 
--- 5-row multi-row INSERT under batch_size = 2.
 INSERT INTO tb_order (identifier, fk_tenant, status)
-  SELECT 'o' || g, 1, 'draft' FROM generate_series(1, 5) g;
-DO $$ BEGIN
-  IF (SELECT count(*) FROM tv_order) <> 5 THEN
-    RAISE EXCEPTION '#27 FAIL: batch_size=2 chunked bulk refresh lost rows (count = %, expected 5)',
-      (SELECT count(*) FROM tv_order);
-  END IF;
-END $$;
-
--- Multi-row DELETE under the same small batch size.
-DELETE FROM tb_order WHERE identifier IN ('o1', 'o3', 'o5');
-DO $$ BEGIN
-  IF (SELECT count(*) FROM tv_order) <> 2 THEN
-    RAISE EXCEPTION '#27 FAIL: batch_size=2 chunked bulk DELETE wrong (count = %, expected 2)',
-      (SELECT count(*) FROM tv_order);
-  END IF;
-END $$;
+  SELECT 'o' || g, 1, 'draft' FROM generate_series(1, 2500) g;
+SELECT must((SELECT count(*) FROM tv_order) = 2500, 'a bulk insert lost rows');
+UPDATE tb_tenant SET name = 'T2';
+SELECT must((SELECT count(*) FROM tv_order WHERE data->>'tenant_name' = 'T2') = 2500,
+            'a cascade past one batch left rows stale');
+DELETE FROM tb_order WHERE pk_order % 2 = 1;
+SELECT must((SELECT count(*) FROM tv_order) = 1250, 'a bulk delete left rows');
 
 \echo 'gucs: PASS'

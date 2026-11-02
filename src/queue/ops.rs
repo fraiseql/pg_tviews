@@ -28,7 +28,7 @@ pub fn enqueue_refresh_with_limit(
 ///
 /// This is the main entry point from triggers.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if `max_queue_size` would be exceeded.
+/// Raises ERROR if `pg_tviews.max_queue_size` would be exceeded.
 ///
 /// A plain enqueue **poisons** any direct patch for this key: the key
 /// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
@@ -83,7 +83,7 @@ pub fn enqueue_refresh_all(entity: &str) {
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if `max_queue_size` would be exceeded.
+/// Raises ERROR if `pg_tviews.max_queue_size` would be exceeded.
 pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
     if let Err(e) = check_queue_backpressure(crate::config::max_queue_size()) {
         e.raise();

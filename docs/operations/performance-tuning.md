@@ -88,7 +88,7 @@ BEGIN
         (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY x) FROM unnest(latencies) x),
         (SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY x) FROM unnest(latencies) x),
         iterations / EXTRACT(epoch FROM (end_time - start_time)),
-        pg_tviews_queue_stats()
+        pg_tviews_show_queue()
     );
 
     RETURN jsonb_build_object(
@@ -396,7 +396,7 @@ BEGIN
         'total_operations', total_operations,
         'duration_seconds', EXTRACT(epoch FROM (end_time - start_time)),
         'throughput_ops_sec', total_operations / EXTRACT(epoch FROM (end_time - start_time)),
-        'final_queue_stats', pg_tviews_queue_stats()
+        'final_queue_stats', pg_tviews_show_queue()
     );
 
     RETURN results;
@@ -436,10 +436,10 @@ Create comprehensive monitoring:
 CREATE OR REPLACE VIEW tview_performance_metrics AS
 SELECT
     now() as collected_at,
-    (pg_tviews_queue_stats()->>'queue_size')::int as queue_size,
-    (pg_tviews_queue_stats()->>'total_timing_ms')::float as total_timing_ms,
-    (pg_tviews_queue_stats()->>'graph_cache_hit_rate')::float as graph_cache_hit_rate,
-    (pg_tviews_queue_stats()->>'table_cache_hit_rate')::float as table_cache_hit_rate,
+    (pg_tviews_show_queue()->>'queue_size')::int as queue_size,
+    (pg_tviews_show_queue()->>'total_timing_ms')::float as total_timing_ms,
+    (pg_tviews_show_queue()->>'graph_cache_hit_rate')::float as graph_cache_hit_rate,
+    (pg_tviews_show_queue()->>'table_cache_hit_rate')::float as table_cache_hit_rate,
     (SELECT COUNT(*) FROM pg_stat_activity WHERE query LIKE '%pg_tviews%' AND state = 'active') as active_refreshes,
     (SELECT SUM(pg_total_relation_size(oid)) FROM pg_class WHERE relname LIKE 'tv_%') as total_tview_size_bytes
 ;
@@ -453,9 +453,9 @@ DECLARE
     cache_rate float;
 BEGIN
     SELECT
-        (pg_tviews_queue_stats()->>'queue_size')::int,
-        (pg_tviews_queue_stats()->>'total_timing_ms')::float,
-        (pg_tviews_queue_stats()->>'graph_cache_hit_rate')::float
+        (pg_tviews_show_queue()->>'queue_size')::int,
+        (pg_tviews_show_queue()->>'total_timing_ms')::float,
+        (pg_tviews_show_queue()->>'graph_cache_hit_rate')::float
     INTO queue_size, timing_ms, cache_rate;
 
     -- Queue size alerts
@@ -612,10 +612,10 @@ Identify refresh performance issues:
 
 ```sql
 -- Profile refresh operations
-SELECT pg_tviews_queue_stats();
+SELECT pg_tviews_show_queue();
 
--- Check for cascade bottlenecks
-SELECT pg_tviews_debug_queue();
+-- Keys queued in this transaction
+SELECT pg_tviews_show_queue()->'queued';
 
 -- Monitor system resources during refreshes
 SELECT * FROM pg_stat_bgwriter;

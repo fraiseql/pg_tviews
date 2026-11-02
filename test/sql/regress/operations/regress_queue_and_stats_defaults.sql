@@ -48,13 +48,13 @@ FROM tviews.stats WHERE entity = 'idle';
 SELECT must(stats_reset IS NOT NULL, 'tv_row stats_reset') FROM tviews.stats WHERE entity = 'row';
 -- After a reset of every TVIEW: the time of the reset, counted or not.
 SELECT clock_timestamp() AS before_reset \gset
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 SELECT must(bool_and(stats_reset >= :'before_reset'::timestamptz) AND count(*) = 2,
             'after a reset: ' || string_agg(entity || '=' || coalesce(stats_reset::text, 'NULL'), ', '))
 FROM tviews.stats;
 -- One TVIEW reset alone.
 SELECT clock_timestamp() AS before_one \gset
-SELECT tviews.pg_tviews_stats_reset('idle');
+SELECT tviews.pg_tviews_reset_stats('idle');
 SELECT must((SELECT stats_reset FROM tviews.stats WHERE entity = 'idle') >= :'before_one'::timestamptz
             AND (SELECT stats_reset FROM tviews.stats WHERE entity = 'row') < :'before_one'::timestamptz,
             'reset of one TVIEW');

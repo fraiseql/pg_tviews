@@ -1,4 +1,4 @@
--- Regression test (#247): tviews.pg_tviews_feed_gaps() counts the transactions
+-- Regression test (#247): tviews.pg_tviews_count_feed_gaps() counts the transactions
 -- committed without publishing their changes, for every session.
 --
 -- Above 90 % NOTIFY queue usage a transaction commits unpublished. A listener
@@ -19,8 +19,8 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'feed gaps FAIL: %', what; END IF; END $$;
 
-SELECT must(pg_typeof(tviews.pg_tviews_feed_gaps()) = 'bigint'::regtype, 'returns bigint');
-SELECT tviews.pg_tviews_feed_gaps() AS before \gset
+SELECT must(pg_typeof(tviews.pg_tviews_count_feed_gaps()) = 'bigint'::regtype, 'returns bigint');
+SELECT tviews.pg_tviews_count_feed_gaps() AS before \gset
 SELECT must(:before >= 0, 'negative: ' || :before);
 
 -- A transaction published normally is no gap.
@@ -30,18 +30,18 @@ SELECT tviews.pg_tviews_create('tv_tag', $$
     SELECT t.pk_tag, t.id, jsonb_build_object('name', t.name) AS data FROM tb_tag t $$);
 SET pg_tviews.publish_changes = rows;
 INSERT INTO tb_tag (pk_tag, name) VALUES (1, 'a');
-SELECT must(tviews.pg_tviews_feed_gaps() = :before, 'a published transaction counted');
+SELECT must(tviews.pg_tviews_count_feed_gaps() = :before, 'a published transaction counted');
 
 -- Any role can read it.
 DROP ROLE IF EXISTS feed_gaps_reader;
 CREATE ROLE feed_gaps_reader;
 SET ROLE feed_gaps_reader;
-SELECT must(tviews.pg_tviews_feed_gaps() >= :before, 'read by an unprivileged role');
+SELECT must(tviews.pg_tviews_count_feed_gaps() >= :before, 'read by an unprivileged role');
 RESET ROLE;
 DROP ROLE feed_gaps_reader;
 
--- The health report shows it.
-SELECT must((tviews.pg_tviews_queue_stats()) ? 'feed_gaps', 'queue stats: '
-            || tviews.pg_tviews_queue_stats()::text);
+-- One function answers it: the session's queue report does not repeat it.
+SELECT must(NOT (tviews.pg_tviews_show_queue()) ? 'feed_gaps', 'queue stats: '
+            || tviews.pg_tviews_show_queue()::text);
 
 \echo 'regress_feed_gaps: PASS'

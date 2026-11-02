@@ -28,8 +28,8 @@ SELECT now() AS assessed_at,
        current_setting('server_version') AS postgresql,
        (SELECT count(*) FROM tviews.registry) AS tviews,
        (SELECT count(*) FROM tviews.registry WHERE needs_reregister) AS needs_reregister,
-       (SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'error') AS health_errors,
-       (SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'warning') AS health_warnings,
+       (SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'error') AS health_errors,
+       (SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'warning') AS health_warnings,
        (SELECT count(*) FROM pg_stat_activity
         WHERE datname = current_database() AND wait_event_type = 'Lock') AS sessions_waiting_on_locks;
 ```
@@ -57,14 +57,14 @@ Save the output of [health-check.sql](../scripts/health-check.sql) and
 ```sql
 -- Health problems
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
+FROM tviews.pg_tviews_check_health() WHERE severity <> 'info';
 
 -- Tables whose writes cannot reach a TVIEW
 SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
 FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
 
 -- Empty TVIEWs (UNLOGGED after a crash, or on a standby)
-SELECT * FROM tviews.pg_tviews_replication_status() WHERE is_empty OR needs_rebuild;
+SELECT * FROM tviews.pg_tviews_show_replication() WHERE is_empty OR needs_rebuild;
 ```
 
 For a suspect TVIEW, compare it with its view (step 4 of
@@ -100,7 +100,7 @@ and see [Refresh Troubleshooting](../02-refresh-operations/refresh-troubleshooti
 ### Step 10: Validate
 ```sql
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';   -- expect no rows
+FROM tviews.pg_tviews_check_health() WHERE severity <> 'info';   -- expect no rows
 ```
 - [ ] Every TVIEW matches its view (post-upgrade-validation.sql step 4: 0 rows differing)
 - [ ] Writes succeed at normal latency
@@ -129,7 +129,7 @@ FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';   -- expect no ro
 **Resolution**: [Performance Monitoring](../01-health-monitoring/performance-monitoring.md).
 
 ### Pattern 4: Empty TVIEWs after crash or failover
-**Quick diagnosis**: `tviews.pg_tviews_replication_status()`.
+**Quick diagnosis**: `tviews.pg_tviews_show_replication()`.
 **Resolution**: `SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);`, or keep
 the TVIEW LOGGED (the default; `ALTER TABLE tv_<entity> SET LOGGED` switches an UNLOGGED one).
 

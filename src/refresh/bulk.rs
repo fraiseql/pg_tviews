@@ -83,12 +83,12 @@ pub fn refresh_bulk(entity: &str, keys: &[KeyValue]) -> TViewResult<super::Touch
         meta.returned("t", false)
     );
 
-    // Chunk very large multi-row changes into batches (pg_tviews.batch_size) so a
+    // Chunk very large multi-row changes into batches (`BATCH_KEYS`) so a
     // single statement never carries an unbounded key array. Each batch's UPSERT and
     // stale-DELETE are keyed on that batch's keys; the DELETE only affects tview rows
     // whose key is in the batch, so per-batch execution stays correct.
     let mut touched = super::Touched::default();
-    for chunk in keys.chunks(crate::config::batch_size()) {
+    for chunk in keys.chunks(crate::refresh::BATCH_KEYS) {
         // Wait for concurrent writers of these rows before reading the view.
         let locked = super::lock_rows(&meta, &qi_tv, chunk)?;
         // The keys take their shape (`key_lookup`): the upsert is planned by

@@ -31,11 +31,11 @@ On the PostgreSQL 15 server, in each database with pg_tviews:
 SELECT version();
 SELECT extversion, extnamespace::regnamespace AS schema
 FROM pg_extension WHERE extname = 'pg_tviews';
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 ```
 Note `extversion`. `0.1.0` means a release up to `0.1.0-beta.19`, installed in the
 schema shown (its functions are not in `tviews`); later releases live in schema
-`tviews`, so qualify the call as `tviews.pg_tviews_health_check()` there.
+`tviews`, so qualify the call as `tviews.pg_tviews_check_health()` there.
 
 ## Method 1: pg_upgrade
 pg_upgrade copies the data files and keeps object OIDs, so the extension, its catalog
@@ -75,7 +75,7 @@ for a `0.1.0` install use the functions in its own schema):
    SELECT version();
    SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
    SELECT status, component, severity, message
-   FROM tviews.pg_tviews_health_check()
+   FROM tviews.pg_tviews_check_health()
    WHERE severity <> 'info';
    ```
 2. TVIEWs and their contents:
@@ -84,7 +84,7 @@ for a `0.1.0` install use the functions in its own schema):
    ```
 3. Emptied UNLOGGED TVIEWs:
    ```sql
-   SELECT * FROM tviews.pg_tviews_replication_status();
+   SELECT * FROM tviews.pg_tviews_show_replication();
    SELECT * FROM tviews.pg_tviews_rebuild_all();
    ```
 4. A write propagates:

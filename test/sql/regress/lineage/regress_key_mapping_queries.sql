@@ -64,7 +64,7 @@ CREATE FUNCTION mapped_keys(e text, tbl text, cols text, rows text) RETURNS bigi
 LANGUAGE plpgsql AS $$
 DECLARE q text; keys bigint[];
 BEGIN
-    q := tviews.pg_tviews_mapping_query(e, tbl::regclass);
+    q := tviews.pg_tviews_show_mapping_query(e, tbl::regclass);
     IF q IS NULL THEN RAISE EXCEPTION 'no mapping query of % for %', tbl, e; END IF;
     DROP TABLE IF EXISTS pg_tviews_delta;
     EXECUTE format('CREATE TEMP TABLE pg_tviews_delta AS SELECT * FROM %s LIMIT 0', tbl);

@@ -113,7 +113,7 @@ NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of 
          make them cheaper
 ```
 
-`tviews.pg_tviews_mapping_query('tv_node', 'tb_node'::regclass)` returns the mapping query, to
+`tviews.pg_tviews_show_mapping_query('tv_node', 'tb_node'::regclass)` returns the mapping query, to
 check its plan with `EXPLAIN`.
 
 ## Tests

@@ -109,9 +109,9 @@ DO $$ BEGIN
 END $$;
 
 DO $$ BEGIN
-    IF (SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') <> 'OK' THEN
+    IF (SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'triggers') <> 'OK' THEN
         RAISE EXCEPTION '#163 FAIL: health check: %',
-            (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers');
+            (SELECT message FROM tviews.pg_tviews_check_health() WHERE component = 'triggers');
     END IF;
 END $$;
 

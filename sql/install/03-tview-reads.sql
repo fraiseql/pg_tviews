@@ -1,7 +1,7 @@
 -- The relations each TVIEW's backing view reads, followed through views: the
 -- tables its triggers belong on, the dependency order of TVIEWs, and the
 -- registry's base_tables. Plain SQL over the catalogs.
-CREATE VIEW @extschema@.pg_tview_reads AS
+CREATE VIEW @extschema@.reads AS
 WITH RECURSIVE reads(entity, relid) AS (
     SELECT m.entity, m.view_oid::oid FROM @extschema@.pg_tview_meta m
   UNION
@@ -23,7 +23,7 @@ WITH RECURSIVE reads(entity, relid) AS (
 )
 SELECT entity, relid FROM reads;
 
-COMMENT ON VIEW @extschema@.pg_tview_reads IS
+COMMENT ON VIEW @extschema@.reads IS
 'Internal: relations each TVIEW reads, through views; may change in any release';
 
-GRANT SELECT ON @extschema@.pg_tview_reads TO PUBLIC;
+GRANT SELECT ON @extschema@.reads TO PUBLIC;

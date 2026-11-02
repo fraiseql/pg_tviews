@@ -138,7 +138,7 @@ SELECT current_setting('work_mem') AS work_mem,
 ```sql
 -- What pg_tviews' own checks found (extension, catalog, plans, triggers)
 CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
-SELECT status, component, message FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT status, component, message FROM tviews.pg_tviews_check_health() WHERE status <> 'OK';
 ```
 
 ## Backup and Recovery
@@ -147,7 +147,7 @@ SELECT status, component, message FROM tviews.pg_tviews_health_check() WHERE sta
 
 ```bash
 # Metadata-only backup (fast, small)
-pg_dump -t tviews.pg_tview_meta -t tviews.pg_tview_helpers > tview_metadata.sql
+pg_dump -t tviews.pg_tview_meta > tview_metadata.sql
 
 # Full database backup
 pg_dump dbname > full_backup.sql

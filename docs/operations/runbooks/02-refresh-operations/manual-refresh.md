@@ -71,7 +71,7 @@ empty on a standby. The launcher refills them once recovery ends
 ([Replication](../../replication.md)); otherwise:
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();           -- needs_rebuild
+SELECT * FROM tviews.pg_tviews_show_replication();           -- needs_rebuild
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true); -- every reset one
 ```
 

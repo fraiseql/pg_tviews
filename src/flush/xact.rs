@@ -184,7 +184,7 @@ fn fail_unflushed() {
             queued.len(),
             entities
         ),
-        "Run tviews.pg_tviews_health_check() to find missing triggers, and \
+        "Run tviews.pg_tviews_check_health() to find missing triggers, and \
          tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",
     );
 }

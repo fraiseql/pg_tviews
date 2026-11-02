@@ -229,7 +229,7 @@ planned depends on what it looks rows up by:
   writes run under `auto`, so each statement is planned as it was kept.
 - **More keys**: the statement takes them as an array and is planned at each
   execution, for their count (about 30 µs to a few ms; `per_execution_plans` in
-  `pg_tviews_queue_stats()` counts them). Wider shapes would cost memory and time: a
+  `pg_tviews_show_queue()` counts them). Wider shapes would cost memory and time: a
   kept plan grows with its parameters (a nine-table read set's plan of 256 keys keeps
   about 1.7 MB per backend), and the planner hashes an array of constants it compares
   rows with outside an index, not an array of parameters. Such a write recomputes over

@@ -62,18 +62,8 @@
         declared_indexes JSONB NOT NULL DEFAULT '[]'
     );
 
-    CREATE TABLE @extschema@.pg_tview_helpers (
-        helper_name TEXT NOT NULL PRIMARY KEY,
-        is_helper BOOLEAN NOT NULL DEFAULT TRUE,
-        used_by TEXT[] NOT NULL DEFAULT '{}',
-        depends_on TEXT[] NOT NULL DEFAULT '{}',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
     COMMENT ON TABLE @extschema@.pg_tview_meta IS
         'Internal TVIEW registrations; may change in any release. Tools read @extschema@.registry';
-    COMMENT ON TABLE @extschema@.pg_tview_helpers IS
-        'Internal: helper views used by TVIEWs; may change in any release';
 
     -- Indexes for catalog lookup performance (entity PK already has a unique index)
     CREATE INDEX idx_pg_tview_meta_table_oid
@@ -82,12 +72,11 @@
     -- Extension-owned tables are skipped by pg_dump unless marked: without this a
     -- dump/restore brings back tv_*, v_* and the triggers but no registered TVIEW.
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_meta', '');
-    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_helpers', '');
 
     -- The row trigger reads the catalog as the writing role. It holds
     -- view definitions, which pg_views already shows to everyone. Only the
     -- extension owner writes it.
-    GRANT SELECT ON @extschema@.pg_tview_meta, @extschema@.pg_tview_helpers TO PUBLIC;
+    GRANT SELECT ON @extschema@.pg_tview_meta TO PUBLIC;
 
     -- The UNLOGGED TVIEWs whose rows can be trusted, by entity. UNLOGGED itself: a
     -- crash restart or a promotion empties it together with them, and a TVIEW

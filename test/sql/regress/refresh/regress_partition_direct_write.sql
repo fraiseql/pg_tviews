@@ -150,9 +150,9 @@ END $$;
 
 -- ── health check ────────────────────────────────────────────────────────────
 DO $$ BEGIN
-    IF (SELECT status FROM pg_tviews_health_check() WHERE component = 'triggers') <> 'OK' THEN
+    IF (SELECT status FROM pg_tviews_check_health() WHERE component = 'triggers') <> 'OK' THEN
         RAISE EXCEPTION 'item 2 FAIL: health check on correct partition triggers: %',
-            (SELECT message FROM pg_tviews_health_check() WHERE component = 'triggers');
+            (SELECT message FROM pg_tviews_check_health() WHERE component = 'triggers');
     END IF;
 END $$;
 DO $$
@@ -165,15 +165,15 @@ BEGIN
     EXECUTE format('DROP TRIGGER %I ON tb_note_2a', flush_trigger);
 END $$;
 DO $$ BEGIN
-    IF (SELECT status FROM pg_tviews_health_check() WHERE component = 'triggers') = 'OK' THEN
+    IF (SELECT status FROM pg_tviews_check_health() WHERE component = 'triggers') = 'OK' THEN
         RAISE EXCEPTION 'item 2 FAIL: health check misses a dropped partition trigger';
     END IF;
 END $$;
 SELECT count(*) FROM pg_tviews_reregister_all();
 DO $$ BEGIN
-    IF (SELECT status FROM pg_tviews_health_check() WHERE component = 'triggers') <> 'OK' THEN
+    IF (SELECT status FROM pg_tviews_check_health() WHERE component = 'triggers') <> 'OK' THEN
         RAISE EXCEPTION 'item 2 FAIL: re-registration did not repair the partition triggers: %',
-            (SELECT message FROM pg_tviews_health_check() WHERE component = 'triggers');
+            (SELECT message FROM pg_tviews_check_health() WHERE component = 'triggers');
     END IF;
 END $$;
 UPDATE tb_note_2a SET body = 'after repair' WHERE pk_note = 120;

@@ -17,7 +17,7 @@ BEGIN
     FOR next_entity IN
         WITH RECURSIVE edges(entity, dependency) AS (
             SELECT DISTINCT r.entity, m.entity
-            FROM @extschema@.pg_tview_reads r
+            FROM @extschema@.reads r
             JOIN @extschema@.pg_tview_meta m
               ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
             WHERE m.entity <> r.entity

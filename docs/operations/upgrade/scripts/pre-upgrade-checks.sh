@@ -35,10 +35,10 @@ if [[ "$installed" == "0.1.0" ]]; then
 fi
 
 # Problems the health check already sees: fix them before upgrading.
-errors="$(q "SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'error'")"
+errors="$(q "SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'error'")"
 if (( errors > 0 )); then
     say "FAIL" "the health check reports $errors error(s):"
-    q "SELECT '  ' || component || ': ' || message FROM tviews.pg_tviews_health_check() WHERE severity = 'error'"
+    q "SELECT '  ' || component || ': ' || message FROM tviews.pg_tviews_check_health() WHERE severity = 'error'"
     problems=1
 else
     say "ok" "health check: no errors"

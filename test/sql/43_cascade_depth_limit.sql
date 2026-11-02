@@ -1,6 +1,6 @@
 -- Test 43: Cascade Depth Limiting
 -- Purpose: Verify cascade depth is limited to prevent infinite loops
--- Expected: a cascade deeper than pg_tviews.max_propagation_depth is refused
+-- Expected: a cascade that never ends (a user trigger looping back) is refused
 
 \set ECHO all
 \set ON_ERROR_STOP on
@@ -242,32 +242,16 @@ END $$;
 \echo '✓ Test 3 passed: Depth tracking works'
 
 -- Test 4: Depth limit enforcement
--- Rather than build a chain longer than the default limit, lower the limit
--- below this chain's depth.
 \echo ''
 \echo 'Test 4: Depth limit enforcement'
 
--- We've created 6 levels (0-5), which is within the default limit.
--- The depth limit is pg_tviews.max_propagation_depth.
-\echo 'Verifying cascade depth limit configuration...'
-
--- Every level is registered
-SELECT
-    COUNT(*) > 0 AS has_depth_limit
-FROM pg_tview_meta;
--- Expected: true (metadata exists)
-
--- The default limit leaves room for this chain (a root write takes one
--- propagation pass per level).
-DO $$ BEGIN
-    IF current_setting('pg_tviews.max_propagation_depth')::int < 6 THEN
-        RAISE EXCEPTION 'FAIL: default max_propagation_depth below the 6-level chain';
-    END IF;
-END $$;
-
--- Below the chain's depth, a root write is refused rather than leaving the
--- lower levels stale.
-SET pg_tviews.max_propagation_depth = 3;
+-- The flush's step limit is fixed (1,000 entity batches) and only a loop reaches
+-- it: a user trigger on the last level writing the root back. A root write is
+-- then refused rather than leaving the levels stale.
+CREATE FUNCTION write_back_root() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN UPDATE public.tb_level_0 SET value = value || '+' WHERE pk_level_0 = 1; RETURN NULL; END $$;
+CREATE TRIGGER write_back_root AFTER UPDATE ON tv_level_5
+    FOR EACH ROW EXECUTE FUNCTION write_back_root();
 DO $$
 DECLARE refused text;
 BEGIN
@@ -277,10 +261,10 @@ BEGIN
         refused := SQLERRM;
     END;
     IF refused IS NULL OR refused NOT LIKE '%depth%' THEN
-        RAISE EXCEPTION 'FAIL: a 6-level cascade was not refused at depth 3: %', refused;
+        RAISE EXCEPTION 'FAIL: a looping cascade was not refused: %', refused;
     END IF;
 END $$;
-RESET pg_tviews.max_propagation_depth;
+DROP TRIGGER write_back_root ON tv_level_5;
 
 SELECT assert_levels_fresh('a write refused by the depth limit');
 DO $$ BEGIN

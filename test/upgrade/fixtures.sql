@@ -199,3 +199,13 @@ CREATE INDEX idx_tv_user_data_gin ON public.tv_user USING gin (data jsonb_path_o
 \endif
 CREATE INDEX user_by_id ON public.tv_user (id, pk_user);
 CREATE INDEX idx_tv_note_data_gin ON app.tv_note USING gin (data);
+
+-- A partitioned base table: its partitions carry the triggers the window must
+-- refuse too.
+CREATE TABLE tb_event (pk_event int NOT NULL, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       kind text, PRIMARY KEY (pk_event)) PARTITION BY RANGE (pk_event);
+CREATE TABLE tb_event_1 PARTITION OF tb_event FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_event_2 PARTITION OF tb_event FOR VALUES FROM (100) TO (200);
+INSERT INTO tb_event (pk_event, kind) VALUES (1, 'a'), (150, 'b');
+SELECT pg_tviews_create('tv_event', $$
+    SELECT pk_event, id, jsonb_build_object('kind', kind) AS data FROM tb_event $$);

@@ -25,12 +25,13 @@ physical health and replication readiness. The core of it:
 
 ```sql
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, component;
 ```
 
 Expected: every row has severity `info`. The components covered include the
-extension version, jsonb_delta, catalog revision, metadata, re-registration and triggers.
+extension version, catalog revision, metadata, plans, re-registration, triggers, and
+mapping queries that scan a large table (`seq_scans`).
 
 ## Comprehensive Health Check (10 minutes)
 
@@ -93,7 +94,7 @@ See [Performance Monitoring](performance-monitoring.md) for how to read it.
 ### Step 5: Replication readiness
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status() ORDER BY entity;
+SELECT * FROM tviews.pg_tviews_show_replication() ORDER BY entity;
 ```
 
 UNLOGGED TVIEWs (declared `logged: false`) are empty on a standby and after a crash
@@ -103,13 +104,13 @@ restart, until the launcher refills them.
 ## Expected Results
 
 ### Healthy
-- Every `pg_tviews_health_check()` row has severity `info`
+- Every `pg_tviews_check_health()` row has severity `info`
 - No TVIEW with `needs_reregister`
 - Step 3 returns no rows
 - No `needs_rebuild` in Step 5
 
 ### Warning signs
-- Health check rows with severity `warning` (for example jsonb_delta missing, orphaned triggers)
+- Health check rows with severity `warning` (for example orphaned triggers, or a mapping query scanning a large table)
 - `uncascaded_tables` with policy `warn` on TVIEWs whose base tables are written often
 - `warnings` from `pg_tviews_profile()`
 

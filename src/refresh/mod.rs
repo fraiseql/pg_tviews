@@ -19,6 +19,9 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::fmt::Write as _;
 
+/// Keys one refresh statement takes: a bulk change is written in batches of it.
+pub const BATCH_KEYS: usize = 1_000;
+
 /// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look
 /// them up by (ADR 0169, D4).
 #[derive(Debug, Default, PartialEq, Eq)]

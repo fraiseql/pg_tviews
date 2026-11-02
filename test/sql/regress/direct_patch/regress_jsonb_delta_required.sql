@@ -50,9 +50,9 @@ SELECT tviews.pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user $$) \g /dev/null
 BEGIN;
 UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
-SELECT must((tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::int = 2
-            AND (tviews.pg_tviews_queue_stats()->>'view_recomputes')::int = 0,
-            'the rename was not written as a fan-out patch: ' || tviews.pg_tviews_queue_stats()::text);
+SELECT must((tviews.pg_tviews_show_queue()->>'direct_patches_applied')::int = 2
+            AND (tviews.pg_tviews_show_queue()->>'view_recomputes')::int = 0,
+            'the rename was not written as a fan-out patch: ' || tviews.pg_tviews_show_queue()::text);
 COMMIT;
 SELECT must((SELECT count(*) FROM tv_post WHERE data #>> '{author,name}' = 'grace') = 2,
             'tv_post does not show the new name');

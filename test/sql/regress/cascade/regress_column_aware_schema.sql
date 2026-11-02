@@ -52,7 +52,7 @@ DO $$ BEGIN
 END $$;
 
 CREATE FUNCTION app._rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 
 -- ── Non-projected column (bio) in a named schema → cascade SKIPPED ───────────
 DO $$

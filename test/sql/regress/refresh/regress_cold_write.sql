@@ -5,7 +5,7 @@
 -- once, and each read runs from a plan the backend keeps: the plans outlive an
 -- invalidation, which PostgreSQL's plan cache revalidates on its own.
 --
--- pg_tviews_queue_stats() counts the backend's catalog lookups and kept plans; each
+-- pg_tviews_show_queue() counts the backend's catalog lookups and kept plans; each
 -- measured write runs in a new backend (\c) or reads them before and after.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_cold_write.sql
@@ -34,9 +34,9 @@ INSERT INTO tb_comment (pk_comment, fk_post, fk_author, body)
     SELECT g, 1 + g % 20, 1 + g % 5, 'c' || g FROM generate_series(1, 40) g;
 
 CREATE FUNCTION lookups() RETURNS int LANGUAGE sql AS
-$$ SELECT (tviews.pg_tviews_queue_stats()->>'catalog_lookups')::int $$;
+$$ SELECT (tviews.pg_tviews_show_queue()->>'catalog_lookups')::int $$;
 CREATE FUNCTION plans() RETURNS int LANGUAGE sql AS
-$$ SELECT (tviews.pg_tviews_queue_stats()->>'plans_prepared')::int $$;
+$$ SELECT (tviews.pg_tviews_show_queue()->>'plans_prepared')::int $$;
 CREATE FUNCTION must(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'cold write FAIL: %', msg; END IF; END $$;
 

@@ -314,11 +314,13 @@ impl Flush {
         Ok(())
     }
 
-    /// Queue `key` unless this flush refreshed it already.
+    /// Queue `key`. A key this flush refreshed already is refreshed again: in
+    /// dependency order a parent comes after its children, so a child refreshed
+    /// after it was refreshed late (a user trigger wrote what it reads during the
+    /// flush), and the parent read the child's old row.
     fn queue(&mut self, key: RefreshKey) {
-        if !self.processed.contains(&key) {
-            self.pending.insert(key);
-        }
+        self.processed.remove(&key);
+        self.pending.insert(key);
     }
 
     /// `entity`'s catalog row.

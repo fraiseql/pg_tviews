@@ -285,7 +285,7 @@ fn write_fanout(
 }
 
 /// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
-/// by `pg_tviews.batch_size`). Increments the
+/// by [`super::BATCH_KEYS`]). Increments the
 /// applied/fallback counters. Returns the pks that fell back (row not materialised)
 /// and must be recomputed by the caller.
 pub fn apply_entity_patches(
@@ -304,7 +304,7 @@ pub fn apply_entity_patches(
         groups.entry(shape).or_default().push((pk, chain));
     }
 
-    let batch = crate::config::batch_size();
+    let batch = crate::refresh::BATCH_KEYS;
     let mut fallback = Vec::new();
     for rows in groups.into_values() {
         for chunk in rows.chunks(batch) {

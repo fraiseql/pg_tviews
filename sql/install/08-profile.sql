@@ -58,7 +58,7 @@ DECLARE
 BEGIN
     -- The TVIEW named as every function names one (ADR 0211).
     IF tview IS NOT NULL THEN
-        chosen := @extschema@.pg_tviews_entity_of(tview);
+        chosen := @extschema@.pg_tviews_resolve(tview);
     END IF;
 
     vis_schema := (SELECT n.nspname FROM pg_extension e

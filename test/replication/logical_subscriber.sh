@@ -76,7 +76,7 @@ sql -d sub -c "CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL, 
 sql -d pub -c "CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL, body text)" \
     -c "ALTER PUBLICATION tviews_pub ADD TABLE tb_note"
 sql -d sub -c "ALTER SUBSCRIPTION tviews_sub REFRESH PUBLICATION" >/dev/null
-health="$(sql -d sub -c "SELECT status || ' ' || message FROM tviews.pg_tviews_health_check()
+health="$(sql -d sub -c "SELECT status || ' ' || message FROM tviews.pg_tviews_check_health()
                          WHERE component = 'triggers'")"
 grep -q '^ERROR' <<<"$health" && grep -q 'tb_note' <<<"$health" \
     && grep -q 'subscription' <<<"$health" \

@@ -17,6 +17,19 @@ use std::cell::Cell;
 /// `pg_tviews_catalog_revision()`.
 pub const CATALOG_REVISION: i32 = 11;
 
+/// Whether the library was loaded from `shared_preload_libraries`, the only
+/// supported mode: set by `_PG_init` in the postmaster, inherited by its backends.
+static PRELOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record, from `_PG_init`, whether the library is being preloaded.
+pub fn note_preload() {
+    // SAFETY: reads a postmaster-owned global set before libraries are preloaded.
+    let preloading = unsafe { pg_sys::process_shared_preload_libraries_in_progress };
+    if preloading {
+        PRELOADED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 thread_local! {
     /// Whether this backend already found a matching catalog. A mismatch is not
     /// cached, so the first call after `ALTER EXTENSION … UPDATE` passes.
@@ -41,6 +54,15 @@ pub enum Installed {
 pub fn check() {
     if MATCHED.get() || in_own_script() {
         return;
+    }
+    if !PRELOADED.load(std::sync::atomic::Ordering::Relaxed) {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+            "pg_tviews is not in shared_preload_libraries",
+            function_name!(),
+        )
+        .set_hint("Add pg_tviews to shared_preload_libraries and restart the server.")
+        .report(PgLogLevel::ERROR);
     }
     match installed() {
         Installed::Matches => {}

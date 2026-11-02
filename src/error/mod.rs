@@ -198,7 +198,11 @@ impl TViewError {
             ),
             Self::RefreshLimit {
                 limit: Limit::Queue { .. },
-            } => Some("Raise pg_tviews.max_queue_size, or write in smaller transactions.".into()),
+            } => Some(
+                "Write in smaller transactions, or make a bulk change after \
+                 pg_tviews_suspend_triggers()."
+                    .into(),
+            ),
             Self::RefreshLimit {
                 limit: Limit::Rows { tview, .. },
             } => Some(format!(
@@ -206,10 +210,9 @@ impl TViewError {
                  after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
                  once, at resume or commit."
             )),
-            Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
-                "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
-                    .into(),
-            ),
+            Self::DepthExceeded { what, .. } if *what == "dependency" => {
+                Some("Flatten the views the TVIEW reads.".into())
+            }
             Self::DuplicateKey { .. } => Some(
                 "Make the UNION branches' keys disjoint (a sign or an offset per branch), or \
                  keep one row per key with DISTINCT ON over the UNION, ordered by preference."

@@ -144,7 +144,7 @@ committed before step 1 is never seen, which step 2 covers too.
 
 A listener can also miss transactions without losing its connection: when the NOTIFY
 queue is over 90 % full (another listener stopped reading), transactions commit
-unpublished ([Operating it](#operating-it)). `tviews.pg_tviews_feed_gaps()` counts them
+unpublished ([Operating it](#operating-it)). `tviews.pg_tviews_count_feed_gaps()` counts them
 for the whole cluster since the server started, and any session can read it:
 
 1. at connect, after `LISTEN`, read it and keep the value;
@@ -248,7 +248,7 @@ any pool mode.
   sessions `idle in transaction` that LISTEN.
 - **Above 90 % queue usage, transactions commit unpublished.** pg_tviews does not let a
   stuck listener fail every write. The writer gets a WARNING naming the cause (it also
-  goes to the server log, where monitoring sees it), and `pg_tviews_feed_gaps()` counts
+  goes to the server log, where monitoring sees it), and `pg_tviews_count_feed_gaps()` counts
   these transactions for the whole cluster. Listeners missed them: a connected
   listener learns it from the counter ([gaps](#gaps-while-connected)), a reconnecting
   one evicts everything anyway.

@@ -21,7 +21,7 @@ back together. Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`).
    restricts it, an empty value disables it; server restart required). Otherwise the
    first write to such a TVIEW refills it, or refill them by hand:
    ```sql
-   SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+   SELECT * FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild;
    SELECT * FROM tviews.pg_tviews_rebuild_all();          -- only empty TVIEWs by default
    ```
 
@@ -99,7 +99,7 @@ ERROR: TVIEW user does not exist
 1. Check what is registered:
    ```sql
    SELECT schema, name, entity FROM tviews.registry ORDER BY schema, name;
-   SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+   SELECT component, severity, message FROM tviews.pg_tviews_check_health()
    WHERE severity <> 'info';
    ```
 2. If the TVIEW is gone, drop the orphaned triggers named by the health check, or
@@ -183,7 +183,7 @@ prepared transaction keeps its locks until then.
 3. Verify:
    ```sql
    SELECT tviews.pg_tviews_version();
-   SELECT * FROM tviews.pg_tviews_health_check();
+   SELECT * FROM tviews.pg_tviews_check_health();
    SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
 
@@ -192,7 +192,7 @@ prepared transaction keeps its locks until then.
 **Backup**:
 ```bash
 # Full logical backup: tv_* tables, v_* views, base-table triggers and the
-# pg_tview_meta / pg_tview_helpers catalog rows
+# pg_tview_meta catalog rows
 pg_dump -Fc mydb > mydb.dump
 ```
 
@@ -215,7 +215,7 @@ earlier) does not mark its catalog for dumping, so its dumps carry no
 **Verification**:
 ```sql
 SELECT schema, name, view, needs_reregister FROM tviews.registry ORDER BY schema, name;
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 -- then write a base-table row and check that the TVIEW row changes
 ```
 
@@ -229,7 +229,7 @@ SELECT * FROM tviews.pg_tviews_health_check();
 
 **Recovery**:
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 -- after promotion, if the launcher worker is disabled:
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
@@ -266,7 +266,7 @@ Suspend refresh in the writing transaction and catch up at the end:
 BEGIN;
 SELECT tviews.pg_tviews_suspend_triggers();
 -- writes
-SELECT tviews.pg_tviews_suspended_entities();   -- TVIEWs that will need refreshing
+SELECT tviews.pg_tviews_show_suspended();   -- TVIEWs that will need refreshing
 SELECT tviews.pg_tviews_resume_triggers();      -- refreshes them
 COMMIT;
 ```
@@ -281,7 +281,7 @@ what was missed: run `SELECT tviews.pg_tviews_refresh_all();` after re-enabling 
 
 1. **Health check**: alert on any row with severity `warning` or `error`:
    ```sql
-   SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+   SELECT component, severity, message FROM tviews.pg_tviews_check_health()
    WHERE severity <> 'info';
    ```
 2. **Old prepared transactions**:
@@ -290,7 +290,7 @@ what was missed: run `SELECT tviews.pg_tviews_refresh_all();` after re-enabling 
    ```
 3. **TVIEWs needing a rebuild** after a crash or failover:
    ```sql
-   SELECT entity FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+   SELECT entity FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild;
    ```
 4. **Writes failing** with pg_tviews errors: watch the server log.
 

@@ -130,31 +130,28 @@ fn pg_tviews_refresh_time_dependent(
     )?))
 }
 
-/// Create the propagation indexes `(<lookup>, <identity>)` a TVIEW (or every
-/// TVIEW, the caller owning each) is missing, and return their DDL; with
-/// `dry_run`, only return it.
+/// Create the propagation indexes `(<lookup>, <identity>)` `tview` is missing,
+/// and return their DDL; with `dry_run`, only return it.
 #[pg_extern]
 fn pg_tviews_ensure_propagation_indexes(
-    tview: default!(Option<&str>, "NULL"),
+    tview: &str,
     dry_run: default!(bool, false),
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
-    let metas = if let Some(name) = tview {
-        vec![super::owned_meta(name)?]
-    } else {
-        let metas: Vec<_> = crate::catalog::TviewMeta::load_all()?
-            .into_iter()
-            .map(std::rc::Rc::new)
-            .collect();
-        for meta in &metas {
-            crate::owner::require_owner(meta.tview_oid, &super::relation(meta))?;
-        }
-        metas
-    };
+    let metas = vec![super::owned_meta(tview)?];
     Ok(SetOfIterator::new(
         crate::admin::ensure_propagation_indexes(&metas, dry_run)?,
     ))
+}
+
+/// Zero the refresh statistics of `tview` (`tviews.stats`, ADR 0221).
+#[pg_extern(name = "pg_tviews_reset_stats")]
+fn pg_tviews_stats_reset(tview: &str) -> Result<(), ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    crate::stats::reset(&[super::owned(tview)?.table], false)?;
+    Ok(())
 }
 
 /// The TVIEWs that embed `tview`, transitively: each with its depth and the TVIEW
@@ -176,7 +173,7 @@ fn pg_tviews_show_cascade_path(
 > {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
-    let found = crate::catalog::resolve::find(tview)?;
+    let found = super::owned(tview)?;
     Ok(TableIterator::new(crate::admin::cascade_path(
         &found.entity,
     )?))
@@ -186,7 +183,7 @@ fn pg_tviews_show_cascade_path(
 /// `pg_tviews_delta`, to keys of `tview` (ADR 0157). NULL when writes to the table
 /// do not map through a query of their own (`propagated`, `all_keys`) or the
 /// TVIEW does not read it.
-#[pg_extern]
+#[pg_extern(name = "pg_tviews_show_mapping_query")]
 fn pg_tviews_mapping_query(
     tview: &str,
     base_table: pg_sys::Oid,
@@ -194,14 +191,14 @@ fn pg_tviews_mapping_query(
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let report = |e: TViewError| e.report_in(&format!("pg_tviews: the mapping query of {tview}"));
-    let meta = crate::catalog::resolve::resolve(tview)?;
+    let meta = super::owned_meta(tview)?;
     crate::delta::mapping_query(&meta, base_table).map_err(report)
 }
 
 /// What a refresh of `tview`'s rows reads of `base_table`, for value locks (ADR
 /// 0207): for each column its mapping joins on (NULL when the table is locked as a
 /// whole), the query from the TVIEW's keys (`$1`) to the values a refresh locks.
-#[pg_extern]
+#[pg_extern(name = "pg_tviews_show_read_sets")]
 #[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
 fn pg_tviews_read_set_queries(
     tview: &str,
@@ -219,7 +216,7 @@ fn pg_tviews_read_set_queries(
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
     let report = |e: TViewError| e.report_in(&format!("pg_tviews: the read sets of {tview}"));
-    let meta = crate::catalog::resolve::resolve(tview)?;
+    let meta = super::owned_meta(tview)?;
     Ok(TableIterator::new(
         crate::delta::read_set_queries(&meta, base_table).map_err(report)?,
     ))

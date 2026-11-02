@@ -13,8 +13,8 @@ BEGIN;
     WHERE table_schema = 'tviews'
       AND table_name = 'pg_tview_meta';
 
-    -- Test 2: pg_tview_helpers table exists
-    SELECT COUNT(*) = 1 AS helpers_table_exists
+    -- Test 2: no table of unused helpers
+    SELECT COUNT(*) = 0 AS no_helpers_table
     FROM information_schema.tables
     WHERE table_schema = 'tviews'
       AND table_name = 'pg_tview_helpers';
@@ -22,7 +22,7 @@ BEGIN;
     DO $$ BEGIN
         IF (SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema = 'tviews'
-              AND table_name IN ('pg_tview_meta', 'pg_tview_helpers', 'pg_tview_audit_log')) <> 3 THEN
+              AND table_name IN ('pg_tview_meta', 'pg_tview_audit_log')) <> 2 THEN
             RAISE EXCEPTION 'FAIL: a catalog table is missing from schema tviews';
         END IF;
     END $$;
@@ -59,15 +59,15 @@ BEGIN;
     SELECT relname, relpersistence = 'p' AS is_logged
     FROM pg_class
     WHERE relnamespace = 'tviews'::regnamespace
-      AND relname IN ('pg_tview_meta', 'pg_tview_helpers', 'pg_tview_audit_log')
+      AND relname IN ('pg_tview_meta', 'pg_tview_audit_log')
     ORDER BY relname;
 
     -- An unlogged catalog would be truncated by crash recovery.
     DO $$ BEGIN
         IF (SELECT COUNT(*) FROM pg_class
             WHERE relnamespace = 'tviews'::regnamespace
-              AND relname IN ('pg_tview_meta', 'pg_tview_helpers', 'pg_tview_audit_log')
-              AND relpersistence = 'p') <> 3 THEN
+              AND relname IN ('pg_tview_meta', 'pg_tview_audit_log')
+              AND relpersistence = 'p') <> 2 THEN
             RAISE EXCEPTION 'FAIL: a catalog table is not WAL-logged';
         END IF;
     END $$;

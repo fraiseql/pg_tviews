@@ -8,7 +8,7 @@ pg_tviews refreshes TVIEW rows inside the transaction that writes the base table
 There is no refresh job, no queue table and no refresh history. Monitoring therefore
 covers:
 
-1. **Health**: installation, catalog, triggers, re-registration (`tviews.pg_tviews_health_check()`)
+1. **Health**: installation, catalog, triggers, re-registration (`tviews.pg_tviews_check_health()`)
 2. **Correctness**: TVIEW content matches its view
 3. **Cost**: refresh work per TVIEW (`tviews.stats`), time of writes to base tables,
    TVIEW sizes, HOT ratio, dead tuples, fan-out
@@ -18,16 +18,21 @@ covers:
 
 ```sql
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check();
+FROM tviews.pg_tviews_check_health();
 
 -- Only problems
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 
-`severity` is `info`, `warning` or `error`. The full report, including freshness per
-TVIEW, is in `docs/operations/runbooks/scripts/health-check.sql`.
+`severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
+`metadata`, `plans`, `columns`, `seq_scans`, `reregister`, `triggers` and `tviews`.
+`seq_scans` warns about TVIEWs whose mapping query (how writes to a base table map to
+TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows; it is
+planned again on each call with the current indexes and statistics, so an index
+dropped after registration shows up. The full report, including freshness per TVIEW,
+is in `docs/operations/runbooks/scripts/health-check.sql`.
 
 ## Freshness
 
@@ -114,11 +119,11 @@ ORDER BY refresh_ms DESC NULLS LAST;
 The counters are cumulative since the server started or the last reset, counted at
 the end of each transaction, committed or aborted. They are not kept across a
 restart. A TVIEW rebuilt by a replace gets a new table, and its counters start over.
-An operator resets them for one TVIEW or for every TVIEW of the database:
+The TVIEW's owner resets one TVIEW's counters; an operator resets every TVIEW's:
 
 ```sql
-SELECT tviews.pg_tviews_stats_reset('user');
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats('user');
+SELECT tviews.pg_tviews_reset_stats_all();
 ```
 
 The counters live in shared memory, so `tviews.stats` needs
@@ -129,7 +134,7 @@ graph the differences between samples.
 
 ### Session counters
 
-`tviews.pg_tviews_queue_stats()` is the session's own debugging view: counters for
+`tviews.pg_tviews_show_queue()` is the session's own debugging view: counters for
 the **current session only** (`total_refreshes`, `view_recomputes`,
 `refresh_noop_skipped`, `direct_patches_applied`, `direct_patch_fallbacks`,
 `total_timing_ms`, `graph_cache_hit_rate`, `table_cache_hit_rate`, ...), not
@@ -137,7 +142,7 @@ attributed to a TVIEW. Use it to analyse one workload in one session; poll
 `tviews.stats` from a monitoring connection instead.
 
 ```sql
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 ### Lock waits between writers
@@ -158,7 +163,7 @@ WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
 ORDER BY l.granted, l.pid;
 ```
 
-In a session, `pg_tviews_queue_stats()` counts the transaction's `value_locks`,
+In a session, `pg_tviews_show_queue()` counts the transaction's `value_locks`,
 `value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`. Many waits on a
 hot value are expected; deadlocks (`40P01`) are retried by the application.
 
@@ -166,7 +171,7 @@ hot value are expected; deadlocks (`40P01`) are retried by the application.
 
 ```sql
 SELECT entity, persistence, replica_readable, is_empty, needs_rebuild
-FROM tviews.pg_tviews_replication_status();
+FROM tviews.pg_tviews_show_replication();
 ```
 
 UNLOGGED TVIEWs (declared `logged: false`) are empty on a standby and after a crash
@@ -187,9 +192,9 @@ if ! VERSION=$($PSQL "SELECT tviews.pg_tviews_version()"); then
     exit 2
 fi
 
-ERRORS=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'error'")
-WARNINGS=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'warning'")
-REBUILD=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild")
+ERRORS=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'error'")
+WARNINGS=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'warning'")
+REBUILD=$($PSQL "SELECT count(*) FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild")
 
 if [ "$ERRORS" -gt 0 ] || [ "$REBUILD" -gt 0 ]; then
     echo "CRITICAL: pg_tviews $VERSION - $ERRORS errors, $REBUILD TVIEWs need rebuild"
@@ -210,7 +215,7 @@ With a SQL exporter (for example `postgres_exporter` custom queries), export:
 ```sql
 -- pgtviews_health_problems{severity}
 SELECT severity, count(*) AS problems
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 GROUP BY severity;
 
 -- pgtviews_tview_bytes{entity}, pgtviews_dead_tuples{entity}, pgtviews_hot_ratio{entity}
@@ -226,7 +231,7 @@ WHERE NOT untracked;
 
 -- pgtviews_needs_rebuild{entity}
 SELECT entity, needs_rebuild::int AS needs_rebuild
-FROM tviews.pg_tviews_replication_status();
+FROM tviews.pg_tviews_show_replication();
 ```
 
 ### Grafana panels
@@ -253,13 +258,17 @@ and to the client.
 
 With `pg_tviews.audit_enabled = on` (a superuser's setting), pg_tviews records
 TVIEW operations such as `CREATE` and `REFRESH` in `tviews.pg_tview_audit_log`.
-It grows without bound: prune it yourself.
+It grows without bound: nothing prunes it, and the extension's owner deletes old rows.
+Entries are written in the transaction of the operation, so a rollback takes them
+with it; the table is not part of `pg_dump` output.
 
 ```sql
 SELECT performed_at, operation, entity, performed_by, rows_affected, details
 FROM tviews.pg_tview_audit_log
 ORDER BY performed_at DESC
 LIMIT 20;
+
+DELETE FROM tviews.pg_tview_audit_log WHERE performed_at < now() - interval '90 days';
 ```
 
 ## Troubleshooting with Monitoring

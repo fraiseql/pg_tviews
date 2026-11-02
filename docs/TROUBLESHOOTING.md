@@ -88,7 +88,7 @@ fails rather than leave the TVIEW stale.
 **Solution**:
 
 ```sql
-SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE status <> 'OK';
 SELECT * FROM tviews.pg_tviews_reregister_all();   -- re-installs missing triggers
 ```
 
@@ -103,7 +103,7 @@ decode (a catalog edited by hand, a restore out of step). Run the hint, then che
 
 ```sql
 SELECT tviews.pg_tviews_reregister('tv_post');
-SELECT * FROM tviews.pg_tviews_health_check() WHERE component = 'plans';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE component = 'plans';
 ```
 
 ### `a REPEATABLE READ transaction cannot write to a table TVIEWs read` (`0A000`)
@@ -159,4 +159,4 @@ do the quoting (`psql -v scale="$scale"`, not `-v scale="'$scale'"`).
 
 Open an issue with what you ran, the full error (with its SQLSTATE, DETAIL and HINT:
 `\set VERBOSITY verbose` in psql), `SELECT tviews.pg_tviews_version();`, and the output
-of `SELECT * FROM tviews.pg_tviews_health_check();`.
+of `SELECT * FROM tviews.pg_tviews_check_health();`.

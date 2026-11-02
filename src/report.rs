@@ -22,7 +22,7 @@ use std::collections::{BTreeSet, HashMap};
 /// `{"__typename", "id", "operation": "CREATED" | "UPDATED", "data"}` (`data` only
 /// with `include_data`); a deleted entry is `{"__typename", "id"}`. Entries are
 /// ordered by entity, then primary key. Past `max_entities` entries, or when the
-/// journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
+/// journal overflowed its 10,000 rows, `truncated` is true and
 /// `invalidated_types` lists the types of the rows left out. With `reset` (the
 /// default) the next call reports only what changed after this one.
 ///

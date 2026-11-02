@@ -95,8 +95,9 @@ pub(super) unsafe fn inspect_create_table_as(
         let Some(table_name) = tview_ctas_target(ctas.cast()) else {
             return Ok(Intercept::PassThrough);
         };
-        // TEST ONLY: simulate a hook that never saw this statement (see the
+        // Test builds only: simulate a hook that never saw this statement (see the
         // missed-interception check in the event trigger).
+        #[cfg(feature = "test-hooks")]
         if crate::config::test_skip_ctas_intercept() {
             return Ok(Intercept::PassThrough);
         }

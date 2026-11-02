@@ -3,24 +3,21 @@
 //! What a TVIEW is comes from its definition and its options, never from a
 //! setting (ADR 0220): settings only tune how a session works. A setting that
 //! decides whether a write or a creation succeeds can only be changed by a
-//! superuser, so every session agrees on it.
+//! superuser, so every session agrees on it. Limits nobody decides per database
+//! (the flush's steps, view nesting, the queue, batches, caches, the report's
+//! rows) are constants of the module they bound, each named by its error.
 //!
 //! | Parameter | Type | Default | Context | Description |
 //! |-----------|------|---------|---------|-------------|
-//! | `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations |
-//! | `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
-//! | `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
 //! | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` (ADR 0231) |
 //! | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write (0 = no limit, ADR 0233) |
-//! | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks per relation before a transaction locks the relation (ADR 0207) |
+//! | `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks per relation before a transaction locks the relation (ADR 0207); 0 always |
 //! | `pg_tviews.audit_enabled` | bool | false | superuser | Audit logging (opt-in) |
 //! | `pg_tviews.graph_cache_enabled` | bool | true | superuser, hidden | Cache dependency graphs |
 //! | `pg_tviews.table_cache_enabled` | bool | true | superuser, hidden | Cache TVIEW catalog rows and plans |
 //! | `pg_tviews.direct_patch_enabled` | bool | true | superuser, hidden | Direct-patch fast path |
-//! | `pg_tviews.test_skip_ctas_intercept` | bool | false | superuser, hidden | Test only |
-//! | `pg_tviews.batch_size` | int | 1000 | user | Max keys per bulk-refresh statement |
-//! | `pg_tviews.cache_size` | int | 10000 | user | Max entries per in-memory cache |
-//! | `pg_tviews.report_max_tracked` | int | 10000 | user | Changed rows journaled per transaction for `pg_tviews_flush_and_report` (0 = off) |
+//! | `pg_tviews.max_queue_size` | int | 1000000 | superuser, hidden | Refresh keys a transaction may queue |
+//! | `pg_tviews.test_skip_ctas_intercept` | bool | false | superuser, hidden | Test builds only (`test-hooks`) |
 //! | `pg_tviews.auto_rebuild_databases` | string | `*` | postmaster | Databases whose reset UNLOGGED TVIEWs are rebuilt after recovery: `*` every one, a list, or empty for none |
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
@@ -63,8 +60,6 @@ impl UncascadedPolicy {
 
 // ── GUC statics ──────────────────────────────────────────────────────────
 
-static MAX_PROPAGATION_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(100);
-static MAX_DEPENDENCY_DEPTH_GUC: GucSetting<i32> = GucSetting::<i32>::new(10);
 static MAX_QUEUE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000_000);
 static MAX_REFRESH_ROWS_GUC: GucSetting<i32> = GucSetting::<i32>::new(0);
 static PUBLISH_CHANGES_GUC: GucSetting<PublishChanges> =
@@ -85,10 +80,8 @@ static AUDIT_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static GRAPH_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
+#[cfg(feature = "test-hooks")]
 static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
-static BATCH_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(1_000);
-static CACHE_SIZE_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
-static REPORT_MAX_TRACKED_GUC: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"*"));
 
@@ -101,7 +94,6 @@ static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
 pub fn register_gucs() {
     register_limits();
     register_diagnostics();
-    register_session_settings();
     register_postmaster_gucs();
 
     // Every pg_tviews.* setting is defined above: refuse any other name, so a
@@ -113,36 +105,6 @@ pub fn register_gucs() {
 /// Settings that decide whether a write or a creation succeeds: the same for
 /// every session, so only a superuser changes them.
 fn register_limits() {
-    GucRegistry::define_int_guc(
-        c"pg_tviews.max_propagation_depth",
-        c"Maximum cascade propagation iterations before aborting.",
-        c"Prevents infinite loops in circular dependency chains.",
-        &MAX_PROPAGATION_DEPTH_GUC,
-        1,      // min
-        10_000, // max
-        GucContext::Suset,
-        GucFlags::default(),
-    );
-    GucRegistry::define_int_guc(
-        c"pg_tviews.max_dependency_depth",
-        c"Maximum pg_depend traversal depth when building the dependency graph.",
-        c"Bounds how deep view-on-view hierarchies may nest before an error is raised.",
-        &MAX_DEPENDENCY_DEPTH_GUC,
-        1,   // min
-        100, // max
-        GucContext::Suset,
-        GucFlags::default(),
-    );
-    GucRegistry::define_int_guc(
-        c"pg_tviews.max_queue_size",
-        c"Maximum number of refresh items allowed in the transaction queue.",
-        c"When exceeded, new refresh enqueues raise an error to prevent unbounded queue growth.",
-        &MAX_QUEUE_SIZE_GUC,
-        1,        // min
-        i32::MAX, // max
-        GucContext::Suset,
-        GucFlags::default(),
-    );
     GucRegistry::define_enum_guc(
         c"pg_tviews.publish_changes",
         c"Publish the TVIEW rows each transaction changed, at commit, on channel tviews_changes.",
@@ -167,10 +129,9 @@ fn register_limits() {
     GucRegistry::define_int_guc(
         c"pg_tviews.lock_escalation_threshold",
         c"Value locks a transaction takes on one relation before it locks the relation instead.",
-        c"Counted per relation and per side (writes, refreshes). 0 always locks relations; \
-          -1 never does, which can exhaust the shared lock table on bulk writes.",
+        c"Counted per relation and per side (writes, refreshes). 0 always locks relations.",
         &LOCK_ESCALATION_THRESHOLD_GUC,
-        -1,
+        0,
         1_000_000,
         GucContext::Suset,
         GucFlags::default(),
@@ -214,6 +175,19 @@ fn register_diagnostics() {
         GucContext::Suset,
         GucFlags::NO_SHOW_ALL,
     );
+    // Kept as a switch only so the queue-full error can be tested end to end.
+    GucRegistry::define_int_guc(
+        c"pg_tviews.max_queue_size",
+        c"Refresh keys a transaction may queue before its next write fails.",
+        c"A memory bound, not a policy: raise it only for a bulk change that queues more \
+          than a million keys, or make the change after pg_tviews_suspend_triggers().",
+        &MAX_QUEUE_SIZE_GUC,
+        1,
+        i32::MAX,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    #[cfg(feature = "test-hooks")]
     GucRegistry::define_bool_guc(
         c"pg_tviews.test_skip_ctas_intercept",
         c"TEST ONLY: make the ProcessUtility hook skip CREATE TABLE tv_* AS interception.",
@@ -222,43 +196,6 @@ fn register_diagnostics() {
         &TEST_SKIP_CTAS_INTERCEPT_GUC,
         GucContext::Suset,
         GucFlags::NO_SHOW_ALL,
-    );
-}
-
-/// Settings a session may tune for itself: performance, and its own report.
-fn register_session_settings() {
-    GucRegistry::define_int_guc(
-        c"pg_tviews.batch_size",
-        c"Maximum keys processed per statement during bulk refresh.",
-        c"Large multi-row changes are chunked into batches of this size to bound \
-          statement size and memory on very large bulk operations.",
-        &BATCH_SIZE_GUC,
-        1,         // min
-        1_000_000, // max
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-    GucRegistry::define_int_guc(
-        c"pg_tviews.cache_size",
-        c"Maximum entries kept in each in-memory metadata cache.",
-        c"When a cache exceeds this many entries it is cleared and repopulated \
-          lazily, bounding per-backend memory on high-cardinality workloads.",
-        &CACHE_SIZE_GUC,
-        1,          // min
-        10_000_000, // max
-        GucContext::Userset,
-        GucFlags::default(),
-    );
-    GucRegistry::define_int_guc(
-        c"pg_tviews.report_max_tracked",
-        c"Changed TVIEW rows journaled per transaction for pg_tviews_flush_and_report().",
-        c"Beyond it only the entity types are kept and the report is marked truncated. \
-          0 turns the journal off.",
-        &REPORT_MAX_TRACKED_GUC,
-        0,
-        10_000_000,
-        GucContext::Userset,
-        GucFlags::default(),
     );
 }
 
@@ -285,22 +222,7 @@ fn register_postmaster_gucs() {
 
 // ── Accessors ────────────────────────────────────────────────────────────
 
-/// Maximum propagation iteration depth (default: 100)
-/// Prevents infinite loops in dependency chains
-#[must_use]
-pub fn max_propagation_depth() -> usize {
-    MAX_PROPAGATION_DEPTH_GUC.get().unsigned_abs() as usize
-}
-
-/// Maximum `pg_depend` traversal depth when building the dependency graph
-/// (default: 10). Bounds view-on-view nesting.
-#[must_use]
-pub fn max_dependency_depth() -> usize {
-    MAX_DEPENDENCY_DEPTH_GUC.get().unsigned_abs() as usize
-}
-
-/// Maximum queue size before backpressure enforcement (default: 1,000,000)
-/// Prevents unbounded queue growth during high-load scenarios
+/// Refresh keys a transaction may queue (`pg_tviews.max_queue_size`).
 #[must_use]
 pub fn max_queue_size() -> usize {
     MAX_QUEUE_SIZE_GUC.get().unsigned_abs() as usize
@@ -336,9 +258,9 @@ pub fn max_refresh_rows() -> Option<u64> {
 }
 
 /// Value locks per relation and side before a transaction locks the relation
-/// (`pg_tviews.lock_escalation_threshold`): 0 always, -1 never.
-pub fn lock_escalation_threshold() -> i32 {
-    LOCK_ESCALATION_THRESHOLD_GUC.get()
+/// (`pg_tviews.lock_escalation_threshold`): 0 always.
+pub fn lock_escalation_threshold() -> usize {
+    LOCK_ESCALATION_THRESHOLD_GUC.get().unsigned_abs() as usize
 }
 
 /// Check if audit logging is enabled (default: false, opt-in)
@@ -370,29 +292,10 @@ pub fn direct_patch_enabled() -> bool {
 }
 
 /// TEST ONLY: true when the hook must skip CTAS interception (default: false)
+#[cfg(feature = "test-hooks")]
 #[must_use]
 pub fn test_skip_ctas_intercept() -> bool {
     TEST_SKIP_CTAS_INTERCEPT_GUC.get()
-}
-
-/// Maximum primary keys processed per statement during bulk refresh (default: 1000).
-/// Large multi-row changes are chunked into batches of this size.
-#[must_use]
-pub fn batch_size() -> usize {
-    BATCH_SIZE_GUC.get().unsigned_abs().max(1) as usize
-}
-
-/// Maximum entries kept in each in-memory metadata cache before it is cleared and
-/// repopulated lazily (default: 10000). Bounds per-backend cache memory.
-#[must_use]
-pub fn cache_size() -> usize {
-    CACHE_SIZE_GUC.get().unsigned_abs().max(1) as usize
-}
-
-/// Changed rows journaled per transaction (`pg_tviews.report_max_tracked`).
-#[must_use]
-pub fn report_max_tracked() -> usize {
-    usize::try_from(REPORT_MAX_TRACKED_GUC.get()).unwrap_or(0)
 }
 
 /// The databases whose reset UNLOGGED TVIEWs are rebuilt after recovery.

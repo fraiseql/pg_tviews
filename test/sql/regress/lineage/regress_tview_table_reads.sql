@@ -70,8 +70,8 @@ SELECT exercise('through an aggregating view');
 UPDATE tb_order SET name = name || '!';
 SELECT assert_fresh('tv_line', 'pk_line', 'tb_order written (tv_line)');
 SELECT assert_fresh('tv_order', 'pk_order', 'tb_order written (tv_order)');
-SELECT must((SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') = 'OK',
-            'health: ' || (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers'));
+SELECT must((SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'triggers') = 'OK',
+            'health: ' || (SELECT message FROM tviews.pg_tviews_check_health() WHERE component = 'triggers'));
 SELECT tviews.pg_tviews_drop('tv_order');
 SELECT must(triggers_on('tv_line') = 0, 'triggers left on tv_line after the reader was dropped');
 

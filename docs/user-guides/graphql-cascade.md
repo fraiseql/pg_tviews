@@ -122,10 +122,10 @@ tviews.pg_tviews_flush_and_report(
   are then not listed. Rows written without `rows` captured nothing: the key is absent,
   whatever the setting when the report runs. Absent means "not known", `{}` means
   "none changed".
-- **Memory**: at most `pg_tviews.report_max_tracked` changed rows (default 10 000) are
-  kept per transaction, not counting reported ones (kept only until the
-  subtransaction that reported them ends). Beyond it only their types are, and the report is truncated.
-  `SET pg_tviews.report_max_tracked = 0` turns the journal off.
+- **Memory**: at most 10,000 changed rows are kept per transaction, not counting
+  reported ones (kept only until the subtransaction that reported them ends). Beyond
+  that only their types are, and the report is truncated. The journal cannot be turned
+  off.
 
 ```sql
 SELECT tviews.pg_tviews_create_or_replace('tv_user', $$

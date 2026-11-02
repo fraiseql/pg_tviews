@@ -5,7 +5,7 @@ Problems seen when upgrading PostgreSQL or pg_tviews, by the message you get. St
 the health check, which reports most of them without raising:
 ```sql
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 And compare the versions:
@@ -79,7 +79,7 @@ a full dump or recreate the TVIEWs.
 UNLOGGED TVIEWs (the default) are emptied by a crash or immediate shutdown, a physical
 restore, or a dump taken with `--no-unlogged-table-data`.
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 

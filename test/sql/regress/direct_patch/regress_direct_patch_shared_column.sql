@@ -46,7 +46,7 @@ BEGIN
 END $$;
 
 CREATE FUNCTION applied() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>'direct_patches_applied')::bigint $$;
 
 UPDATE tb_user SET bio = 'b' WHERE pk_user = 1;
 SELECT assert_fresh('bio update');

@@ -32,7 +32,7 @@ DECLARE
     diverging BIGINT;
 BEGIN
     FOREACH tv IN ARRAY ARRAY['public.user', 'public.post', 'public.comment', 'public.user_orders',
-                              'public.contract', 'public.shipment', 'app.note'] LOOP
+                              'public.contract', 'public.shipment', 'app.note', 'public.event'] LOOP
         CONTINUE WHEN pg_catalog.to_regclass(pg_catalog.replace(tv, '.', '.tv_')) IS NULL;
         -- The backing view by OID: <schema>.v_<entity> before 0.1.0-beta.25, in
         -- tviews after; the catalog is in the extension's schema (public in 0.1.0).

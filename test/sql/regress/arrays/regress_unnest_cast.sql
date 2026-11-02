@@ -77,8 +77,8 @@ GROUP BY x.pk_ntxt, x.id $$);
 SELECT must(cascade_kinds = jsonb_build_object('tb_' || entity, 'mapped') AND cardinality(uncascaded_tables) = 0,
             'tv_' || entity || ' classifies ' || cascade_kinds::text)
 FROM tviews.registry WHERE entity IN ('ncte', 'nsub', 'nlat', 'ntxt');
-SELECT must(tviews.pg_tviews_mapping_query('tv_ncte', 'tb_ncte'::regclass) LIKE '%ANY%',
-            'the mapping of tv_ncte is ' || tviews.pg_tviews_mapping_query('tv_ncte', 'tb_ncte'::regclass));
+SELECT must(tviews.pg_tviews_show_mapping_query('tv_ncte', 'tb_ncte'::regclass) LIKE '%ANY%',
+            'the mapping of tv_ncte is ' || tviews.pg_tviews_show_mapping_query('tv_ncte', 'tb_ncte'::regclass));
 
 SELECT write_all($$UPDATE tb_x SET name = 'MID' WHERE pk_x = 2$$);
 SELECT check_all('the rename of a mid node');
@@ -110,7 +110,7 @@ DECLARE plan text := '';
 DECLARE line text;
 BEGIN
     FOR line IN EXECUTE 'EXPLAIN WITH pg_tviews_delta AS (SELECT * FROM tb_area WHERE pk_area = 7) '
-                        || tviews.pg_tviews_mapping_query('tv_area', 'tb_area'::regclass) LOOP
+                        || tviews.pg_tviews_show_mapping_query('tv_area', 'tb_area'::regclass) LOOP
         plan := plan || line || E'\n';
     END LOOP;
     PERFORM must(plan LIKE '%tb_area_path_ids%', 'the mapping query does not use the index it names:' || E'\n' || plan);

@@ -5,8 +5,8 @@
 pg_tviews needs no backup mechanism of its own: everything it stores is in ordinary
 PostgreSQL tables. What matters is how each PostgreSQL backup type treats two things:
 
-- **The catalog** `tviews.pg_tview_meta` (and `tviews.pg_tview_helpers`): extension
-  tables registered with `pg_extension_config_dump`, so `pg_dump` includes their rows.
+- **The catalog** `tviews.pg_tview_meta`: an extension
+  table registered with `pg_extension_config_dump`, so `pg_dump` includes its rows.
 - **The TVIEW tables** `tv_*`: derived data that can always be rebuilt from the base
   tables. They are LOGGED by default and restored like any table. A TVIEW declared
   `logged: false` is UNLOGGED: it writes no WAL and is **empty** after any restore
@@ -50,7 +50,7 @@ To keep dumps smaller you may skip the data of UNLOGGED tables with
 ### Schema-only dumps
 `pg_dump --schema-only` does not include the rows of `tviews.pg_tview_meta`. A database
 restored from it has the `tv_*` tables and the pg_tviews triggers on base tables, but
-no registered TVIEW (`tviews.pg_tviews_health_check()` reports orphaned triggers).
+no registered TVIEW (`tviews.pg_tviews_check_health()` reports orphaned triggers).
 Do not use schema-only dumps to copy TVIEWs; recreate them from your schema
 migrations instead.
 
@@ -72,7 +72,7 @@ A base backup restores to the same PostgreSQL major version and the same pg_tvie
 library must be installed. UNLOGGED TVIEW tables are not in the backup: after the
 restore they are empty. Check and rebuild:
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs it in every

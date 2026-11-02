@@ -97,9 +97,9 @@ DROP ROLE regress_error_codes_stranger;
 -- Diagnostics name an unknown TVIEW instead of returning nothing.
 SELECT expect_code($$SELECT * FROM tviews.pg_tviews_show_cascade_path('nope')$$, '42704',
                    'show_cascade_path unknown');
-SELECT expect_code($$SELECT tviews.pg_tviews_mapping_query('nope', 'pg_class'::regclass)$$,
+SELECT expect_code($$SELECT tviews.pg_tviews_show_mapping_query('nope', 'pg_class'::regclass)$$,
                    '42704', 'mapping_query unknown');
-SELECT expect_code($$SELECT * FROM tviews.pg_tviews_read_set_queries('nope', 'pg_class'::regclass)$$,
+SELECT expect_code($$SELECT * FROM tviews.pg_tviews_show_read_sets('nope', 'pg_class'::regclass)$$,
                    '42704', 'read_set_queries unknown');
 
 SELECT 'error codes: PASS' AS result;

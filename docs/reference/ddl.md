@@ -400,8 +400,8 @@ A definition is refused, nothing created, when:
 - it has no column to key the rows on, or its key does not match the TVIEW's name
   (above);
 - its `DISTINCT ON` key is composite, an expression, or not projected (`0A000`);
-- it would make TVIEWs read each other in a cycle (`42P17`), or nests views deeper
-  than `pg_tviews.max_dependency_depth` (10; `54001`);
+- it would make TVIEWs read each other in a cycle (`42P17`), or nests views more than
+  64 deep (`54001`; flatten the views the TVIEW reads);
 - it reads a table no cascade reaches, calls a function that may read tables, or reads
   the current time, without declaring what to do about it (`22023`; see the next
   sections);
@@ -440,7 +440,7 @@ NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of 
          make them cheaper
 ```
 
-`tviews.pg_tviews_mapping_query('tv_order', 'tb_sku'::regclass)` returns the query.
+`tviews.pg_tviews_show_mapping_query('tv_order', 'tb_sku'::regclass)` returns the query.
 
 The triggers follow the kind of each table:
 
@@ -504,7 +504,7 @@ rows in or out with no row trigger firing:
 - `DETACH … CONCURRENTLY` (which commits in the middle, and its `FINALIZE`) refreshes
   the TVIEWs over that table in full.
 
-`pg_tviews_health_check()` reports a partition whose triggers are missing, and
+`pg_tviews_check_health()` reports a partition whose triggers are missing, and
 `pg_tviews_reregister_all()` puts them back.
 
 ### Tables no cascade reaches
@@ -842,7 +842,7 @@ Every table but a `propagated` one also gets a statement-level flush trigger
 (`tviews.pg_tview_flush_trigger`), which refreshes the queued keys at the end of each
 statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`). They
 are named `trg_tview_<role>_<entity>_on_<schema>_<table>`, one set per TVIEW. Nothing
-needs installing by hand: `tviews.pg_tviews_health_check()` reports missing or orphaned
+needs installing by hand: `tviews.pg_tviews_check_health()` reports missing or orphaned
 triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs them.
 
 A commit with refresh work still queued (a flush trigger dropped or disabled) fails

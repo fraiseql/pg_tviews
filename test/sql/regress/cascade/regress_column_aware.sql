@@ -62,10 +62,10 @@ $TVIEW$);
 -- Rows written into the embedding TVIEWs: recomputed, or patched in place (a
 -- nested field copied unchanged is written by the fan-out patch, #224).
 CREATE FUNCTION _written() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint
-          + (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint
+          + (pg_tviews_show_queue()->>'direct_patches_applied')::bigint $$;
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 
 -- ── Case 1: UPDATE a NON-projected column (bio) → cascade to tv_post SKIPPED ──
 DO $$

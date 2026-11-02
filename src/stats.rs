@@ -413,7 +413,7 @@ pub fn feed_gaps() -> crate::TViewResult<u64> {
     gaps()
         .map(|gaps| gaps.load(Ordering::Acquire))
         .ok_or_else(|| crate::TViewError::WrongState {
-            reason: "pg_tviews_feed_gaps() needs the library preloaded: \
+            reason: "pg_tviews_count_feed_gaps() needs the library preloaded: \
                      shared_preload_libraries = 'pg_tviews', then restart"
                 .to_string(),
         })

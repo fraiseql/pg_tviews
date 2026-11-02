@@ -156,9 +156,8 @@ impl Wants {
 /// The locks `pass` takes that `registry` doesn't hold, in acquisition order,
 /// and the relations it escalates. A writer's lock on a value or a relation
 /// covers a refresh's. Past `threshold` values per relation, space and side
-/// (counting those held), the relation is locked instead; 0 always does, a
-/// negative threshold never.
-pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: i32) -> (Vec<Op>, usize) {
+/// (counting those held), the relation is locked instead; 0 always does.
+pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: usize) -> (Vec<Op>, usize) {
     // The values asked for, per relation, space and side, writers first.
     let mut asked: BTreeMap<(u32, Space, Side), BTreeSet<u32>> = BTreeMap::new();
     for (space, target, side, values) in &pass.values {

@@ -30,7 +30,7 @@ upgrade scripts: [Extension versioning](../../development/extension-versioning.m
 - **Never drop the extension to upgrade it.** `DROP EXTENSION pg_tviews` removes every
   TVIEW registration.
 - **UNLOGGED TVIEWs** (the default) are empty after a crash, an immediate shutdown or a
-  physical restore. Check with `SELECT * FROM tviews.pg_tviews_replication_status();`
+  physical restore. Check with `SELECT * FROM tviews.pg_tviews_show_replication();`
   and rebuild with `SELECT * FROM tviews.pg_tviews_rebuild_all();`.
 
 ## Pre-Upgrade Checklist
@@ -53,7 +53,7 @@ In [`scripts/`](scripts/):
 
 ## Success Criteria
 - [ ] `extversion` equals `tviews.pg_tviews_version()` in every database
-- [ ] `tviews.pg_tviews_health_check()` reports no warning or error
+- [ ] `tviews.pg_tviews_check_health()` reports no warning or error
 - [ ] No TVIEW has `needs_reregister`, none is unexpectedly empty
 - [ ] Each TVIEW equals its view (post-upgrade validation step 4)
 - [ ] A test write to a base table propagates; applications work

@@ -80,7 +80,7 @@ psql -X -d mydb -c "SELECT pg_is_in_recovery();"   # false once recovery ended
 
 ### Step 3: Rebuild UNLOGGED TVIEWs
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();  -- is_empty / needs_rebuild
+SELECT * FROM tviews.pg_tviews_show_replication();  -- is_empty / needs_rebuild
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs this in every
@@ -103,7 +103,7 @@ SELECT tviews.pg_tviews_version() AS library,
        (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 SELECT schema, name, view, base_tables, needs_reregister
@@ -144,7 +144,7 @@ Point the applications at the restored database and run their health checks.
 
 ## Success Criteria
 - [ ] PostgreSQL is out of recovery and accepts connections
-- [ ] `tviews.pg_tviews_health_check()` reports no warning or error
+- [ ] `tviews.pg_tviews_check_health()` reports no warning or error
 - [ ] Every expected TVIEW is in `tviews.registry`, none is empty unexpectedly
 - [ ] TVIEWs equal their views; a test write propagates
 - [ ] Applications work

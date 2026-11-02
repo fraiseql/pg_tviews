@@ -68,7 +68,7 @@ SELECT pg_tviews_create('tv_comment', $TVIEW$
 $TVIEW$);
 
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 CREATE FUNCTION _c_author(pk int)  RETURNS text LANGUAGE sql AS
   $$ SELECT data->'author'->>'username' FROM tv_comment WHERE pk_comment = pk $$;
 CREATE FUNCTION _c_pauthor(pk int) RETURNS text LANGUAGE sql AS

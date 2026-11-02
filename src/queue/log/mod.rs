@@ -1,7 +1,7 @@
 //! The transaction's write log: every TVIEW row a refresh write changed,
 //! recorded once ([`record`]) and read by two readers, each with its own
 //! retention: the report of `pg_tviews_flush_and_report` ([`report`]: capped by
-//! `pg_tviews.report_max_tracked`, compacted as it reports) and the change feed
+//! 10,000 rows, compacted as it reports) and the change feed
 //! commit publishes ([`feed`]: the whole transaction, within a byte budget,
 //! folded by row). One savepoint mark ([`Mark`]) covers both, so a rolled-back
 //! write is neither reported nor published.

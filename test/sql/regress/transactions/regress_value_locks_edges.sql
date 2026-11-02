@@ -54,7 +54,7 @@ SELECT must((SELECT ok FROM waited), 'a refresh reading price 5.00 did not wait 
 DROP TABLE waited;
 INSERT INTO tb_item VALUES (2, DEFAULT, 5, 'i2');
 SELECT assert_fresh('tv_item', 'pk_item', 'numeric 5 = 5.00');
-SELECT must((SELECT column_name FROM tviews.pg_tviews_read_set_queries('tv_item', 'tb_price'::regclass))
+SELECT must((SELECT column_name FROM tviews.pg_tviews_show_read_sets('tv_item', 'tb_price'::regclass))
             = 'code', 'the join on numerics is not locked by value');
 
 -- ... and a case-insensitive collation: 'Ann' = 'ann'.

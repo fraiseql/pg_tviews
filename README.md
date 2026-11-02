@@ -302,7 +302,7 @@ FROM tviews.stats;
 ```
 
 An eligible update leaves `view_recomputes` unchanged and bumps `patch_applied` —
-proof it skipped the view. `pg_tviews_queue_stats()` shows the same counters for the
+proof it skipped the view. `pg_tviews_show_queue()` shows the same counters for the
 calling session only.
 
 ### Upgrade note
@@ -323,7 +323,7 @@ standby. A TVIEW whose rows can be recomputed and that needs the write speed dec
 ```sql
 SELECT pg_tviews_create_or_replace('tv_post', $$ SELECT … $$, '{"logged": false}');
 CREATE UNLOGGED TABLE tv_tag AS SELECT …;                 -- the same, as DDL
-SELECT * FROM pg_tviews_replication_status();             -- what a standby can serve
+SELECT * FROM pg_tviews_show_replication();             -- what a standby can serve
 ```
 
 `ALTER TABLE tv_post SET LOGGED` switches one back, like the `logged` option.
@@ -343,34 +343,33 @@ After a restore, call `SELECT * FROM pg_tviews_rebuild_all();`. See
 ### Configuration
 
 A TVIEW is its definition and its options ([DDL reference](docs/reference/ddl.md)):
-no setting changes what it is. The settings tune limits and sessions:
+no setting changes what it is. There are five settings:
 
 | GUC | Type | Default | Who sets it | Purpose |
 |-----|------|---------|-------------|---------|
-| `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
-| `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
-| `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
 | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` ([change feed](docs/user-guides/change-feed.md)) |
 | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write; 0 = no limit ([ADR 0233](docs/adr/0233-fanout-cost-and-guard.md)) |
-| `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
+| `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (minimum 0 = always the relation; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
-| `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
-| `pg_tviews.cache_size` | int | 10000 | any role | Max entries per in-memory metadata cache |
-| `pg_tviews.report_max_tracked` | int | 10000 | any role | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.auto_rebuild_databases` | string | `*` | `postgresql.conf` (restart) | Databases whose reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion: `*` every one, a list only those, empty none |
 
 The superuser-only diagnostics `pg_tviews.graph_cache_enabled`,
 `pg_tviews.table_cache_enabled` and `pg_tviews.direct_patch_enabled` (all on) are
-hidden from `SHOW ALL`; results are the same either way. Diagnostics are `DEBUG1`
-messages: `SET client_min_messages = debug1` shows them.
+hidden from `SHOW ALL`; results are the same either way. So is
+`pg_tviews.max_queue_size`, the refresh keys a transaction may queue (1,000,000): a
+memory bound, raised only for a bulk change that queues more, which is better made
+after `pg_tviews_suspend_triggers()`. Diagnostics are `DEBUG1` messages:
+`SET client_min_messages = debug1` shows them.
 
-```sql
-SET pg_tviews.batch_size = 5000;            -- larger bulk-refresh chunks
-SET pg_tviews.cache_size = 50000;           -- bigger per-session caches
-```
+Other limits are fixed, and named by their errors: a flush applies at most 1,000
+entity batches (only a loop reaches it: a trigger on a TVIEW table writing back what
+the refresh reads), backing views nest at most 64 deep, bulk refreshes run in batches
+of 1,000 keys, each in-memory memo keeps 10,000 entries per backend, and
+`pg_tviews_flush_and_report()` keeps 10,000 changed rows per transaction. The
+`pg_tviews.` prefix is reserved: setting any other name under it fails.
 
-> GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
-> extension) so they are registered at backend start.
+> The settings require `shared_preload_libraries = 'pg_tviews'`, which the extension
+> needs anyway.
 
 ### What a definition needs
 
@@ -411,9 +410,18 @@ cd pg_tviews
 cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
                                # --no-default-features --features pg16 (or pg17)
 
-# Enable in your database
+# Preload the library, then restart PostgreSQL
+#   postgresql.conf: shared_preload_libraries = 'pg_tviews'
+
+# Enable in your database (as a superuser)
 psql -d your_database -c "CREATE EXTENSION pg_tviews CASCADE;"
 ```
+
+Preloading is the only supported mode. Without it `CREATE EXTENSION pg_tviews` fails
+with `55000` (`pg_tviews is not in shared_preload_libraries`), and so does every
+function and catalog write of an installed extension whose preload was removed.
+`CREATE EXTENSION` needs a superuser: the script creates event triggers and C
+functions.
 
 #### The `tviews` schema
 
@@ -469,7 +477,7 @@ code with create-only semantics. See
 
 Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
 query, every option, base tables, `needs_reregister`, backing view), `tviews.stats`
-(refresh counters per TVIEW) and check `tviews.contract_version()` (2). All three follow the
+(refresh counters per TVIEW) and check `tviews.contract_version()` (3). All three follow the
 stability rules in
 [docs/reference/read-contract.md](docs/reference/read-contract.md);
 `tviews.pg_tview_meta` and the other `pg_tview_*` tables are internal.
@@ -481,7 +489,7 @@ WHERE extname = 'pg_tviews'`) and ships upgrade scripts:
 
 1. Install the new package and restart PostgreSQL (the library is preloaded).
 2. In each database: `ALTER EXTENSION pg_tviews UPDATE;`
-3. When the release notes say so, or `tviews.pg_tviews_health_check()` reports TVIEWs
+3. When the release notes say so, or `tviews.pg_tviews_check_health()` reports TVIEWs
    to re-register: `SELECT * FROM tviews.pg_tviews_reregister_all();` It re-derives
    each TVIEW's metadata and triggers from its definition, without touching its rows.
 
@@ -554,7 +562,7 @@ SELECT data FROM tv_post;
 
 ```sql
 -- Monitor system health
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 
 -- Size, HOT ratio and missing indexes of each TVIEW
 SELECT * FROM pg_tviews_profile();
@@ -594,9 +602,9 @@ embeds it) is rebuilt once, in dependency order.
 ### Ending the Transaction Without Resuming
 
 An explicit `COMMIT` catches up the same way when the transaction is still
-suspended. An implicit commit (an autocommit statement, a `DO` block) cannot: it
-logs a WARNING naming the stale TVIEWs, to be fixed with `pg_tviews_refresh(tview)`
-or `pg_tviews_refresh_all()`.
+suspended. An implicit commit (several statements sent as one query string, a
+`COMMIT` inside a procedure) cannot: while writes are suspended it fails with `55000`
+and the transaction rolls back, so resume before it commits.
 
 ### API Reference
 
@@ -604,8 +612,7 @@ or `pg_tviews_refresh_all()`.
 - `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
 - `pg_tviews_refresh(tview)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
 - `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
-- `pg_tviews_is_suspended()` - Check current suspension state
-- `pg_tviews_suspended_entities()` - List entities that changed during suspension
+- `pg_tviews_show_suspended()` - The TVIEWs changed while suspended; NULL when not suspended
 
 ### Nested Suspension
 

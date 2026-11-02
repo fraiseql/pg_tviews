@@ -82,7 +82,7 @@ fn in_recovery() -> bool {
 ///
 /// # Errors
 /// Returns an error if a catalog query or an emptiness probe fails.
-#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_replication_status()
+#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_show_replication()
 pub(crate) fn replication_status()
 -> TViewResult<Vec<(String, String, bool, Option<bool>, Option<bool>)>> {
     let recovering = in_recovery();

@@ -424,7 +424,7 @@ fn replace_in_place(
         .collect();
     let mut read_tables = crate::utils::spi::oids(
         &format!(
-            "SELECT DISTINCT r.relid FROM {}.pg_tview_reads r \
+            "SELECT DISTINCT r.relid FROM {}.reads r \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
              WHERE r.entity = ANY ($1)",
             crate::utils::ext_schema()

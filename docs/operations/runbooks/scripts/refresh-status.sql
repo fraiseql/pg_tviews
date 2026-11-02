@@ -39,5 +39,5 @@ ORDER BY r.schema, r.name
 
 \echo ''
 \echo '4. Is refresh suspended in this transaction?'
-SELECT tviews.pg_tviews_is_suspended() AS suspended,
-       tviews.pg_tviews_suspended_entities() AS changed_while_suspended;
+SELECT tviews.pg_tviews_show_suspended() IS NOT NULL AS suspended,
+       tviews.pg_tviews_show_suspended() AS changed_while_suspended;

@@ -64,15 +64,17 @@ The server development files come from your distribution:
 ## 2. Load the library
 
 pg_tviews installs its hooks (the interception of `CREATE TABLE tv_* AS`, `DROP TABLE
-tv_*` and `COMMIT`) when its library is loaded. Load it with the server, in
-`postgresql.conf`, then restart PostgreSQL:
+tv_*` and `COMMIT`), its shared memory and its settings when the server starts.
+Preload it in `postgresql.conf`, then restart PostgreSQL:
 
 ```ini
 shared_preload_libraries = 'pg_tviews'
 ```
 
-Without it, a `CREATE TABLE tv_* AS` that reaches the server un-intercepted fails,
-naming the fix; the SQL functions still work.
+Preloading is the only supported mode. Without it `CREATE EXTENSION pg_tviews` fails
+with `55000` (`pg_tviews is not in shared_preload_libraries`, hint: add it and
+restart). If the preload is removed after the extension is installed, every pg_tviews
+function and every write of its catalog fails the same way.
 
 ## 3. Create the extension
 
@@ -81,7 +83,7 @@ psql -d your_database
 ```
 
 ```sql
--- Optional, before or after pg_tviews: the direct-patch fast path
+-- Required by pg_tviews (CASCADE below installs it too)
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
 -- Its objects go to the schema tviews
@@ -90,7 +92,8 @@ CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 SELECT tviews.pg_tviews_version();
 ```
 
-`CREATE EXTENSION pg_tviews` needs `CREATE` on the database. Every object goes to the
+`CREATE EXTENSION pg_tviews` needs a superuser: its script creates event triggers and C
+functions, and the control file says `superuser = true`. Every object goes to the
 schema `tviews`; to call the functions unqualified, add it to the database's
 `search_path` (it applies to new sessions):
 
@@ -120,7 +123,7 @@ conditions and the measured figures are in the [README](../../README.md) and
 ```sql
 \dx pg_tviews
 
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 
 CREATE TABLE tb_install_check (pk_install_check bigint PRIMARY KEY, label text);
 CREATE TABLE tv_install_check AS
@@ -155,7 +158,8 @@ empty after a crash or a promotion until a background worker refills it. See
 |---|---|
 | `extension "pg_tviews" is not available` | the files are not in this server's directories: `pg_config --pkglibdir --sharedir` of the server you run, and reinstall with `--pg-config` |
 | `could not access file "pg_tviews"` at startup | `shared_preload_libraries` names a library that is not installed for this server |
-| `CREATE TABLE tv_* AS` fails asking for `shared_preload_libraries` | add `pg_tviews` there and restart |
+| `55000` `pg_tviews is not in shared_preload_libraries` | add `pg_tviews` there and restart |
+| `permission denied to create extension "pg_tviews"` | create it as a superuser |
 | `function pg_tviews_… does not exist` | qualify it (`tviews.pg_tviews_…`) or add `tviews` to the `search_path` |
 | permission denied (`42501`) on a maintenance function | it is not executable by `PUBLIC`: [Operator role](../user-guides/operators.md#operator-role) |
 | `cargo pgrx` version mismatch | `cargo install --locked cargo-pgrx --version 0.17.0 --force` |

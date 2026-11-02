@@ -29,14 +29,14 @@ session inserter
 step i_begin     { BEGIN; }
 step i_escalate  { SET LOCAL pg_tviews.lock_escalation_threshold = 0; }
 step i_insert    { INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2'); }
-step i_waited    { SELECT (tviews.pg_tviews_queue_stats()->>'value_lock_waits')::int > 0 AS waited; }
+step i_waited    { SELECT (tviews.pg_tviews_show_queue()->>'value_lock_waits')::int > 0 AS waited; }
 step i_commit    { COMMIT; }
 
 session renamer
 step r_begin     { BEGIN; }
 step r_escalate  { SET LOCAL pg_tviews.lock_escalation_threshold = 0; }
 step r_rename    { UPDATE tb_user SET name = 'grace' WHERE pk_user = 1; }
-step r_waited    { SELECT (tviews.pg_tviews_queue_stats()->>'value_lock_waits')::int > 0 AS waited; }
+step r_waited    { SELECT (tviews.pg_tviews_show_queue()->>'value_lock_waits')::int > 0 AS waited; }
 step r_commit    { COMMIT; }
 step r_check
 {

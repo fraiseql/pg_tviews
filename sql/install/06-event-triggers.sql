@@ -130,14 +130,14 @@ CREATE TRIGGER pg_tview_meta_changed
     FOR EACH STATEMENT
     EXECUTE FUNCTION @extschema@.pg_tviews_meta_changed();
 
--- Maintenance acting on every TVIEW is not for PUBLIC: an operator role is
--- granted it (docs/user-guides/operators.md). Each function acting on one TVIEW
--- checks that the caller owns it.
+-- Maintenance acting on every TVIEW (the `_all` functions) is not for PUBLIC: an
+-- operator role is granted it (docs/user-guides/operators.md). Each function
+-- acting on, or showing, one TVIEW checks that the caller owns it.
 REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_refresh_all(),
     @extschema@.pg_tviews_rebuild_all(BOOLEAN),
     @extschema@.pg_tviews_reregister_all(BOOLEAN),
-    @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN),
-    @extschema@.pg_tviews_stats_reset(TEXT),
+    @extschema@.pg_tviews_ensure_propagation_indexes_all(BOOLEAN),
+    @extschema@.pg_tviews_reset_stats_all(),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;

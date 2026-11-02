@@ -81,8 +81,10 @@ jobs:
           cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
 
       - name: Build and install pg_tviews
+        # test-hooks: the hidden switch regress_missed_interception needs; release
+        # packages are built without it.
         run: |
-          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR} test-hooks" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
       - name: Build and install jsonb_delta (real extension, 0.3.0)
@@ -180,15 +182,14 @@ jobs:
           ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md docs/concurrency.md \
             docs/reference/*.md docs/user-guides/*.md
 
-      # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
-      # pg_tviews_create_or_replace() and refresh work where the library is loaded
-      # lazily (#134).
+      # A throwaway cluster restarted without shared_preload_libraries: CREATE
+      # EXTENSION and every use of an installed catalog are refused (55000).
       - name: No-preload suite (test/no_preload/run.sh)
         if: ${{ !cancelled() }}
         run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
 
       # A throwaway preloaded cluster with a tiny NOTIFY queue: a listener idle in a
-      # transaction fills it, writes commit unpublished, pg_tviews_feed_gaps() counts
+      # transaction fills it, writes commit unpublished, pg_tviews_count_feed_gaps() counts
       # them for every session (#247).
       - name: Feed gaps (test/feed_gaps/run.sh)
         if: ${{ !cancelled() }}

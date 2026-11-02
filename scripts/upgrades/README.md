@@ -45,7 +45,7 @@ If automated scripts fail, follow these manual steps:
 4. **Verify upgrade**
    ```sql
    SELECT pg_tviews_version();
-   SELECT * FROM pg_tviews_health_check();
+   SELECT * FROM pg_tviews_check_health();
    ```
 
 5. **Restart application**

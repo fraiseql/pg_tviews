@@ -5,7 +5,8 @@ the SQLSTATEs worth catching.
 
 All objects live in the schema `tviews`. Call the functions schema-qualified, as this
 page does, or put `tviews` on the `search_path`. The server must preload the library
-(`shared_preload_libraries = 'pg_tviews'`, see the [Operator guide](../user-guides/operators.md)).
+(`shared_preload_libraries = 'pg_tviews'`, see the [Operator guide](../user-guides/operators.md)):
+without it every function fails with `55000` (`pg_tviews is not in shared_preload_libraries`).
 
 The examples on this page run in order in a fresh database. They use two tables:
 
@@ -40,23 +41,23 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
-| [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | anyone |
-| [`pg_tviews_mapping_query(tview text, base_table oid)`](#pg_tviews_mapping_query) | `text` | anyone |
-| [`pg_tviews_read_set_queries(tview text, base_table oid)`](#pg_tviews_read_set_queries) | `TABLE(column_name text, query text)` | anyone |
-| [`pg_tviews_ensure_propagation_indexes(tview text DEFAULT NULL, dry_run boolean DEFAULT false)`](#pg_tviews_ensure_propagation_indexes) | `SETOF text` | operator, and owner of each TVIEW |
-| [`pg_tviews_entity_of(tview text)`](#pg_tviews_entity_of) | `text` | anyone |
+| [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
+| [`pg_tviews_show_mapping_query(tview text, base_table oid)`](#pg_tviews_show_mapping_query) | `text` | owner |
+| [`pg_tviews_show_read_sets(tview text, base_table oid)`](#pg_tviews_show_read_sets) | `TABLE(column_name text, query text)` | owner |
+| [`pg_tviews_ensure_propagation_indexes(tview text, dry_run boolean DEFAULT false)`](#pg_tviews_ensure_propagation_indexes) | `SETOF text` | owner |
+| [`pg_tviews_ensure_propagation_indexes_all(dry_run boolean DEFAULT false)`](#pg_tviews_ensure_propagation_indexes) | `SETOF text` | operator |
+| [`pg_tviews_resolve(tview text)`](#pg_tviews_resolve) | `text` | anyone |
 | [`pg_tviews_suspend_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
 | [`pg_tviews_resume_triggers()`](#suspending-refresh) | `void` | anyone (own session) |
-| [`pg_tviews_is_suspended()`](#suspending-refresh) | `boolean` | anyone |
-| [`pg_tviews_suspended_entities()`](#suspending-refresh) | `text[]` | anyone |
+| [`pg_tviews_show_suspended()`](#suspending-refresh) | `text[]` | anyone |
 | [`pg_tviews_flush_and_report(max_entities integer DEFAULT 500, include_data boolean DEFAULT true, reset boolean DEFAULT true, types text[] DEFAULT NULL)`](#pg_tviews_flush_and_report) | `jsonb` | anyone (own transaction) |
-| [`pg_tviews_replication_status()`](#storage-replication-and-recovery) | `TABLE(entity text, persistence text, replica_readable boolean, is_empty boolean, needs_rebuild boolean)` | anyone |
+| [`pg_tviews_show_replication()`](#storage-replication-and-recovery) | `TABLE(entity text, persistence text, replica_readable boolean, is_empty boolean, needs_rebuild boolean)` | anyone |
 | [`pg_tviews_rebuild_all(only_empty boolean DEFAULT true)`](#storage-replication-and-recovery) | `TABLE(entity text, rows_inserted bigint)` | operator |
-| [`pg_tviews_health_check()`](#pg_tviews_health_check) | `TABLE(status text, component text, message text, severity text)` | anyone |
-| [`pg_tviews_stats_reset(tview text DEFAULT NULL)`](#tviewsstats-and-pg_tviews_stats_reset) | `void` | operator |
-| [`pg_tviews_queue_stats()`](#pg_tviews_queue_stats) | `jsonb` | anyone |
-| [`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps) | `bigint` | anyone |
-| [`pg_tviews_debug_queue()`](#pg_tviews_debug_queue) | `jsonb` | anyone |
+| [`pg_tviews_check_health()`](#pg_tviews_check_health) | `TABLE(status text, component text, message text, severity text)` | anyone |
+| [`pg_tviews_reset_stats(tview text)`](#tviewsstats-and-pg_tviews_reset_stats) | `void` | owner |
+| [`pg_tviews_reset_stats_all()`](#tviewsstats-and-pg_tviews_reset_stats) | `void` | operator |
+| [`pg_tviews_show_queue()`](#pg_tviews_show_queue) | `jsonb` | anyone |
+| [`pg_tviews_count_feed_gaps()`](#pg_tviews_count_feed_gaps) | `bigint` | anyone |
 | [`pg_tviews_profile(tview text DEFAULT NULL, fanout_warn bigint DEFAULT 1000)`](#pg_tviews_profile) | `TABLE(…)` | anyone |
 | [`pg_tviews_version()`](#version-and-catalog) | `text` | anyone |
 | [`pg_tviews_catalog_revision()`](#version-and-catalog) | `integer` | anyone |
@@ -68,7 +69,10 @@ here are [internal](#internal-functions).
 ## Naming a TVIEW
 
 Every function acting on one TVIEW takes it as its first parameter, `tview`
-([ADR 0211](../adr/0211-api-surface.md)). A TVIEW's table is always `tv_<entity>`, and
+([ADR 0211](../adr/0211-api-surface.md)). Functions are named `pg_tviews_<verb>`; a
+function acting on every TVIEW ends in `_all` and is an operator's. The names this
+rule replaced in 0.1.0-beta.35 are listed in
+[Deprecations and removals](../DEPRECATION_WARNINGS.md#renamed-and-removed-in-010-beta35). A TVIEW's table is always `tv_<entity>`, and
 an entity names one TVIEW in the whole database, so all these spellings name the same
 TVIEW:
 
@@ -247,7 +251,7 @@ tviews.pg_tviews_reregister_all(strict boolean DEFAULT false)
 subtransaction: `status` is `reregistered` or the error that stopped it. With
 `strict`, it raises at the end when any failed. Run it after
 `ALTER EXTENSION pg_tviews UPDATE` when the release notes say so or
-`pg_tviews_health_check()` reports TVIEWs to re-register. Operator function.
+`pg_tviews_check_health()` reports TVIEWs to re-register. Operator function.
 
 ```sql
 SELECT * FROM tviews.pg_tviews_reregister_all();
@@ -317,34 +321,34 @@ tviews.pg_tviews_show_cascade_path(tview text)
 ```
 
 The TVIEW at depth 0, then the TVIEWs that read it, with their depth: what
-`pg_tviews_refresh(tview)` rebuilds.
+`pg_tviews_refresh(tview)` rebuilds. Requires owning the TVIEW.
 
 ```sql
 SELECT * FROM tviews.pg_tviews_show_cascade_path('user');
 ```
 
-### pg_tviews_mapping_query
+### pg_tviews_show_mapping_query
 
 ```text
-tviews.pg_tviews_mapping_query(tview text, base_table oid) RETURNS text
+tviews.pg_tviews_show_mapping_query(tview text, base_table oid) RETURNS text
 ```
 
 The query that maps the rows a statement changed in `base_table`, read from a
 relation named `pg_tviews_delta`, to keys of `tview`, from the TVIEW's stored plan.
 NULL when writes to that table do not map through a query of their own (a table
-propagated through an embed, or one refreshing every key), when the TVIEW does not
-read the table. See
+propagated through an embed, or one refreshing every key), or when the TVIEW does not
+read the table. Requires owning the TVIEW. See
 [How a write finds the TVIEW rows to refresh](ddl.md#how-a-write-finds-the-tview-rows-to-refresh).
 
 ```sql
-SELECT tviews.pg_tviews_mapping_query('tv_user_summary', 'tb_post'::regclass);
+SELECT tviews.pg_tviews_show_mapping_query('tv_user_summary', 'tb_post'::regclass);
 -- SELECT DISTINCT "fk_user" FROM pg_tviews_delta
 ```
 
-### pg_tviews_read_set_queries
+### pg_tviews_show_read_sets
 
 ```text
-tviews.pg_tviews_read_set_queries(tview text, base_table oid)
+tviews.pg_tviews_show_read_sets(tview text, base_table oid)
     RETURNS TABLE(column_name text, query text)
 ```
 
@@ -355,10 +359,10 @@ A refresh takes a shared lock on each value before it computes the rows; a write
 the table takes an exclusive lock on its rows' values of the column
 ([Concurrency](../concurrency.md)). `column_name` and `query` are NULL when the table
 is joined by no equality: the table is locked as a whole. No rows when writes to the
-table map through no query of their own.
+table map through no query of their own. Requires owning the TVIEW.
 
 ```sql
-SELECT * FROM tviews.pg_tviews_read_set_queries('tv_post', 'tb_user'::regclass);
+SELECT * FROM tviews.pg_tviews_show_read_sets('tv_post', 'tb_user'::regclass);
 --  column_name | query
 --  pk_user     | SELECT DISTINCT (o1.fk_user)::pg_catalog.text FROM public.tb_post o1
 --              |   WHERE o1.pk_post OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.int8[])
@@ -367,31 +371,34 @@ SELECT * FROM tviews.pg_tviews_read_set_queries('tv_post', 'tb_user'::regclass);
 ### pg_tviews_ensure_propagation_indexes
 
 ```text
-tviews.pg_tviews_ensure_propagation_indexes(tview text DEFAULT NULL,
+tviews.pg_tviews_ensure_propagation_indexes(tview text,
                                             dry_run boolean DEFAULT false) RETURNS SETOF text
+tviews.pg_tviews_ensure_propagation_indexes_all(dry_run boolean DEFAULT false) RETURNS SETOF text
 ```
 
 Creates the missing propagation index of every column the plan looks the TVIEW's rows
-up by (`tview`, or every TVIEW when NULL). A column counts as covered when any index
-leads with it. Returns one `CREATE INDEX IF NOT EXISTS …` per missing index, executed
-unless `dry_run`. Idempotent. On large tables, take the dry-run output and run it with
-`CREATE INDEX CONCURRENTLY`. Operator function; requires owning each TVIEW it looks at.
+up by: of `tview`, or of every TVIEW with the `_all` form. A column counts as covered
+when any index leads with it. Returns one `CREATE INDEX IF NOT EXISTS …` per missing
+index, executed unless `dry_run`. Idempotent. On large tables, take the dry-run output
+and run it with `CREATE INDEX CONCURRENTLY`. The one-TVIEW form requires owning it;
+`pg_tviews_ensure_propagation_indexes_all` is an operator function.
 
 ```sql
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('post', dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
 ```
 
-### pg_tviews_entity_of
+### pg_tviews_resolve
 
 ```text
-tviews.pg_tviews_entity_of(tview text) RETURNS text
+tviews.pg_tviews_resolve(tview text) RETURNS text
 ```
 
 The entity a TVIEW name names, in any of the [accepted forms](#naming-a-tview); `42704`
 when it names no TVIEW. For tools that key on the entity.
 
 ```sql
-SELECT tviews.pg_tviews_entity_of('public.tv_post');   -- post
+SELECT tviews.pg_tviews_resolve('public.tv_post');   -- post
 ```
 
 ## Suspending refresh
@@ -399,8 +406,7 @@ SELECT tviews.pg_tviews_entity_of('public.tv_post');   -- post
 ```text
 tviews.pg_tviews_suspend_triggers() RETURNS void
 tviews.pg_tviews_resume_triggers() RETURNS void
-tviews.pg_tviews_is_suspended() RETURNS boolean
-tviews.pg_tviews_suspended_entities() RETURNS text[]
+tviews.pg_tviews_show_suspended() RETURNS text[]
 ```
 
 `pg_tviews_suspend_triggers()` defers refreshes for a bulk load; calls nest and roll
@@ -410,13 +416,15 @@ Resume without suspend is `55000`. Suspension ends with the transaction: an expl
 `COMMIT` statement catches up the same way. An implicit commit cannot (several
 statements sent as one query string, a `COMMIT` inside a procedure): while writes are
 suspended it fails with `55000` and the transaction rolls back, so a procedure resumes
-before it commits. `pg_tviews_suspended_entities()` lists the TVIEWs changed so far.
+before it commits. `pg_tviews_show_suspended()` lists the TVIEWs changed so far (an
+empty array when none yet), and is NULL when the transaction is not suspended:
+`pg_tviews_show_suspended() IS NOT NULL` tells whether it is.
 
 ```sql
 BEGIN;
 SELECT tviews.pg_tviews_suspend_triggers();
 INSERT INTO tb_post (fk_user, title) SELECT 2, 'Bulk ' || g FROM generate_series(1, 1000) g;
-SELECT tviews.pg_tviews_suspended_entities();
+SELECT tviews.pg_tviews_show_suspended();
 SELECT tviews.pg_tviews_resume_triggers();
 COMMIT;
 ```
@@ -436,9 +444,9 @@ Flushes the queue, then reports the TVIEW rows this transaction changed, for a G
 cascade response: each entry carries its type name, `id` and (with `include_data`) the
 row's `data`; a deleted entry is `{"__typename", "id"}`. The type name is the TVIEW's
 `typename` option, or the PascalCase of its entity. Past `max_entities` entries,
-or when the journal overflowed `pg_tviews.report_max_tracked`, `truncated` is true and
+or past the 10,000 changed rows a transaction journals, `truncated` is true and
 `invalidated_types` lists the types left out. A type whose rows were not journaled one
-by one (rebuilt or refilled in the transaction, or past `pg_tviews.report_max_tracked`)
+by one (rebuilt or refilled in the transaction, or past the 10,000 journaled rows)
 stands for all its rows: without `include_data` none of them is listed, since a row
 journaled before a rebuild may no longer exist; with it, each listed row is read as it is
 now. With `reset`, the next call reports only
@@ -462,7 +470,7 @@ COMMIT;
 ## Storage, replication and recovery
 
 ```text
-tviews.pg_tviews_replication_status()
+tviews.pg_tviews_show_replication()
     RETURNS TABLE(entity text, persistence text, replica_readable boolean,
                   is_empty boolean, needs_rebuild boolean)
 tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(entity text, rows_inserted bigint)
@@ -470,7 +478,7 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
 
 - TVIEWs are LOGGED unless declared `logged: false`. Switch one with the `logged`
   option or `ALTER TABLE tv_<entity> SET [UN]LOGGED`.
-- `pg_tviews_replication_status` reports every TVIEW, `replica_readable` true for a
+- `pg_tviews_show_replication` reports every TVIEW, `replica_readable` true for a
   LOGGED one, and is safe on a standby.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
@@ -487,7 +495,7 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
   ([Replication](../operations/replication.md#refilling-after-promotion-a-crash-or-a-restore)).
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
@@ -495,31 +503,38 @@ See [Replication](../operations/replication.md).
 
 ## Monitoring
 
-### pg_tviews_health_check
+### pg_tviews_check_health
 
 ```text
-tviews.pg_tviews_health_check()
+tviews.pg_tviews_check_health()
     RETURNS TABLE(status text, component text, message text, severity text)
 ```
 
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
-`warning` or `error`; `component` is one of `extension`, `jsonb_delta`, `catalog`,
-`metadata`, `plans` (stored plans that do not decode), `reregister` (TVIEWs marked
+`warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
+`plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
+no longer match the table), `seq_scans`, `reregister` (TVIEWs marked
 `needs_reregister`), `triggers` and `tviews`. A check that cannot run is an `ERROR` row.
 
+`seq_scans` is a `WARNING` listing the TVIEWs whose mapping query (how writes to a base
+table map to TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows.
+It is planned again on each call, with the current indexes and statistics, so an index
+dropped after registration is reported.
+
 ```sql
-SELECT component, status, message FROM tviews.pg_tviews_health_check()
+SELECT component, status, message FROM tviews.pg_tviews_check_health()
 WHERE status <> 'OK';
 ```
 
-### tviews.stats and pg_tviews_stats_reset
+### tviews.stats and pg_tviews_reset_stats
 
 ```text
 tviews.stats  -- view: schema, name, entity, view_recomputes, noop_skipped,
               --   patch_captured, patch_applied, patch_fallbacks, propagation_pruned,
               --   rows_written, rows_deleted, full_refreshes, refresh_ms,
               --   stats_reset, untracked
-tviews.pg_tviews_stats_reset(tview text DEFAULT NULL) RETURNS void
+tviews.pg_tviews_reset_stats(tview text) RETURNS void
+tviews.pg_tviews_reset_stats_all() RETURNS void
 ```
 
 Refresh statistics per TVIEW of the database, readable from any session by any role
@@ -529,19 +544,20 @@ shared memory (4096 TVIEWs per cluster): reading the view without
 `shared_preload_libraries = 'pg_tviews'` fails with a hint, and a TVIEW that finds the
 table full is `untracked`, with NULL counters. The columns are described in the
 [contract for tools](read-contract.md#tviewsstats).
-`pg_tviews_stats_reset` zeroes one TVIEW, or every TVIEW of the database when `tview`
-is NULL. Operator function.
+`pg_tviews_reset_stats` zeroes one TVIEW and requires owning it;
+`pg_tviews_reset_stats_all` zeroes every TVIEW of the database and is an operator
+function.
 
 ```sql
 SELECT entity, view_recomputes, rows_written, full_refreshes FROM tviews.stats
 ORDER BY entity;
-SELECT tviews.pg_tviews_stats_reset('post');
+SELECT tviews.pg_tviews_reset_stats('post');
 ```
 
-### pg_tviews_queue_stats
+### pg_tviews_show_queue
 
 ```text
-tviews.pg_tviews_queue_stats() RETURNS jsonb
+tviews.pg_tviews_show_queue() RETURNS jsonb
 ```
 
 Counters of the calling backend, for debugging. Queue, flush and cache counters cover
@@ -549,6 +565,8 @@ the current transaction; the `direct_patch_*`, `view_recomputes`,
 `refresh_noop_skipped`, `catalog_lookups`, `plans_prepared`, `per_execution_plans` and `propagation_pruned` counters accumulate
 over the session. Read it from the session doing the writes: another session sees its
 own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
+`queued` lists the keys queued in the transaction; it is empty between statements,
+since every statement flushes.
 
 | Key | Meaning |
 |---|---|
@@ -568,19 +586,20 @@ own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 | `propagation_pruned` | cascades skipped because the changed columns are not read by the parent |
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
-| `feed_gaps` | transactions committed without publishing their changes, in the whole cluster since the server started ([`pg_tviews_feed_gaps()`](#pg_tviews_feed_gaps), [change feed](../user-guides/change-feed.md#operating-it)); null without the library preloaded |
+| `queued` | the keys queued in the transaction, as `[{"entity": …, "pk": …}, …]` |
 
 ```sql
 BEGIN;
 UPDATE tb_post SET title = 'Hello again' WHERE pk_post = 1;
-SELECT tviews.pg_tviews_queue_stats() ->> 'flushes' AS flushes;
+SELECT tviews.pg_tviews_show_queue() ->> 'flushes' AS flushes;
+SELECT tviews.pg_tviews_show_queue() -> 'queued';
 COMMIT;
 ```
 
-### pg_tviews_feed_gaps
+### pg_tviews_count_feed_gaps
 
 ```text
-tviews.pg_tviews_feed_gaps() RETURNS bigint
+tviews.pg_tviews_count_feed_gaps() RETURNS bigint
 ```
 
 The transactions the cluster committed without publishing their changes on the
@@ -589,19 +608,6 @@ since the server started. Monotonic; any session reads it. A listener reads it w
 connects and on each heartbeat, and evicts everything when it moved
 ([gaps](../user-guides/change-feed.md#gaps-while-connected)). Without
 `shared_preload_libraries = 'pg_tviews'` nothing is counted and it fails with `55000`.
-
-### pg_tviews_debug_queue
-
-```text
-tviews.pg_tviews_debug_queue() RETURNS jsonb
-```
-
-The refresh queue of the current transaction, as `[{"entity": …, "pk": …}, …]`; empty
-between statements, since every statement flushes.
-
-```sql
-SELECT tviews.pg_tviews_debug_queue();
-```
 
 ### pg_tviews_profile
 
@@ -629,7 +635,7 @@ SELECT entity, persistence, hot_ratio, warnings FROM tviews.pg_tviews_profile();
 ```text
 tviews.pg_tviews_version() RETURNS text            -- the library version
 tviews.pg_tviews_catalog_revision() RETURNS integer  -- catalog revision of the installed extension SQL
-tviews.contract_version() RETURNS integer           -- version of the read contract (2)
+tviews.contract_version() RETURNS integer           -- version of the read contract (3)
 ```
 
 ```sql
@@ -647,30 +653,31 @@ pg_tviews follows the rules of `ALTER TABLE` and `REFRESH MATERIALIZED VIEW`
   extension (superusers pass). The check runs before any lock is taken. Anyone else
   gets SQLSTATE `42501` (`must be owner of TVIEW tv_<entity>`). This covers
   `pg_tviews_create_or_replace` (on an existing TVIEW), `pg_tviews_drop`,
-  `pg_tviews_reregister`, `pg_tviews_refresh`, `pg_tviews_refresh_time_dependent`
-  and `pg_tviews_ensure_propagation_indexes`.
+  `pg_tviews_reregister`, `pg_tviews_refresh`, `pg_tviews_refresh_time_dependent`,
+  `pg_tviews_ensure_propagation_indexes`, `pg_tviews_reset_stats`, and the functions
+  showing one TVIEW's internals: `pg_tviews_show_cascade_path`,
+  `pg_tviews_show_mapping_query` and `pg_tviews_show_read_sets`.
 - **Rebuilds run as the TVIEW's owner.** Every refresh, single or bulk, reads the
   backing view and writes the `tv_*` table as the owner of that `tv_*` table, in a
   security-restricted operation with `search_path = pg_catalog, pg_temp` and fixed
   rendering settings (`TimeZone` `UTC`, `DateStyle` `ISO, YMD`). A function the
   backing view calls never runs with the caller's privileges.
-- **Operator.** The maintenance functions are revoked from `PUBLIC`:
-  `pg_tviews_refresh_all()`, `pg_tviews_rebuild_all(boolean)`,
+- **Operator.** The functions acting on every TVIEW end in `_all` and are revoked
+  from `PUBLIC`: `pg_tviews_refresh_all()`, `pg_tviews_rebuild_all(boolean)`,
   `pg_tviews_reregister_all(boolean)`,
-  `pg_tviews_ensure_propagation_indexes(text, boolean)`,
-  `pg_tviews_stats_reset(text)` and the internal
-  `pg_tviews_invalidate_caches(oid)`. Superusers and the extension's owner may run
+  `pg_tviews_ensure_propagation_indexes_all(boolean)` and
+  `pg_tviews_reset_stats_all()`, with the internal `pg_tviews_invalidate_caches(oid)`
+  and `pg_tviews_audit_write(jsonb)`. Superusers and the extension's owner may run
   them; any other role needs `GRANT EXECUTE` (an operator role, see
   [Operator role](../user-guides/operators.md#operator-role)).
-  `pg_tviews_reregister_all` and `pg_tviews_ensure_propagation_indexes` also check
-  ownership of each TVIEW they touch.
+  `pg_tviews_reregister_all` also checks ownership of each TVIEW it touches.
 - **Writing.** A write to a table a TVIEW reads needs what the write needs without
   pg_tviews: the DML privilege on that table and `USAGE` on its schema, plus `USAGE`
   on `tviews`. Nothing else, whatever TVIEWs exist in other schemas and whatever the
   write cascades into: the cascade refreshes each TVIEW as its owner, the catalog is
   readable by every role, and no catalog read on the write path resolves an object
   by name (which would check `USAGE` on that object's schema). The same holds for an
-  explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_feed_gaps()`,
+  explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_count_feed_gaps()`,
   `tviews.registry` and `pg_tviews_flush_and_report(include_data => false)`. With
   `include_data` (the default), the report reads each reported row's `data` as the
   caller, so it also needs `SELECT` on those `tv_*` tables (`42501` otherwise).
@@ -712,9 +719,9 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
-| `54001` | `statement_too_complex` | propagation or view nesting deeper than `pg_tviews.max_propagation_depth` / `max_dependency_depth` |
-| `54000` | `program_limit_exceeded` | refresh queue full (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
-| `55000` | `object_not_in_prerequisite_state` | resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
+| `54001` | `statement_too_complex` | a flush over 1,000 entity batches (a loop: a trigger on a TVIEW table writing back what the refresh reads), or backing views nested more than 64 deep |
+| `54000` | `program_limit_exceeded` | refresh queue backpressure (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
+| `55000` | `object_not_in_prerequisite_state` | the library is not in `shared_preload_libraries`, resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |
 | `22023` | `invalid_parameter_value` | an invalid argument or option |
@@ -736,7 +743,7 @@ END $$;
   name, entity, normalized query, every option, base tables, `needs_reregister`, …).
   Stable under `contract_version()`; see [the contract for tools](read-contract.md).
 - `tviews.stats`: per-TVIEW refresh statistics, part of the same contract; see
-  [above](#tviewsstats-and-pg_tviews_stats_reset).
+  [above](#tviewsstats-and-pg_tviews_reset_stats).
 - `tviews.pg_tview_meta`: the registration catalog. One row per entity: `view_oid`,
   `table_oid` (the `tv_*` table), `definition`, the stored propagation `plan` (jsonb,
   [ADR 0203](../adr/0203-propagation-plan.md)), `group_keys`, `identity`, the policy
@@ -755,17 +762,24 @@ FROM tviews.registry ORDER BY entity;
 
 The settings are listed, with types and defaults, in the
 [README's configuration table](../../README.md#configuration). None changes what a
-TVIEW is: that comes only from its definition and its [options](#options). The
-settings that decide whether a write or a creation succeeds
-(`pg_tviews.max_propagation_depth`, `max_dependency_depth`, `max_queue_size`, `max_refresh_rows`,
-`lock_escalation_threshold`), `pg_tviews.audit_enabled` and `pg_tviews.publish_changes`
-(what other sessions observe, [change feed](../user-guides/change-feed.md)) are a superuser's.
-`batch_size`, `cache_size` and `report_max_tracked` apply to each session.
-`pg_tviews.auto_rebuild_databases` is read at server start. Diagnostics are `DEBUG1`
-messages: `SET client_min_messages = debug1` shows them.
+TVIEW is: that comes only from its definition and its [options](#options). There are
+five: `pg_tviews.publish_changes` (what other sessions observe,
+[change feed](../user-guides/change-feed.md)), `pg_tviews.max_refresh_rows`,
+`pg_tviews.audit_enabled` and `pg_tviews.lock_escalation_threshold` are a
+superuser's; `pg_tviews.auto_rebuild_databases` is read at server start.
+
+The superuser-only diagnostics `pg_tviews.graph_cache_enabled`,
+`pg_tviews.table_cache_enabled`, `pg_tviews.direct_patch_enabled` and
+`pg_tviews.max_queue_size` are hidden from `SHOW ALL` and `pg_settings`. Other limits
+are fixed and named by their errors: a flush applies at most 1,000 entity batches,
+backing views nest at most 64 deep, bulk refreshes run in batches of 1,000 keys, each
+in-memory memo keeps 10,000 entries per backend, and the report of
+`pg_tviews_flush_and_report()` keeps 10,000 changed rows per transaction. The
+`pg_tviews.` prefix is reserved: setting a name that is not a setting fails.
+Diagnostics are `DEBUG1` messages: `SET client_min_messages = debug1` shows them.
 
 ```sql
-SHOW pg_tviews.max_propagation_depth;
+SHOW pg_tviews.max_refresh_rows;
 ```
 
 ## Two-phase commit

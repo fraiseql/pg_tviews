@@ -4,12 +4,20 @@
 -- objects created in it. The install script never uses CREATE OR REPLACE or
 -- IF NOT EXISTS, so an object planted under one of its names is an error too.
 -- Supported PostgreSQL versions: 16, 17, 18. Refuse older servers here, before
--- anything loads the library, with a message instead of a load error.
+-- anything loads the library, with a message instead of a load error. The library
+-- must be preloaded: its hooks, its shared statistics and its rebuild worker exist
+-- only then, and there is no mode without them.
 DO $$
 BEGIN
     IF pg_catalog.current_setting('server_version_num')::int < 160000 THEN
         RAISE EXCEPTION 'pg_tviews requires PostgreSQL 16 or later (this server is %)',
             pg_catalog.current_setting('server_version');
+    END IF;
+    IF NOT pg_catalog.current_setting('shared_preload_libraries')
+           OPERATOR(pg_catalog.~) '(^|,)\s*("?)(\$libdir/)?pg_tviews\2\s*(,|$)' THEN
+        RAISE EXCEPTION 'pg_tviews is not in shared_preload_libraries'
+            USING ERRCODE = 'object_not_in_prerequisite_state',
+                  HINT = 'Add pg_tviews to shared_preload_libraries and restart the server.';
     END IF;
 END
 $$;

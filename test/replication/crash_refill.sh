@@ -90,7 +90,7 @@ for db in settings app; do
         || fail "the worker called objects of database $db"
 done
 for db in app reporting; do
-    [[ "$(sql -d "$db" -c 'SELECT bool_and(NOT needs_rebuild) FROM tviews.pg_tviews_replication_status()')" == t ]] \
+    [[ "$(sql -d "$db" -c 'SELECT bool_and(NOT needs_rebuild) FROM tviews.pg_tviews_show_replication()')" == t ]] \
         || fail "tv_item of database $db still needs a rebuild"
 done
 grep -q 'extension not installed in database "plain"' "$dir/server.log" \

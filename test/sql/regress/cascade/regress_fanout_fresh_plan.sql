@@ -125,10 +125,10 @@ SELECT build(100, 20, false);
 --    none, or children another write in the same statement moved to it. The
 --    patches counted include the categories' own tv_cat rows.
 CREATE FUNCTION patched_during(write text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE before bigint := (tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::bigint;
+DECLARE before bigint := (tviews.pg_tviews_show_queue()->>'direct_patches_applied')::bigint;
 BEGIN
     EXECUTE write;
-    RETURN (tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::bigint - before;
+    RETURN (tviews.pg_tviews_show_queue()->>'direct_patches_applied')::bigint - before;
 END $$;
 DELETE FROM tb_item WHERE fk_cat IN (5, 6);
 SELECT must(patched_during($$UPDATE tb_cat SET name = 'none' WHERE pk_cat = 5$$) = 1,

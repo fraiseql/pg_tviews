@@ -37,8 +37,8 @@ FROM unnest(ARRAY['user', 'tv_user', 'app.tv_user', '"app"."tv_user"', 'app."tv_
          'SELECT tviews.pg_tviews_refresh_time_dependent(%L)',
          'SELECT tviews.pg_tviews_ensure_propagation_indexes(%L, true)',
          'SELECT * FROM tviews.pg_tviews_show_cascade_path(%L)',
-         'SELECT tviews.pg_tviews_mapping_query(%L, ''app.tb_user''::regclass)',
-         'SELECT * FROM tviews.pg_tviews_read_set_queries(%L, ''app.tb_user''::regclass)',
+         'SELECT tviews.pg_tviews_show_mapping_query(%L, ''app.tb_user''::regclass)',
+         'SELECT * FROM tviews.pg_tviews_show_read_sets(%L, ''app.tb_user''::regclass)',
          'SELECT * FROM tviews.pg_tviews_profile(%L)',
          $c$SELECT tviews.pg_tviews_create_or_replace(%L, (SELECT query FROM tviews.registry WHERE entity = 'user'), (SELECT options FROM tviews.registry WHERE entity = 'user'))$c$
      ]) AS call;
@@ -52,7 +52,7 @@ FROM unnest(ARRAY['nobody', 'tv_nobody', 'public.tv_user']) AS form,
          'SELECT tviews.pg_tviews_refresh(%L)',
          'SELECT tviews.pg_tviews_reregister(%L)',
          'SELECT tviews.pg_tviews_refresh_time_dependent(%L)',
-         'SELECT tviews.pg_tviews_mapping_query(%L, ''app.tb_user''::regclass)',
+         'SELECT tviews.pg_tviews_show_mapping_query(%L, ''app.tb_user''::regclass)',
          'SELECT * FROM tviews.pg_tviews_profile(%L)'
      ]) AS call;
 SELECT must(outcome('SELECT tviews.pg_tviews_drop(''nobody'')') LIKE '42704 %TVIEW nobody does not exist',

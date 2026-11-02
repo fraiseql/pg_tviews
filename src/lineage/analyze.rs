@@ -502,35 +502,7 @@ pub(super) fn explain(
     template: &str,
 ) -> crate::TViewResult<()> {
     use pgrx::prelude::*;
-    let sql = render_template(template)
-        .map_err(|e| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {}", table.qualified),
-            pg_error: e.to_string(),
-        })?
-        .ok_or_else(|| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {}", table.qualified),
-            pg_error: "a relation or column it reads is gone".to_string(),
-        })?;
-    let explain = format!(
-        "EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {} LIMIT 0) {sql}",
-        table.qualified
-    );
-    let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
-        .map_err(|e| crate::TViewError::SpiError {
-            query: explain.clone(),
-            error: e.to_string(),
-        })?
-        .map(|j| j.0)
-        .unwrap_or_default();
-    let mut scans = Vec::new();
-    seq_scans(&plan, &mut scans);
-    // Once per relation: the changed rows of a self-join scan it too.
-    scans.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.total_cmp(&x.1)));
-    scans.dedup_by(|x, y| x.0 == y.0);
-    for (relation, rows) in scans {
-        if rows < LARGE_TABLE_ROWS {
-            continue;
-        }
+    for (relation, rows) in large_seq_scans(&table.qualified, template)? {
         let mut advice: Vec<String> = table
             .lookups
             .iter()
@@ -560,6 +532,41 @@ pub(super) fn explain(
         );
     }
     Ok(())
+}
+
+/// `(relation, estimated rows)` of each sequential scan of a table above
+/// [`LARGE_TABLE_ROWS`] rows, once per relation, in the plan of the mapping query
+/// `template` of `table` (qualified). Fails when the query does not plan.
+///
+/// # Errors
+/// Returns an error if a relation the template names is gone or the query does
+/// not plan.
+pub fn large_seq_scans(table: &str, template: &str) -> crate::TViewResult<Vec<(String, f64)>> {
+    let sql = render_template(template)
+        .map_err(|e| crate::TViewError::CatalogError {
+            operation: format!("Name the relations of the mapping of {table}"),
+            pg_error: e.to_string(),
+        })?
+        .ok_or_else(|| crate::TViewError::CatalogError {
+            operation: format!("Name the relations of the mapping of {table}"),
+            pg_error: "a relation or column it reads is gone".to_string(),
+        })?;
+    let explain =
+        format!("EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {table} LIMIT 0) {sql}");
+    let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
+        .map_err(|e| crate::TViewError::SpiError {
+            query: explain.clone(),
+            error: e.to_string(),
+        })?
+        .map(|j| j.0)
+        .unwrap_or_default();
+    let mut scans = Vec::new();
+    seq_scans(&plan, &mut scans);
+    // Once per relation: the changed rows of a self-join scan it too.
+    scans.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.total_cmp(&x.1)));
+    scans.dedup_by(|x, y| x.0 == y.0);
+    scans.retain(|(_, rows)| *rows >= LARGE_TABLE_ROWS);
+    Ok(scans)
 }
 
 /// `(relation, estimated rows)` of every sequential scan in an EXPLAIN JSON plan.

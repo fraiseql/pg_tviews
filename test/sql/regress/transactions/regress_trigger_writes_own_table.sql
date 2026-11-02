@@ -21,7 +21,7 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#197 FAIL: %', what; END IF; END $$;
 CREATE FUNCTION stat(name text) RETURNS numeric LANGUAGE sql AS $$
-    SELECT (tviews.pg_tviews_queue_stats() ->> name)::numeric $$;
+    SELECT (tviews.pg_tviews_show_queue() ->> name)::numeric $$;
 
 -- The issue's tree, with the path as an array of ancestor keys (no ltree).
 CREATE TABLE tb_node (

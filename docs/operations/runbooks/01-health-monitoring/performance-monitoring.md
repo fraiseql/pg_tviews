@@ -45,7 +45,7 @@ SELECT * FROM tviews.pg_tviews_profile('user', fanout_warn => 100);
 ## Step 2: Missing propagation indexes
 
 ```sql
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
 ```
 
 Each row is a `CREATE INDEX` statement that would be run. Run it with `dry_run => false`
@@ -69,7 +69,7 @@ Refresh work is included in the time of the statement that wrote the base table.
 ## Step 4: Refresh counters
 
 `tviews.stats` counts the refresh work per TVIEW, for every session, since the server
-started or the last `pg_tviews_stats_reset()` (it needs
+started or the last `pg_tviews_reset_stats_all()` (it needs
 `shared_preload_libraries = 'pg_tviews'`). The TVIEW whose `refresh_ms` grows fastest
 is the one to look at:
 
@@ -80,15 +80,15 @@ FROM tviews.stats
 ORDER BY refresh_ms DESC NULLS LAST;
 ```
 
-`tviews.pg_tviews_queue_stats()`, the session's own debugging view, returns counters for the current session only
+`tviews.pg_tviews_show_queue()`, the session's own debugging view, returns counters for the current session only
 (`total_refreshes`, `view_recomputes`, `refresh_noop_skipped`, `direct_patches_applied`,
 `direct_patch_fallbacks`, `total_timing_ms`, cache hit rates, ...). Take a reading, run
 the slow write in the same session, and compare:
 
 ```sql
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 UPDATE tb_user SET name = 'Ann' WHERE pk_user = 1;
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 A large increase in `view_recomputes` means rows were rebuilt from the view rather than

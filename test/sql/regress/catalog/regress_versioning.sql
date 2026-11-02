@@ -141,7 +141,7 @@ BEGIN
     END IF;
 END $$;
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE component = 'catalog' AND status = 'ERROR'
                      AND message LIKE '%migrate-from-0.1.0.sql%') THEN
         RAISE EXCEPTION '#137 FAIL: health check does not report a 0.1.0 catalog';
@@ -203,12 +203,12 @@ CREATE TRIGGER trg_tview_stray AFTER INSERT ON unrelated
     FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE component = 'reregister' AND status = 'WARNING'
                      AND message LIKE '2 TVIEWs%pg_tviews_reregister_all()%') THEN
         RAISE EXCEPTION '#137 FAIL: health check does not report needs_reregister: %',
             (SELECT string_agg(component || '=' || message, '; ')
-             FROM tviews.pg_tviews_health_check());
+             FROM tviews.pg_tviews_check_health());
     END IF;
 END $$;
 
@@ -262,7 +262,7 @@ DO $$ BEGIN
                 EXCEPT SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger)) THEN
         RAISE EXCEPTION '#137 FAIL: triggers after reregister_all differ from creation';
     END IF;
-    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                WHERE component IN ('triggers', 'reregister') AND status <> 'OK') THEN
         RAISE EXCEPTION '#137 FAIL: health check not clean after reregister_all';
     END IF;

@@ -4,6 +4,38 @@
 -- statements here (docs/development/extension-versioning.md). Released scripts are
 -- never edited.
 
+-- The public surface (ADR 0211, D8 of the 2026-11 review): functions are
+-- pg_tviews_<verb>, relations nouns; functions acting on every TVIEW end in _all and
+-- are an operator's; overlapping functions are folded. No aliases: the old names go.
+-- Renames come first, so the definitions below name the new ones.
+ALTER VIEW @extschema@.pg_tview_reads RENAME TO reads;
+ALTER VIEW @extschema@.pg_tview_references RENAME TO "references";
+ALTER FUNCTION @extschema@.pg_tviews_health_check() RENAME TO pg_tviews_check_health;
+ALTER FUNCTION @extschema@.pg_tviews_queue_stats() RENAME TO pg_tviews_show_queue;
+ALTER FUNCTION @extschema@.pg_tviews_suspended_entities() RENAME TO pg_tviews_show_suspended;
+ALTER FUNCTION @extschema@.pg_tviews_entity_of(TEXT) RENAME TO pg_tviews_resolve;
+ALTER FUNCTION @extschema@.pg_tviews_feed_gaps() RENAME TO pg_tviews_count_feed_gaps;
+ALTER FUNCTION @extschema@.pg_tviews_replication_status() RENAME TO pg_tviews_show_replication;
+ALTER FUNCTION @extschema@.pg_tviews_mapping_query(TEXT, OID)
+    RENAME TO pg_tviews_show_mapping_query;
+ALTER FUNCTION @extschema@.pg_tviews_read_set_queries(TEXT, OID)
+    RENAME TO pg_tviews_show_read_sets;
+-- The read contract version 3: these renames (docs/reference/read-contract.md).
+CREATE OR REPLACE FUNCTION @extschema@.contract_version()
+RETURNS integer
+LANGUAGE sql STABLE PARALLEL SAFE
+AS 'SELECT 3';
+-- Folded into pg_tviews_show_suspended() and pg_tviews_show_queue().
+DROP FUNCTION @extschema@.pg_tviews_is_suspended();
+DROP FUNCTION @extschema@.pg_tviews_debug_queue();
+-- "NULL = every TVIEW" forms split into a single-TVIEW form (owner) and an _all form.
+DROP FUNCTION @extschema@.pg_tviews_ensure_propagation_indexes(TEXT, BOOLEAN);
+DROP FUNCTION @extschema@.pg_tviews_stats_reset(TEXT);
+-- Nothing read it. Out of the extension first, so it leaves the dumped
+-- configuration tables (pg_extension.extconfig) too.
+ALTER EXTENSION pg_tviews DROP TABLE @extschema@.pg_tview_helpers;
+DROP TABLE @extschema@.pg_tview_helpers;
+
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
 RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
@@ -135,7 +167,7 @@ BEGIN
     FOR next_entity IN
         WITH RECURSIVE edges(entity, dependency) AS (
             SELECT DISTINCT r.entity, m.entity
-            FROM @extschema@.pg_tview_reads r
+            FROM @extschema@.reads r
             JOIN @extschema@.pg_tview_meta m
               ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
             WHERE m.entity <> r.entity
@@ -173,7 +205,7 @@ END;
 $$;
 
 -- The read contract and the profile read plans through the decoders.
-CREATE OR REPLACE VIEW @extschema@.pg_tview_references AS
+CREATE OR REPLACE VIEW @extschema@.references AS
 SELECT x.*,
        pg_catalog.row_number() OVER (PARTITION BY x.entity, x.column_name
                                      ORDER BY x.preferred DESC NULLS LAST, x.parent) = 1
@@ -272,7 +304,7 @@ SELECT
                     FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
     COALESCE(
         (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
-         FROM (SELECT DISTINCT r.relid FROM @extschema@.pg_tview_reads r
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.reads r
                WHERE r.entity = m.entity) x
          JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
          JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
@@ -297,7 +329,7 @@ SELECT
                     'entity', x.parent, 'column', x.parent_column, 'unique', x.is_unique,
                     'nullable', x.is_nullable, 'index', x.index_name,
                     'order', pg_catalog.to_jsonb(x.order_by)))
-         FROM @extschema@.pg_tview_references x
+         FROM @extschema@.references x
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
     -- The type name the report and the change feed use, as crate::catalog::typename
@@ -377,7 +409,7 @@ DECLARE
 BEGIN
     -- The TVIEW named as every function names one (ADR 0211).
     IF tview IS NOT NULL THEN
-        chosen := @extschema@.pg_tviews_entity_of(tview);
+        chosen := @extschema@.pg_tviews_resolve(tview);
     END IF;
 
     vis_schema := (SELECT n.nspname FROM pg_extension e
@@ -561,3 +593,34 @@ UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
 
 -- jsonb_delta is required (the control file's requires): nothing checks for it.
 DROP FUNCTION @extschema@.pg_tviews_check_jsonb_delta();
+
+-- The single-TVIEW and _all forms (owner checked; operator only).
+CREATE FUNCTION @extschema@."pg_tviews_ensure_propagation_indexes"(
+	"tview" TEXT, /* &str */
+	"dry_run" bool DEFAULT false /* bool */
+) RETURNS SETOF TEXT /* alloc::string::String */
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_ensure_propagation_indexes_wrapper';
+CREATE FUNCTION @extschema@."pg_tviews_ensure_propagation_indexes_all"(
+	"dry_run" bool DEFAULT false /* bool */
+) RETURNS SETOF TEXT /* alloc::string::String */
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_ensure_propagation_indexes_all_wrapper';
+CREATE FUNCTION @extschema@."pg_tviews_reset_stats"(
+	"tview" TEXT /* &str */
+) RETURNS VOID
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_stats_reset_wrapper';
+CREATE FUNCTION @extschema@."pg_tviews_reset_stats_all"() RETURNS VOID
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_reset_stats_all_wrapper';
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.pg_tviews_ensure_propagation_indexes_all(BOOLEAN),
+    @extschema@.pg_tviews_reset_stats_all()
+FROM PUBLIC;
+COMMENT ON VIEW @extschema@.stats IS
+'Refresh statistics of each TVIEW since the server started or pg_tviews_reset_stats()';

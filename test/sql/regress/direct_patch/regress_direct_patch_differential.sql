@@ -18,7 +18,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 
 -- ══ Part A: eligible scenarios — byte-identity + zero recomputes ═════════════
 DROP TABLE IF EXISTS tv_thing CASCADE; DROP VIEW IF EXISTS v_thing CASCADE;
@@ -179,9 +179,9 @@ $TVIEW$);
 DO $$
 DECLARE ap0 bigint;
 BEGIN
-  ap0 := (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint;
+  ap0 := (pg_tviews_show_queue()->>'direct_patches_applied')::bigint;
   UPDATE tb_dedup SET label = 'b2' WHERE pk_dedup = 2;
-  IF (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint <> ap0 THEN
+  IF (pg_tviews_show_queue()->>'direct_patches_applied')::bigint <> ap0 THEN
     RAISE EXCEPTION '#56 diff [distinct-on]: a DISTINCT ON tview was fast-patched';
   END IF;
   IF (SELECT data->>'label' FROM tv_dedup WHERE pk_dedup = 1) <> 'b2' THEN

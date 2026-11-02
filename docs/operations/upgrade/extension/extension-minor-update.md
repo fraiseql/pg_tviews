@@ -41,7 +41,7 @@ hand:
 SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
 SELECT tviews.pg_tviews_version();
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 SELECT gid, prepared FROM pg_prepared_xacts WHERE database = current_database();
 ```

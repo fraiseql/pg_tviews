@@ -15,7 +15,7 @@ worker: if a refresh fails, the writing statement fails.
 
 ```sql
 -- Overall status: severity info | warning | error per component
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 
 -- Registered TVIEWs and how writes reach them
 SELECT schema, name, base_tables, cascade_kinds, uncascaded_tables,
@@ -33,8 +33,8 @@ FROM tviews.pg_tviews_profile();
 |---------|-------------|-----------|
 | TVIEW not refreshing | Missing triggers, or needs re-registration | `SELECT * FROM tviews.pg_tviews_reregister_all();` |
 | TVIEW not refreshing for one base table | Table in `registry.uncascaded_tables` | See `docs/reference/ddl.md` (tables no cascade reaches) |
-| Slow writes | No jsonb_delta, missing indexes, high fan-out | `CREATE EXTENSION jsonb_delta;` and `tviews.pg_tviews_ensure_propagation_indexes()` |
-| Write fails with queue backpressure | Bulk write over `pg_tviews.max_queue_size` | Smaller transactions, or suspend/resume |
+| Slow writes | No jsonb_delta, missing indexes, high fan-out | `CREATE EXTENSION jsonb_delta;` and `tviews.pg_tviews_ensure_propagation_indexes_all()` |
+| Write fails with `refresh queue backpressure` | Bulk write over `pg_tviews.max_queue_size` | Smaller transactions, or suspend/resume |
 | Writes blocked | Long or prepared transactions holding locks | `pg_stat_activity`, `pg_prepared_xacts` |
 | Memory errors | Large rebuilds or bulk writes | Increase `work_mem` for the session |
 
@@ -50,7 +50,7 @@ Was the writing transaction committed? (other sessions see TVIEW changes only af
     └─ YES → continue
         ↓
 Health check errors or warnings?
-SELECT * FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE severity <> 'info';
     ├─ triggers / reregister / catalog → SELECT * FROM tviews.pg_tviews_reregister_all();
     └─ none → continue
         ↓
@@ -76,7 +76,7 @@ Start: writes to base tables got slow
     ↓
 Missing propagation indexes, high fan-out, low HOT ratio?
 SELECT entity, missing_propagation_indexes, fanout, hot_ratio, warnings FROM tviews.pg_tviews_profile();
-    ├─ missing indexes → SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
+    ├─ missing indexes → SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all();
     ├─ high fan-out → one parent change rewrites many rows; reconsider the nesting
     └─ fine → continue
         ↓
@@ -96,10 +96,10 @@ SELECT entity, view_recomputes, patch_applied, patch_fallbacks, refresh_ms FROM 
 
 ```sql
 -- Keys queued in the current transaction (normally [] between statements)
-SELECT tviews.pg_tviews_debug_queue();
+SELECT tviews.pg_tviews_show_queue()->'queued';
 
 -- Refresh counters of this session
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 
 -- Refresh counters per TVIEW, cumulated over every session
 SELECT * FROM tviews.stats;
@@ -133,10 +133,10 @@ ROLLBACK;
 SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 
 -- Relations each TVIEW reads
-SELECT entity, relid::regclass FROM tviews.pg_tview_reads ORDER BY entity;
+SELECT entity, relid::regclass FROM tviews.reads ORDER BY entity;
 
 -- The query used to map writes on a base table to TVIEW keys
-SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
+SELECT tviews.pg_tviews_show_mapping_query('tv_post', 'tb_user'::regclass);
 ```
 
 ## Common Issues and Solutions
@@ -190,9 +190,8 @@ once (see [Failure Modes](FAILURE_MODES.md)).
 
 The refresh queue lives in the writing transaction and is flushed before COMMIT
 completes, so transaction pooling is safe. Session state that does matter:
-`pg_tviews_suspend_triggers()` (ends with the transaction) and
-`SET pg_tviews.batch_size` / `cache_size` / `report_max_tracked` (session settings;
-reset by `DISCARD ALL`).
+`pg_tviews_suspend_triggers()`, which ends with the transaction. pg_tviews has no
+per-session settings.
 
 ### Issue: TVIEW Content Differs From Its View
 
@@ -255,7 +254,7 @@ SELECT tviews.pg_tviews_create_or_replace('tv_post', '<the saved query>');
 #!/bin/bash
 psql -X -At -d mydb -c "
     SELECT component || ' ' || severity || ': ' || message
-    FROM tviews.pg_tviews_health_check()
+    FROM tviews.pg_tviews_check_health()
     WHERE severity <> 'info'
 " > health_check.log
 
