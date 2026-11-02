@@ -255,6 +255,12 @@ pub fn watch(oids: &[Oid]) {
     WATCHED.with(|w| w.borrow_mut().extend(oids.iter().copied()));
 }
 
+/// The count of relevant invalidations so far: what was read from the caches
+/// under one value holds while it is unchanged.
+pub fn generation() -> u64 {
+    GENERATION.with(Cell::get)
+}
+
 /// Clear every cache if a relevant invalidation arrived since the last call.
 pub fn sync_generation() {
     watch_catalog();

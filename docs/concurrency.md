@@ -94,6 +94,11 @@ deadlock:
 PostgreSQL detects a deadlock and fails one of the transactions with `deadlock detected`
 (SQLSTATE `40P01`). **Retry transactions that fail with `40001` or `40P01`**.
 
+A write that changes a link locks what every row it reaches reads, so the cost of a link
+change grows with its fan-out. When each child shows an aggregate of its parent (each
+item the count of its place's current items), compose the aggregate at read time instead:
+[a parent's aggregate on its children](user-guides/embed-or-compose.md#a-parents-aggregate-on-its-children).
+
 ## Locks
 
 | What | Lock | Held until |

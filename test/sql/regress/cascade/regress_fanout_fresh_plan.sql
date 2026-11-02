@@ -102,6 +102,25 @@ SELECT check_write('two keys, READ COMMITTED',
 SELECT must(count(*) = 40, 'two keys: the 40 children hold the new name')
 FROM tv_item WHERE data #>> '{category,name}' = 'two';
 
+-- 2b. Three categories (four parameters, the last key repeated) and 33 (64
+--     parameters), each from its generic plan: the estimate is that many keys,
+--     not ten of an array parameter.
+SELECT build(100, 20, false);
+SELECT check_write('three keys, READ COMMITTED',
+                   $$UPDATE tb_cat SET name = 'three' WHERE pk_cat IN (2, 3, 4)$$);
+SELECT must(count(*) = 60, 'three keys: the 60 children hold the new name')
+FROM tv_item WHERE data #>> '{category,name}' = 'three';
+SELECT build(1000, 5, false);
+SELECT check_write('33 keys, READ COMMITTED',
+                   $$UPDATE tb_cat SET name = 'many' WHERE pk_cat BETWEEN 100 AND 132$$);
+SELECT must(count(*) = 165, '33 keys: the 165 children hold the new name')
+FROM tv_item WHERE data #>> '{category,name}' = 'many';
+-- Around each width's top, where the estimate is furthest from the keys' own.
+SELECT check_write(format('%s keys, READ COMMITTED', n),
+                   format($$UPDATE tb_cat SET name = 'n%s' WHERE pk_cat BETWEEN 200 AND %s$$, n, 199 + n))
+FROM unnest(ARRAY[5, 9, 17]) n;
+SELECT build(100, 20, false);
+
 -- 3. Both shapes write exactly the children a key has when the statement ends:
 --    none, or children another write in the same statement moved to it. The
 --    patches counted include the categories' own tv_cat rows.
@@ -177,6 +196,18 @@ SELECT tviews.pg_tviews_create('tv_post', $$
 ANALYZE tb_post, tb_label, tb_tag, tv_post;
 SELECT must(seq_scans_during('tb_tag', $$UPDATE tb_tag SET name = 'six' WHERE pk_tag = 60$$) = 0,
             'one post, READ COMMITTED: its read set scanned tb_tag');
+
+-- 6b. Three posts in one statement, after a link change, ten times (past the
+--     five custom plans after which the recompute keeps its generic plan): their
+--     read set is locked, and the posts recomputed, from plans of four keys.
+CREATE FUNCTION move_tags(times int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    FOR i IN 1..times LOOP
+        UPDATE tb_tag SET fk_label = 1 + i % 10 WHERE pk_tag IN (61, 161, 261);
+    END LOOP;
+END $$;
+SELECT must(seq_scans_during('tb_tag', 'SELECT move_tags(10)') = 0,
+            'three posts, READ COMMITTED: their read set or recompute scanned tb_tag');
 
 -- 7. At REPEATABLE READ the refreshed post is read again from its backing view,
 --    under the transaction's snapshot and the latest one, and compared.

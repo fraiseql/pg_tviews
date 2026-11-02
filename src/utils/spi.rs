@@ -67,45 +67,132 @@ pub fn int8_array<'a>(values: Vec<i64>) -> DatumWithOid<'a> {
     DatumWithOid::from(values)
 }
 
+/// The widths a statement looking keys up takes: as many parameters as the
+/// smallest width holding the keys. Each width is one statement with a plan
+/// of its own, made once per backend.
+pub const SHAPES: [usize; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+
+/// The width of a lookup of `count` keys ([`SHAPES`]); `None` without any, or
+/// past the widest.
+#[must_use]
+pub fn shape(count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    SHAPES.iter().copied().find(|&width| width >= count)
+}
+
+/// `count` keys padded to `width` ([`shape`]) by repeating the last one: a
+/// repeated key changes no comparison with `= ANY`, where a NULL would.
+#[must_use]
+pub fn padded<T: Clone>(mut keys: Vec<T>, width: usize) -> Vec<T> {
+    if let Some(last) = keys.last().cloned() {
+        keys.resize(width.max(keys.len()), last);
+    }
+    keys
+}
+
+/// `ARRAY[…]` of `width` parameters from `$first`, each written by `param`
+/// (its cast): an array the planner counts, where it can't count an array
+/// parameter.
+#[must_use]
+pub fn shaped_array(width: usize, first: usize, param: impl Fn(&str) -> String) -> String {
+    let elements: Vec<String> = (first..first + width)
+        .map(|i| param(&format!("${i}")))
+        .collect();
+    format!("ARRAY[{}]", elements.join(", "))
+}
+
+/// What a column is compared with to hold one of `width` parameters from
+/// `$first` ([`shaped_array`]): `ANY (ARRAY[…])`, or the parameter for one.
+#[must_use]
+pub fn shaped_rhs(width: usize, first: usize, param: impl Fn(&str) -> String) -> String {
+    if width == 1 {
+        return param(&format!("${first}"));
+    }
+    format!("ANY ({})", shaped_array(width, first, param))
+}
+
 /// The `bigint` keys a statement looks rows up by, in a column that may hold
 /// each of them many times (`fk_<entity>`). How many there are decides the
-/// statement's shape and plan: a generic plan can't see an array, and assumes
-/// ten keys each matching the column's average number of rows.
+/// statement's shape and plan.
+///
+/// A generic plan of an array parameter can't see its length: PostgreSQL
+/// assumes ten keys, each matching the column's average number of rows, and
+/// through a column with few distinct values it scans the whole table for a few
+/// rows (#235). An `ARRAY[$1, …, $n]` of parameters is estimated as `n` keys of
+/// the average, the assumption a generic plan of `= $1` makes for one key. Up
+/// to 128 keys, the statement takes the next width of [`SHAPES`] (the keys
+/// padded by repeating the last), its estimate within twice the keys', and is
+/// planned once per backend for that width. Wider, the kept plans grow with
+/// the width (a 9-table read set's plan of 256 keys keeps about 1.7 MB per
+/// backend), and a comparison made outside an index compares each row with
+/// every parameter: only an array of constants is hashed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LookupKeys {
-    /// Compared with `=`, from a generic plan: it estimates the rows of one
-    /// value, as a plan made for the key would, without planning again.
-    One(i64),
-    /// An array, planned at each execution for its count.
+    /// Up to 128 keys, padded to their width: one parameter each, from a
+    /// generic plan.
+    Shaped(Vec<i64>),
+    /// More: an array, planned at each execution for its count.
     Many(Vec<i64>),
 }
 
 impl LookupKeys {
     /// The lookup of `keys`; `None` without any.
     #[must_use]
-    pub fn of(mut keys: Vec<i64>) -> Option<Self> {
-        match keys.len() {
-            0 => None,
-            1 => keys.pop().map(Self::One),
-            _ => Some(Self::Many(keys)),
+    pub fn of(keys: Vec<i64>) -> Option<Self> {
+        if keys.is_empty() {
+            return None;
+        }
+        Some(match shape(keys.len()) {
+            Some(width) => Self::Shaped(padded(keys, width)),
+            None => Self::Many(keys),
+        })
+    }
+
+    /// The lookup of `keys` in a statement that also looks up `other` keys:
+    /// padded to the width of the longer list, so that the statement has one
+    /// plan per width, not one per pair of widths.
+    #[must_use]
+    pub fn of_with(keys: Vec<i64>, other: usize) -> Option<Self> {
+        if keys.is_empty() {
+            return None;
+        }
+        Some(
+            match shape(keys.len().max(other)).or_else(|| shape(keys.len())) {
+                Some(width) => Self::Shaped(padded(keys, width)),
+                None => Self::Many(keys),
+            },
+        )
+    }
+
+    /// The parameters the keys take.
+    #[must_use]
+    pub const fn width(&self) -> usize {
+        match self {
+            Self::Shaped(keys) => keys.len(),
+            Self::Many(_) => 1,
         }
     }
 
-    /// `column` holds one of the keys, bound as parameter `$param`.
+    /// `column` holds one of the keys, bound from parameter `$first` on.
     #[must_use]
-    pub fn predicate(&self, column: &str, param: usize) -> String {
+    pub fn predicate(&self, column: &str, first: usize) -> String {
         match self {
-            Self::One(_) => format!("{column} = ${param}::pg_catalog.int8"),
-            Self::Many(_) => format!("{column} = ANY (${param}::pg_catalog.int8[])"),
+            Self::Shaped(keys) => format!(
+                "{column} = {}",
+                shaped_rhs(keys.len(), first, |p| format!("{p}::pg_catalog.int8"))
+            ),
+            Self::Many(_) => format!("{column} = ANY (${first}::pg_catalog.int8[])"),
         }
     }
 
-    /// The keys, as the parameter [`Self::predicate`] reads.
+    /// The keys, as the parameters [`Self::predicate`] reads.
     #[must_use]
-    pub fn arg<'a>(&self) -> DatumWithOid<'a> {
+    pub fn args<'a>(&self) -> Vec<DatumWithOid<'a>> {
         match self {
-            Self::One(key) => int8(*key),
-            Self::Many(keys) => int8_array(keys.clone()),
+            Self::Shaped(keys) => keys.iter().map(|&key| int8(key)).collect(),
+            Self::Many(keys) => vec![int8_array(keys.clone())],
         }
     }
 
@@ -113,7 +200,7 @@ impl LookupKeys {
     #[must_use]
     pub const fn plan(&self) -> Plan {
         match self {
-            Self::One(_) => Plan::Generic,
+            Self::Shaped(_) => Plan::Generic,
             Self::Many(_) => Plan::PerExecution,
         }
     }
@@ -347,6 +434,9 @@ pub fn latest_rows_connected(
     keep: Option<Plan>,
 ) -> TViewResult<Vec<TextRow>> {
     let (mut types, mut values, nulls) = bind(args);
+    if keep != Some(Plan::Generic) {
+        crate::metrics::metrics_api::record_per_execution_plan();
+    }
     let kept = match keep {
         Some(plan) => Some(kept_plan(sql, &mut types, plan)?),
         None => None,
@@ -460,6 +550,9 @@ pub fn kept_rows_as<R>(
 ) -> TViewResult<Vec<R>> {
     let (mut types, mut values, nulls) = bind(args);
     Spi::connect(|_| {
+        if plan == Plan::PerExecution {
+            crate::metrics::metrics_api::record_per_execution_plan();
+        }
         let plan = kept_plan(sql, &mut types, plan)?;
         // SAFETY: inside an SPI connection, with a valid kept plan and arguments
         // of the types it was prepared for, living until the call returns.
@@ -697,11 +790,31 @@ unsafe fn tuptable_map<R>(
 
 #[cfg(test)]
 mod tests {
-    use super::{LookupKeys, Plan};
+    use super::{LookupKeys, Plan, padded, shape};
 
     #[test]
     fn no_keys_is_no_lookup() {
         assert!(LookupKeys::of(Vec::new()).is_none());
+        assert_eq!(shape(0), None);
+    }
+
+    #[test]
+    fn a_count_takes_the_next_width() {
+        assert_eq!(shape(1), Some(1));
+        assert_eq!(shape(2), Some(2));
+        assert_eq!(shape(3), Some(4));
+        assert_eq!(shape(33), Some(64));
+        assert_eq!(shape(64), Some(64));
+        assert_eq!(shape(65), Some(128));
+        assert_eq!(shape(128), Some(128));
+        assert_eq!(shape(129), None);
+    }
+
+    #[test]
+    fn padding_repeats_the_last_key() {
+        assert_eq!(padded(vec![7, 8, 9], 4), vec![7, 8, 9, 9]);
+        assert_eq!(padded(vec![7], 1), vec![7]);
+        assert_eq!(padded(Vec::<i64>::new(), 4), Vec::<i64>::new());
     }
 
     #[test]
@@ -711,16 +824,45 @@ mod tests {
             keys.predicate("t.\"fk_cat\"", 1),
             "t.\"fk_cat\" = $1::pg_catalog.int8"
         );
-        assert_eq!(keys.plan(), Plan::Generic);
+        assert_eq!((keys.width(), keys.plan()), (1, Plan::Generic));
     }
 
     #[test]
-    fn several_keys_are_an_array_planned_per_execution() {
-        let keys = LookupKeys::of(vec![7, 8]).expect("keys");
+    fn a_few_keys_take_a_padded_shape_from_a_generic_plan() {
+        let keys = LookupKeys::of(vec![7, 8, 9]).expect("keys");
+        assert_eq!(keys, LookupKeys::Shaped(vec![7, 8, 9, 9]));
+        assert_eq!(
+            keys.predicate("\"fk_cat\"", 2),
+            "\"fk_cat\" = ANY (ARRAY[$2::pg_catalog.int8, $3::pg_catalog.int8, \
+             $4::pg_catalog.int8, $5::pg_catalog.int8])"
+        );
+        assert_eq!((keys.width(), keys.plan()), (4, Plan::Generic));
+    }
+
+    #[test]
+    fn two_lists_of_one_statement_take_one_width() {
+        assert_eq!(
+            LookupKeys::of_with(vec![1], 3),
+            Some(LookupKeys::Shaped(vec![1, 1, 1, 1]))
+        );
+        assert_eq!(
+            LookupKeys::of_with(vec![1, 2, 3], 1),
+            Some(LookupKeys::Shaped(vec![1, 2, 3, 3]))
+        );
+        assert_eq!(
+            LookupKeys::of_with(vec![1], 200),
+            Some(LookupKeys::Shaped(vec![1]))
+        );
+        assert_eq!(LookupKeys::of_with(Vec::new(), 3), None);
+    }
+
+    #[test]
+    fn many_keys_are_an_array_planned_per_execution() {
+        let keys = LookupKeys::of((0..129).collect()).expect("keys");
         assert_eq!(
             keys.predicate("\"fk_cat\"", 2),
             "\"fk_cat\" = ANY ($2::pg_catalog.int8[])"
         );
-        assert_eq!(keys.plan(), Plan::PerExecution);
+        assert_eq!((keys.width(), keys.plan()), (1, Plan::PerExecution));
     }
 }
