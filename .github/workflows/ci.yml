@@ -140,6 +140,15 @@ jobs:
           if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
           ./test/sql/differential/run.sh 60 "1 2 3 4 5"
 
+      # Generated shapes: seeded random schemas and TVIEW definitions (joins,
+      # embedded TVIEWs, aggregates, arrays, UNION, CTE, DISTINCT ON), each equal
+      # to its view after every random write and mutation; the nightly run draws more.
+      - name: Generated shapes (test/sql/differential/gen/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: |
+          source test/lib/modes.sh
+          MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 5 "1" 40
+
       # What the oracle cannot see: each shape's stored plan and triggers, and the
       # feed of a fixed script, against test/sql/differential/expected/.
       - name: Golden files (test/sql/differential/golden.sh)

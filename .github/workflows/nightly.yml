@@ -77,6 +77,14 @@ jobs:
           source test/lib/modes.sh
           MODES="$MODES_ALL" ./test/sql/differential/run.sh 120 "1 2 3 4 5 6 7 8"
 
+      # Three new seeds each night (the date and 1-3): a failure prints its seed,
+      # which replays anywhere.
+      - name: Generated shapes (every mode)
+        run: |
+          source test/lib/modes.sh
+          day="$(date -u +%Y%m%d)"
+          MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 20 "${day}1 ${day}2 ${day}3" 60
+
       - name: Isolation suite
         run: ./test/isolation/run.sh
 
