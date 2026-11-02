@@ -7,6 +7,9 @@
 #           core:  jsonb_set(data, '{o}', (data -> 'o') || v)
 #   scalar  delta: jsonb_smart_patch_scalar(data, v)
 #           core:  data || v
+#   leaf    one value at a path, as a fan-out patch writes it
+#           delta: jsonb_smart_patch_nested(data, {a: v}, '{o}')
+#           core:  jsonb_set(data, '{o,a}', v)
 #
 # Usage: PGHOST=… PGPORT=… PGUSER=… ./test/bench/write_path/patch.sh [rounds] [doc bytes ...]
 # Default sizes: 490 (inline) and 23000 (TOASTed). Prints one CSV line per run
@@ -39,12 +42,14 @@ declare -A E=(
   [nested,core]="jsonb_set(data, '{o}', (data -> 'o') || '{\"a\": \"z\"}')"
   [scalar,delta]="jsonb_smart_patch_scalar(data, '{\"name\": \"z\"}')"
   [scalar,core]="data || '{\"name\": \"z\"}'"
+  [leaf,delta]="jsonb_smart_patch_nested(data, '{\"a\": \"z\"}', '{o}')"
+  [leaf,core]="jsonb_set(data, '{o,a}', '\"z\"')"
 )
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 echo "round,bytes,shape,impl,us_per_row"
 for (( r = 1; r <= rounds; r++ )); do
   for b in "${sizes[@]}"; do
-    for shape in nested scalar; do
+    for shape in nested scalar leaf; do
       impls=(delta core); (( r % 2 == 0 )) && impls=(core delta)
       for impl in "${impls[@]}"; do
         # pg_column_size() forces each patched document to be built.
