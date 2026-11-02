@@ -497,7 +497,4 @@ pub fn flush_after_statement() {
     if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in("TVIEW refresh failed");
     }
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        e.raise_in("Audit flush failed");
-    }
 }

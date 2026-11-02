@@ -17,7 +17,6 @@ cd "$(dirname "$0")/.."
 # which run as the role doing them, and the extension's own catalog.
 allowed=(
   "src/catalog/plan.rs|\"SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid \\|restore: runs as the restorer"
-  "sql/install/06-event-triggers.sql|'pg_temp.pg_tviews_rename_check'::regclass|rename check: DDL, own temp view"
   "src/ddl/replace/options.rs|pg_catalog.to_regclass(\$1)|options: DDL, names the creator passed"
   "src/ddl/replace/options.rs|pg_catalog.to_regprocedure(\$1)|options: DDL, names the creator passed"
   "src/ddl/replace/rebuild.rs|c.oid IN (\$1::pg_catalog.regclass, \$2::pg_catalog.regclass)|rebuild: DDL, the TVIEW being replaced"
@@ -112,7 +111,7 @@ unpinned+=$'\n'$(awk '
   name != "" && /SET search_path = pg_catalog/ && !body { set = 1 }
   name != "" && /^AS / { body = 1 }
   END { if (name != "" && !set) print FILENAME ": " name }' sql/install/*.sql \
-  | grep -vE ': (pg_tviews_catalog_revision|contract_version|pg_tviews_defines_view)$')
+  | grep -vE ': (pg_tviews_catalog_revision|contract_version)$')
 if [[ -n "${unpinned//$'\n'/}" ]]; then
   echo "entry points that do not pin search_path before running SQL (see part 2 of $0):"
   grep -v '^$' <<<"$unpinned"

@@ -116,22 +116,9 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_defines_view(view_oid OID, candidate TEXT)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    same BOOLEAN;
-BEGIN
-    EXECUTE 'CREATE TEMP VIEW pg_tviews_rename_check AS ' OPERATOR(pg_catalog.||) candidate;
-    same := pg_catalog.pg_get_viewdef('pg_temp.pg_tviews_rename_check'::regclass)
-            OPERATOR(pg_catalog.=) pg_catalog.pg_get_viewdef(view_oid);
-    DROP VIEW pg_temp.pg_tviews_rename_check;
-    RETURN same;
-EXCEPTION WHEN syntax_error_or_access_rule_violation THEN
-    RETURN false;
-END;
-$$;
+-- A column rename keeps PostgreSQL's rendering of the backing view: no rewritten
+-- text to check.
+DROP FUNCTION @extschema@.pg_tviews_defines_view(OID, TEXT);
 
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_reregister_all(strict BOOLEAN DEFAULT false)
 RETURNS TABLE (entity TEXT, status TEXT)

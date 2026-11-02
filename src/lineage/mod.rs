@@ -25,18 +25,19 @@
 //! query around it.
 
 mod analyze;
-mod graph;
+mod classify;
 mod identity;
 pub mod plan;
+mod query_graph;
 pub mod reads;
 mod references;
 mod template;
 pub mod walk;
 
 pub use analyze::*;
-pub use graph::*;
 pub use identity::*;
 pub use plan::{KeyMapping, MappingKind};
+pub use query_graph::*;
 pub use references::*;
 pub use template::*;
 

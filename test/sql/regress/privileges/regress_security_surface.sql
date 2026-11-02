@@ -105,7 +105,7 @@ BEGIN
            'tviews.pg_tviews_debug_queue()', 'tviews.pg_tviews_replication_status()',
            'tviews.pg_tviews_mapping_query(text,oid)',
            'tviews.pg_tviews_read_set_queries(text,oid)',
-           'tviews.pg_tviews_show_cascade_path(text)', 'tviews.pg_tviews_defines_view(oid,text)',
+           'tviews.pg_tviews_show_cascade_path(text)',
            'tviews.pg_tviews_plan_tables(jsonb)', 'tviews.pg_tviews_plan_references(jsonb)',
            'tviews.pg_tviews_plan_roots(jsonb)', 'tviews.pg_tviews_plan_lookups(jsonb)',
            'tviews.pg_tviews_plan_rebind(text,jsonb)',

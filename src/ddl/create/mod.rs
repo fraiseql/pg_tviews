@@ -37,7 +37,6 @@ pub(crate) fn without_rows<T>(create: impl FnOnce() -> T) -> T {
 }
 
 pub use select::ViewColumns;
-pub(crate) use select::check_one_select;
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
@@ -320,9 +319,7 @@ fn finish(
         entity,
     )?;
     crate::cache::invalidate_all();
-    // Buffered and flushed at once (in SPI context).
-    crate::audit::log_create(entity, definition);
-    crate::audit::flush_audit_buffer()
+    crate::audit::log_create(entity, definition)
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,

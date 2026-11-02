@@ -28,21 +28,6 @@ pub fn exists(entity: &str) -> TViewResult<bool> {
     .map_err(|e| read_error("registration", entity, &e))
 }
 
-/// The stored (normalized) definition of `entity`'s TVIEW.
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn definition(entity: &str) -> TViewResult<Option<String>> {
-    crate::utils::spi::one::<String>(
-        &format!(
-            "SELECT definition FROM {} WHERE entity = $1",
-            super::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| read_error("definition", entity, &e))
-}
-
 /// The stored definition of `entity`'s TVIEW and the schema of its table; both
 /// `None` when there is no such TVIEW.
 ///

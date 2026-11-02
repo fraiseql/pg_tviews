@@ -788,7 +788,7 @@ COMMIT PREPARED 'post-42';       -- or ROLLBACK PREPARED 'post-42'
 
 Called by triggers, event triggers, views and restore; do not call them:
 `pg_tviews_audit_write` and `pg_tviews_invalidate_caches` (both revoked from
-`PUBLIC`), `pg_tviews_defines_view`, `pg_tviews_handle_dropped`,
+`PUBLIC`), `pg_tviews_handle_dropped`,
 `pg_tviews_meta_changed`, `pg_tviews_meta_rebind`, `pg_tviews_stats_rows` (behind
 `tviews.stats`), the event-trigger functions
 `pg_tviews_handle_ddl_event` and `pg_tviews_handle_drop_event`, and the trigger

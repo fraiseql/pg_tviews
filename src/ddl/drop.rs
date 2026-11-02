@@ -87,9 +87,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // Invalidate caches since TVIEW was dropped
     crate::cache::invalidate_all();
 
-    // Buffer and flush audit entry immediately (we're in SPI context)
-    crate::audit::log_drop(entity_name);
-    crate::audit::flush_audit_buffer()?;
+    crate::audit::log_drop(entity_name)?;
 
     Ok(true)
 }
@@ -131,7 +129,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
     crate::dependency::remove_entity_triggers(entity)?;
     drop_metadata(entity)?;
     crate::cache::invalidate_all();
-    crate::audit::log_drop(entity);
+    crate::audit::log_drop(entity)?;
     if table_left == Some(true) {
         notice!(
             "pg_tviews: TVIEW {entity} deregistered; its table belongs to another role and \

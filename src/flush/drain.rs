@@ -49,14 +49,7 @@ pub(super) fn flush_pending() -> TViewResult<()> {
         }
     }
 
-    // One audit entry per entity, written by the COMMIT hook.
-    let mut counts: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
-    for key in &flush.processed {
-        *counts.entry(&key.entity).or_insert(0) += 1;
-    }
-    for (entity, count) in counts {
-        crate::audit::log_refresh(entity, count);
-    }
+    crate::audit::log_refreshes(flush.processed.iter().map(|k| k.entity.as_str()))?;
     crate::metrics::metrics_api::record_refresh_complete(
         flush.processed.len(),
         flush.iteration - 1,

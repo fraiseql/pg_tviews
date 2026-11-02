@@ -2,8 +2,8 @@
 //! tv_*` drops one, renames and partition DDL are followed, `COMMIT` and `PREPARE
 //! TRANSACTION` flush the refresh queue first, `DISCARD ALL` clears the caches.
 //!
-//! What to do is decided without SPI inside `catch_unwind` ([`decide`]); the work
-//! itself, which may raise PostgreSQL errors, runs outside it, holding an
+//! What to do is decided without SPI ([`decide`]); the work itself, which runs
+//! SPI and may raise PostgreSQL errors, runs after, holding an
 //! [`InternalDdl`](crate::internal_ddl::InternalDdl) so the DDL `pg_tviews` issues
 //! passes through unhandled. The previous hook is called across
 //! `pg_guard_ffi_boundary`.
@@ -159,7 +159,7 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         flush_before_transaction_end(call);
         // SAFETY: the hook's statement.
         let follow_ups = unsafe { FollowUps::of(call.pstmt) };
-        let pass_through = handle(decide(call), &mut call);
+        let pass_through = handle(decide(call).unwrap_or_else(|e| e.raise()), &mut call);
         pass_through.then(|| {
             follow_ups.prepare();
             follow_ups
@@ -212,7 +212,7 @@ const fn may_change_catalog(tag: pg_sys::NodeTag) -> bool {
 /// `COMMIT` inside a procedure has its own semantics; a failed transaction block
 /// ends in `ROLLBACK` whatever the client says, with nothing to refresh.
 ///
-/// Runs outside `catch_unwind`: `PostgreSQL` errors raised by the flush must
+/// Runs after [`decide`]: `PostgreSQL` errors raised by the flush must
 /// propagate as they are.
 fn flush_before_transaction_end(call: UtilityCall) {
     if call.context != pg_sys::ProcessUtilityContext::PROCESS_UTILITY_TOPLEVEL
@@ -245,115 +245,72 @@ fn flush_before_transaction_end(call: UtilityCall) {
     if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in(&format!("TVIEW refresh failed before {stmt}"));
     }
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        e.raise_in(&format!("Audit flush failed before {stmt}"));
-    }
 }
 
-/// What to do with the statement, decided without SPI inside `catch_unwind`, which
-/// re-raises a `PostgreSQL` error caught there as it was.
-fn decide(call: UtilityCall) -> Intercept {
-    let result = std::panic::catch_unwind(|| -> Result<Intercept, TViewError> {
-        let Some(node_tag) = call.tag() else {
-            return Ok(Intercept::PassThrough);
-        };
-        // SAFETY: a utility statement, by `tag`.
-        let utility_stmt = unsafe { (*call.pstmt).utilityStmt };
+/// What to do with the statement, decided without SPI. A `PostgreSQL` error raised
+/// here (a syscache lookup, a tree walk) unwinds through the hook's `pg_guard` as
+/// it was raised.
+fn decide(call: UtilityCall) -> Result<Intercept, TViewError> {
+    let Some(node_tag) = call.tag() else {
+        return Ok(Intercept::PassThrough);
+    };
+    // SAFETY: a utility statement, by `tag`.
+    let utility_stmt = unsafe { (*call.pstmt).utilityStmt };
 
-        // CREATE / DROP EXTENSION is decided from the node, not the query text: in
-        // a multi-statement batch the text is the whole batch.
-        // SAFETY: the statement's utility node, non-null for a utility statement.
-        if let Some(extensions) = unsafe { extension_statement_names(utility_stmt) } {
-            // Forget the cached jsonb_delta schema, so this backend re-checks it on
-            // its next refresh after CREATE/DROP EXTENSION jsonb_delta.
-            if extensions.iter().any(|e| e == "jsonb_delta") {
-                crate::cache::invalidate_all();
-            }
-            if extensions.iter().any(|e| e == "pg_tviews") {
-                crate::revision::reset();
-            }
-            return Ok(Intercept::PassThrough);
+    // CREATE / DROP EXTENSION is decided from the node, not the query text: in
+    // a multi-statement batch the text is the whole batch.
+    // SAFETY: the statement's utility node, non-null for a utility statement.
+    if let Some(extensions) = unsafe { extension_statement_names(utility_stmt) } {
+        // Forget the cached jsonb_delta schema, so this backend re-checks it on
+        // its next refresh after CREATE/DROP EXTENSION jsonb_delta.
+        if extensions.iter().any(|e| e == "jsonb_delta") {
+            crate::cache::invalidate_all();
         }
-        // The library is preloaded cluster-wide: in a database without the
-        // extension there is nothing to maintain.
-        if !extension_installed() {
-            return Ok(Intercept::PassThrough);
+        if extensions.iter().any(|e| e == "pg_tviews") {
+            crate::revision::reset();
         }
-        match node_tag {
-            pg_sys::NodeTag::T_CreateTableAsStmt => {
-                #[allow(clippy::cast_ptr_alignment)]
-                // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
-                let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
-                // SAFETY: a CreateTableAsStmt, by its tag, of this planned statement.
-                unsafe { inspect_create_table_as(ctas, call.pstmt, call.query_string) }
-            }
-            // EXPLAIN [ANALYZE] CREATE TABLE tv_* AS … would run the CTAS without
-            // this hook seeing it as one, nor the event trigger firing: refuse it.
-            pg_sys::NodeTag::T_ExplainStmt => {
-                #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → ExplainStmt* cast
-                // SAFETY: an ExplainStmt, by its tag.
-                let query = unsafe { (*utility_stmt.cast::<pg_sys::ExplainStmt>()).query };
-                // SAFETY: the explained statement's node, or null.
-                Ok(match unsafe { tview_ctas_target(utility_of(query)) } {
-                    Some(table) => Intercept::Refuse(
-                        format!("EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"),
-                        None,
-                    ),
-                    None => Intercept::PassThrough,
-                })
-            }
-            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
-            pg_sys::NodeTag::T_DropStmt => Ok(Intercept::DropTable(
-                utility_stmt.cast::<pg_sys::DropStmt>(),
-            )),
-            // SAFETY: the statement's utility node, non-null.
-            _ => Ok(unsafe { column_change_of(utility_stmt) }
-                .map_or(Intercept::PassThrough, Intercept::ColumnChange)),
-        }
-    });
-    match result {
-        Ok(Ok(intercept)) => intercept,
-        Ok(Err(e)) => e.raise(),
-        Err(panic_info) => rethrow(panic_info),
+        return Ok(Intercept::PassThrough);
     }
-}
-
-/// Re-raise what unwound out of `catch_unwind`. A `PostgreSQL` `ereport(ERROR)`
-/// raised through SPI arrives as a `CaughtError`, a Rust-side `error!()` as an
-/// `ErrorReportWithLevel`: legitimate errors, re-raised with their message,
-/// detail, hint and SQLSTATE. Anything else is a bug in `pg_tviews`.
-fn rethrow(panic_info: Box<dyn std::any::Any + Send>) -> ! {
-    let panic_info = match panic_info.downcast::<pg_sys::panic::CaughtError>() {
-        Ok(caught) => caught.rethrow(),
-        Err(panic_info) => panic_info,
-    };
-    let panic_info = match panic_info.downcast::<pg_sys::panic::ErrorReportWithLevel>() {
-        Ok(report) => pg_sys::panic::CaughtError::ErrorReport(*report).rethrow(),
-        Err(panic_info) => panic_info,
-    };
-    // The payload's type tells what unwound: a message (a Rust `panic!`) or
-    // something else, named by its type id since `Any` has no type name.
-    let panic_msg = panic_info
-        .downcast_ref::<&str>()
-        .map(|s| format!("panic: {s}"))
-        .or_else(|| {
-            panic_info
-                .downcast_ref::<String>()
-                .map(|s| format!("panic: {s}"))
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "unwind with a non-message payload ({:?})",
-                (*panic_info).type_id()
-            )
-        });
-    error!(
-        "PANIC in ProcessUtility hook: {panic_msg} - This is a bug in pg_tviews - please report it!"
-    )
+    // The library is preloaded cluster-wide: in a database without the
+    // extension there is nothing to maintain.
+    if !extension_installed() {
+        return Ok(Intercept::PassThrough);
+    }
+    match node_tag {
+        pg_sys::NodeTag::T_CreateTableAsStmt => {
+            #[allow(clippy::cast_ptr_alignment)]
+            // Reason: PostgreSQL Node* → CreateTableAsStmt* cast
+            let ctas = utility_stmt.cast::<pg_sys::CreateTableAsStmt>();
+            // SAFETY: a CreateTableAsStmt, by its tag, of this planned statement.
+            unsafe { inspect_create_table_as(ctas, call.pstmt, call.query_string) }
+        }
+        // EXPLAIN [ANALYZE] CREATE TABLE tv_* AS … would run the CTAS without
+        // this hook seeing it as one, nor the event trigger firing: refuse it.
+        pg_sys::NodeTag::T_ExplainStmt => {
+            #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → ExplainStmt* cast
+            // SAFETY: an ExplainStmt, by its tag.
+            let query = unsafe { (*utility_stmt.cast::<pg_sys::ExplainStmt>()).query };
+            // SAFETY: the explained statement's node, or null.
+            Ok(match unsafe { tview_ctas_target(utility_of(query)) } {
+                Some(table) => Intercept::Refuse(
+                    format!("EXPLAIN of CREATE TABLE {table} AS … cannot create a TVIEW"),
+                    None,
+                ),
+                None => Intercept::PassThrough,
+            })
+        }
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → DropStmt* cast
+        pg_sys::NodeTag::T_DropStmt => Ok(Intercept::DropTable(
+            utility_stmt.cast::<pg_sys::DropStmt>(),
+        )),
+        // SAFETY: the statement's utility node, non-null.
+        _ => Ok(unsafe { column_change_of(utility_stmt) }
+            .map_or(Intercept::PassThrough, Intercept::ColumnChange)),
+    }
 }
 
 /// Carry out `intercept`; whether the statement still goes to `PostgreSQL`.
-/// Errors are raised as they are (outside `catch_unwind`).
+/// Errors are raised as they are.
 fn handle(intercept: Intercept, call: &mut UtilityCall) -> bool {
     match intercept {
         Intercept::PassThrough => true,
@@ -671,16 +628,16 @@ impl FollowUps {
     }
 }
 
-/// What the hook does with a utility statement, decided inside `catch_unwind`.
+/// What the hook does with a utility statement, as [`decide`] decided it.
 enum Intercept {
     /// Run it unchanged.
     PassThrough,
-    /// A `DROP` statement, to handle outside `catch_unwind`.
+    /// A `DROP` statement, to handle with SPI.
     DropTable(*mut pg_sys::DropStmt),
     /// An `ALTER TABLE` renaming, dropping or retyping columns: checked against
-    /// a TVIEW's table outside `catch_unwind`.
+    /// a TVIEW's table with SPI.
     ColumnChange(ColumnChange),
-    /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation, outside `catch_unwind`.
+    /// A `CREATE TABLE tv_* AS` to run as a TVIEW creation.
     CreateTview(Ctas),
     /// A statement that would create a TVIEW in a way `pg_tviews` cannot honour,
     /// and the table it names when that is a `CREATE TABLE`.

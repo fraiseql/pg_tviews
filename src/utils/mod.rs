@@ -2,6 +2,7 @@ use pgrx::pg_sys;
 use pgrx::prelude::*;
 
 pub mod ident;
+pub mod lexer;
 pub mod spi;
 
 /// Emit an internal diagnostic: a `DEBUG1` message, visible with

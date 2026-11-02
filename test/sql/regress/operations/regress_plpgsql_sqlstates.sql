@@ -1,10 +1,11 @@
 -- The extension's PL/pgSQL keeps the SQLSTATE of an error it cannot handle
 -- (architecture review A3).
 --
--- Three handlers caught every error: the cleanup after a dependent drop turned it
--- into a WARNING and the DROP committed with the TVIEW half deregistered; the check
--- of a rewritten definition returned false; pg_tviews_reregister_all(strict) raised
--- P0001. A lock timeout must surface as 55P03 from each, so a caller can retry.
+-- Two handlers caught every error: the cleanup after a dependent drop turned it
+-- into a WARNING and the DROP committed with the TVIEW half deregistered;
+-- pg_tviews_reregister_all(strict) raised P0001. A lock timeout must surface as
+-- 55P03 from each, so a caller can retry. (A third, the check of a definition
+-- rewritten after a column rename, went with the rewrite.)
 --
 -- A second session (dblink) holds an ACCESS EXCLUSIVE lock while this one runs with
 -- a short lock_timeout.
@@ -55,22 +56,7 @@ SELECT must(to_regclass('tb_user') IS NOT NULL
             AND EXISTS (SELECT 1 FROM tviews.pg_tview_meta WHERE entity = 'post'),
             'the DROP committed although its cleanup failed');
 
--- 2. The check of a rewritten definition: the scratch view reads a locked table.
-SELECT dblink_exec('other', 'BEGIN') \g /dev/null
-SELECT dblink_exec('other', 'LOCK TABLE tb_post IN ACCESS EXCLUSIVE MODE') \g /dev/null
-SET lock_timeout = '300ms';
-\set ON_ERROR_STOP off
-SELECT tviews.pg_tviews_defines_view('tviews.public__tv_post'::regclass, 'SELECT pk_post FROM tb_post');
-\set ON_ERROR_STOP on
-SELECT :'LAST_ERROR_SQLSTATE' AS check_state \gset
-RESET lock_timeout;
-SELECT dblink_exec('other', 'ROLLBACK') \g /dev/null
-SELECT must(:'check_state' = '55P03', 'the definition check gave ' || :'check_state' || ', not 55P03');
--- What it is for still answers false: a candidate that does not parse.
-SELECT must(NOT tviews.pg_tviews_defines_view('tviews.public__tv_post'::regclass, 'SELECT nope FROM'),
-            'a candidate that does not parse is not the same view');
-
--- 3. pg_tviews_reregister_all(strict): re-registering installs triggers on a locked table.
+-- 2. pg_tviews_reregister_all(strict): re-registering installs triggers on a locked table.
 SELECT dblink_exec('other', 'BEGIN') \g /dev/null
 SELECT dblink_exec('other', 'LOCK TABLE tb_post IN ACCESS EXCLUSIVE MODE') \g /dev/null
 SET lock_timeout = '300ms';

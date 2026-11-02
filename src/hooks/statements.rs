@@ -594,7 +594,7 @@ pub(super) unsafe fn drops_pg_tviews(pstmt: *const pg_sys::PlannedStmt) -> bool 
 /// caller's `search_path` (the hook's own work runs under a fixed one).
 ///
 /// Returns `InvalidOid` when the relation (or its schema) doesn't exist. This is a
-/// direct catalog lookup: no SPI, so it is safe inside the hook's `catch_unwind`.
+/// direct catalog lookup: no SPI, so [`super::decide`] may call it.
 ///
 /// SAFETY: `rv` must be null or a valid `RangeVar*`.
 pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys::Oid {
