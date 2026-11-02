@@ -178,40 +178,7 @@ fn plan_check() -> Check {
 /// catalog edited by hand that left a stale number makes writes read another
 /// column, or fail.
 fn columns_check() -> Check {
-    // A plan that does not decode is plan_check's: read here as numbering nothing.
-    let array = |expr: &str| {
-        format!(
-            "CASE pg_catalog.jsonb_typeof({expr}) WHEN 'array' THEN {expr} \
-             ELSE '[]'::pg_catalog.jsonb END"
-        )
-    };
-    let sql = format!(
-        "WITH numbered AS (
-             SELECT m.entity, (t.e->>'relid')::pg_catalog.oid AS rel, a.v::pg_catalog.int2 AS attnum,
-                    c.v AS name
-               FROM {meta} m,
-                    pg_catalog.jsonb_array_elements({tables}) AS t(e),
-                    pg_catalog.jsonb_array_elements_text({attnums}) WITH ORDINALITY AS a(v, k)
-                    JOIN pg_catalog.jsonb_array_elements_text({columns}) WITH ORDINALITY AS c(v, k)
-                         USING (k)
-             UNION ALL
-             SELECT m.entity, (p.e->>'source_oid')::pg_catalog.oid,
-                    (p.e->>'initial_attnum')::pg_catalog.int2, p.e->>'initial_col'
-               FROM {meta} m, pg_catalog.jsonb_array_elements({paths}) AS p(e)
-              WHERE p.e->>'initial_attnum' IS NOT NULL)
-         SELECT pg_catalog.string_agg(DISTINCT pg_catalog.format('tv_%s (%s.%I)', n.entity,
-                    n.rel::pg_catalog.regclass, n.name), ', ')
-           FROM numbered n
-          WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
-                             WHERE a.attrelid = n.rel AND a.attnum = n.attnum
-                               AND a.attname = n.name AND NOT a.attisdropped)",
-        meta = crate::catalog::meta_table(),
-        tables = array("m.plan->'tables'"),
-        attnums = array("t.e->'attnums'"),
-        columns = array("t.e->'columns'"),
-        paths = array("m.plan->'paths'"),
-    );
-    match Spi::get_one::<String>(&sql) {
+    match crate::catalog::row::stale_column_numbers() {
         Ok(None) => ok("columns", "Every column a plan numbers has its number"),
         Ok(Some(stale)) => error(
             "columns",

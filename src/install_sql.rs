@@ -485,9 +485,9 @@ COMMENT ON EVENT TRIGGER pg_tviews_ddl_end IS
 -- too, and pg_tviews never runs it: its drops count whatever their flag.
 --
 -- PL/pgSQL (not #[pg_extern]) because pgrx cannot emit RETURNS event_trigger.  It fires for
--- EVERY dropped object system-wide, so it must be cheap and must never break an unrelated
--- DROP: references are schema-qualified via @extschema@ (search-path independent) and the
--- work is guarded by a defensive EXCEPTION handler.
+-- EVERY dropped object system-wide, so it must be cheap: references are schema-qualified
+-- via @extschema@ (search-path independent). A cleanup that fails fails the DROP, with
+-- its own SQLSTATE: committing the DROP would leave the TVIEW half deregistered.
 --
 -- Runs as the dropping role: PostgreSQL authorized that role's drop, and
 -- pg_tviews_handle_dropped() does the rest without giving it more rights (see there).
@@ -508,13 +508,7 @@ BEGIN
           AND d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
           AND d.objsubid = 0
     LOOP
-        BEGIN
-            PERFORM @extschema@.pg_tviews_handle_dropped(entity_name);
-        EXCEPTION WHEN OTHERS THEN
-            -- Never abort the user's DROP.
-            RAISE WARNING 'pg_tviews: cleanup of tv_% after a dependent drop failed: %',
-                entity_name, SQLERRM;
-        END;
+        PERFORM @extschema@.pg_tviews_handle_dropped(entity_name);
     END LOOP;
 END;
 $$;
@@ -528,9 +522,9 @@ COMMENT ON EVENT TRIGGER pg_tviews_sql_drop IS
 
 -- Whether candidate SQL defines the same view as view_oid: a column
 -- rename rewrites a TVIEW's stored definition, and the rewrite is kept only if
--- PostgreSQL renders it exactly like the renamed backing view. The EXCEPTION
--- block turns any failure (syntax, unknown column) into false and discards the
--- scratch view.
+-- PostgreSQL renders it exactly like the renamed backing view. A candidate that
+-- does not define a view (syntax, unknown column or type: class 42) is not the same
+-- view; any other error (a lock timeout, a cancel) is raised.
 CREATE FUNCTION @extschema@.pg_tviews_defines_view(view_oid OID, candidate TEXT)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -543,7 +537,7 @@ BEGIN
             OPERATOR(pg_catalog.=) pg_catalog.pg_get_viewdef(view_oid);
     DROP VIEW pg_temp.pg_tviews_rename_check;
     RETURN same;
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION WHEN syntax_error_or_access_rule_violation THEN
     RETURN false;
 END;
 $$;
@@ -1054,6 +1048,8 @@ AS $$
 DECLARE
     next_entity TEXT;
     failures INTEGER := 0;
+    first_state TEXT;
+    first_message TEXT;
 BEGIN
     FOR next_entity IN
         WITH RECURSIVE edges(entity, dependency) AS (
@@ -1076,15 +1072,21 @@ BEGIN
         BEGIN
             PERFORM @extschema@.pg_tviews_reregister(next_entity);
             status := 'reregistered';
+        -- catches every error: it becomes the entity's status; strict raises the first.
         EXCEPTION WHEN OTHERS THEN
             status := SQLERRM;
             failures := failures + 1;
+            first_state := COALESCE(first_state, SQLSTATE);
+            first_message := COALESCE(first_message, 'tv_' || next_entity || ': ' || SQLERRM);
         END;
         RETURN NEXT;
     END LOOP;
+    -- The first failure's SQLSTATE: a lock timeout or a deadlock stays retryable.
     IF strict AND failures > 0 THEN
-        RAISE EXCEPTION 'pg_tviews: % TVIEW(s) could not be re-registered', failures
-            USING HINT = 'SELECT * FROM tviews.pg_tviews_reregister_all() lists them';
+        RAISE EXCEPTION 'pg_tviews: % TVIEW(s) could not be re-registered; first: %',
+            failures, first_message
+            USING ERRCODE = first_state,
+                  HINT = 'SELECT * FROM tviews.pg_tviews_reregister_all() lists them';
     END IF;
 END;
 $$;

@@ -232,6 +232,50 @@ pub fn counts() -> TViewResult<(i64, i64, i64)> {
     ))
 }
 
+/// The columns a stored plan numbers whose number no longer has their name, as
+/// `tv_<entity> (<table>.<column>)`, comma-separated; `None` when there is none.
+/// A plan that does not decode numbers nothing here.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn stale_column_numbers() -> TViewResult<Option<String>> {
+    // A plan that does not decode is plan_check's: read here as numbering nothing.
+    let array = |expr: &str| {
+        format!(
+            "CASE pg_catalog.jsonb_typeof({expr}) WHEN 'array' THEN {expr} \
+             ELSE '[]'::pg_catalog.jsonb END"
+        )
+    };
+    let sql = format!(
+        "WITH numbered AS (
+             SELECT m.entity, (t.e->>'relid')::pg_catalog.oid AS rel, a.v::pg_catalog.int2 AS attnum,
+                    c.v AS name
+               FROM {meta} m,
+                    pg_catalog.jsonb_array_elements({tables}) AS t(e),
+                    pg_catalog.jsonb_array_elements_text({attnums}) WITH ORDINALITY AS a(v, k)
+                    JOIN pg_catalog.jsonb_array_elements_text({columns}) WITH ORDINALITY AS c(v, k)
+                         USING (k)
+             UNION ALL
+             SELECT m.entity, (p.e->>'source_oid')::pg_catalog.oid,
+                    (p.e->>'initial_attnum')::pg_catalog.int2, p.e->>'initial_col'
+               FROM {meta} m, pg_catalog.jsonb_array_elements({paths}) AS p(e)
+              WHERE p.e->>'initial_attnum' IS NOT NULL)
+         SELECT pg_catalog.string_agg(DISTINCT pg_catalog.format('tv_%s (%s.%I)', n.entity,
+                    n.rel::pg_catalog.regclass, n.name), ', ')
+           FROM numbered n
+          WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+                             WHERE a.attrelid = n.rel AND a.attnum = n.attnum
+                               AND a.attname = n.name AND NOT a.attisdropped)",
+        meta = super::meta_table(),
+        tables = array("m.plan->'tables'"),
+        attnums = array("t.e->'attnums'"),
+        columns = array("t.e->'columns'"),
+        paths = array("m.plan->'paths'"),
+    );
+    Spi::get_one::<String>(&sql)
+        .map_err(|e| crate::utils::spi::catalog_error("Check the plans' column numbers", &e))
+}
+
 /// A TVIEW as [`relations`] lists it.
 pub struct Listed {
     pub entity: String,
