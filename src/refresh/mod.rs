@@ -233,7 +233,7 @@ pub(crate) fn run_counted_upsert(
     args: &[DatumWithOid],
     old: Option<&crate::catalog::collections::OldKeys>,
 ) -> crate::TViewResult<Produced> {
-    use crate::queue::affected::{Change, Recorded, record};
+    use crate::queue::log::{Change, Recorded, record};
     let entity = &meta.entity_name;
     let qi_pk = ident::quoted(meta.key_column());
     let qi_key = ident::quoted(&meta.identity.column);
@@ -501,7 +501,7 @@ pub(crate) fn run_journaled(
     meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
-    change: crate::queue::affected::Change,
+    change: crate::queue::log::Change,
 ) -> crate::TViewResult<Vec<i64>> {
     let written = crate::utils::spi::connect_mut(|client| {
         let mut out = Vec::new();
@@ -518,7 +518,7 @@ pub(crate) fn run_journaled(
     Ok(written
         .into_iter()
         .map(|(pk, id, references)| {
-            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+            crate::queue::log::record(crate::queue::log::Recorded::of(
                 meta,
                 pk,
                 id,
@@ -537,7 +537,7 @@ pub(crate) fn run_journaled_delete(
     sql: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<Vec<i64>> {
-    run_journaled(meta, sql, args, crate::queue::affected::Change::Deleted)
+    run_journaled(meta, sql, args, crate::queue::log::Change::Deleted)
 }
 
 #[cfg(test)]

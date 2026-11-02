@@ -1,9 +1,9 @@
-//! The per-transaction set of changed TVIEW rows that commit publishes
-//! (`pg_tviews.publish_changes`, ADR 0231).
+//! The write log's feed reader: the per-transaction set of changed TVIEW rows
+//! that commit publishes (`pg_tviews.publish_changes`, ADR 0231).
 //!
-//! It is fed by the same writes as the report's journal ([`super::affected`]) but
-//! kept apart from it: the report resets and caps its journal as it reports, and
-//! publishing needs everything the transaction changed. Entries are appended in
+//! It reads the same writes as the report ([`super::report`]) but keeps its own
+//! retention: the report resets and caps its entries as it reports, and
+//! publishing needs everything the transaction changed, within a byte budget. Entries are appended in
 //! write order; a savepoint records the position and a rollback to it truncates
 //! back, so a rolled-back write is never published. At commit the entries fold
 //! into one net change per row ([`with_folded`]), a row being its type and public
@@ -17,14 +17,14 @@
 //! A written row of a TVIEW that references others also names the collections
 //! it belongs to, before and after the write: `Comment.fk_post` and the post.
 //! A recompute returns the parent's public id; a patch returns its key, which the
-//! flush resolves ([`resolve`]) while SPI is available, from the rows the
+//! flush resolves ([`crate::publish::resolve_parents`]) while SPI is available, from the rows the
 //! transaction wrote or by query. A key still unresolved at commit (a write
 //! outside a flush) publishes the child type by name, and so does a parent
 //! without an `id` column. A parent the flush no longer finds (deleted, or never
 //! a row of its TVIEW) names nothing: its own row is published, or no cached
 //! result holds it. Each collection's parents are kept once.
 
-use super::affected::{Change, Recorded, fold_change};
+use super::report::{Change, Recorded, fold_change};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -95,7 +95,7 @@ pub struct Mark {
 }
 
 /// Keep a write for publishing, as `publish` asks.
-pub fn add(publish: Publish, recorded: &Recorded) {
+pub(super) fn add(publish: Publish, recorded: &Recorded) {
     SET.with_borrow_mut(|set| {
         if set.types.contains(&recorded.typename) {
             return;
@@ -156,28 +156,20 @@ pub fn add(publish: Publish, recorded: &Recorded) {
     });
 }
 
-/// Resolve the parents' keys the writes since the last call returned to their
-/// public ids: those the transaction wrote itself from its own rows, the others
-/// with one query for every parent TVIEW. Runs at the end of a flush.
-///
-/// # Errors
-/// What the query returns.
-pub fn resolve() -> crate::TViewResult<()> {
-    let pending = SET.with_borrow_mut(|set| {
-        let pending = set.members[set.resolved..]
+/// The parents' keys the writes since the last resolution returned and the
+/// transaction did not write itself, by parent TVIEW; `None` when no write
+/// returned a key. [`crate::publish::resolve_parents`] looks them up.
+pub fn unresolved() -> Option<Vec<Lookup>> {
+    SET.with_borrow_mut(|set| {
+        if !set.members[set.resolved..]
             .iter()
-            .any(|m| m.parent == Parent::Key);
-        if !pending {
+            .any(|m| m.parent == Parent::Key)
+        {
             set.resolved = set.members.len();
+            return None;
         }
-        pending
-    });
-    if !pending {
-        return Ok(());
-    }
-    let lookups = SET.with_borrow(|set| {
         let written = written_ids(set);
-        let mut lookups: Vec<(Rc<crate::catalog::Collection>, Vec<String>)> = Vec::new();
+        let mut lookups: Vec<Lookup> = Vec::new();
         for member in &set.members[set.resolved..] {
             let c = &member.collection;
             if member.parent != Parent::Key || own_id(&written, c, &member.key).is_some() {
@@ -194,20 +186,12 @@ pub fn resolve() -> crate::TViewResult<()> {
                 lookups[at].1.push(member.key.clone());
             }
         }
-        lookups
-    });
-    let found = if lookups.is_empty() {
-        HashMap::new()
-    } else {
-        parent_ids(&lookups)?
-    };
-    settle(&|collection, key| {
-        found
-            .get(&(collection.parent_table.clone(), key.to_string()))
-            .cloned()
-    });
-    Ok(())
+        Some(lookups)
+    })
 }
+
+/// The parent keys of one parent TVIEW to look up, with a collection naming it.
+pub type Lookup = (Rc<crate::catalog::Collection>, Vec<String>);
 
 /// The public ids, as JSON text, of the rows the transaction published, by
 /// `(type, pk_<entity>)`.
@@ -233,92 +217,10 @@ fn own_id<'a>(
     written.get(&(&*collection.parent_typename, pk)).copied()
 }
 
-/// The public ids, as JSON text, of the parents of `lookups` by
-/// `(parent table, key)`: one statement per owner of parent TVIEWs, run as that
-/// owner as every refresh read is, with a branch per parent TVIEW.
-fn parent_ids(
-    lookups: &[(Rc<crate::catalog::Collection>, Vec<String>)],
-) -> crate::TViewResult<HashMap<(String, String), String>> {
-    let mut by_owner: Vec<(pgrx::pg_sys::Oid, Vec<usize>)> = Vec::new();
-    for (i, (c, _)) in lookups.iter().enumerate() {
-        let owner = crate::owner::relation_owner(c.parent_table_oid)?;
-        match by_owner.iter_mut().find(|(o, _)| *o == owner) {
-            Some((_, at)) => at.push(i),
-            None => by_owner.push((owner, vec![i])),
-        }
-    }
-    let mut found = HashMap::new();
-    for (owner, at) in by_owner {
-        let _owner = crate::owner::AsOwner::of_role(owner);
-        parent_ids_of(lookups, &at, &mut found)?;
-    }
-    Ok(found)
-}
-
-/// [`parent_ids`] of the lookups at `at`, into `found`.
-fn parent_ids_of(
-    lookups: &[(Rc<crate::catalog::Collection>, Vec<String>)],
-    at: &[usize],
-    found: &mut HashMap<(String, String), String>,
-) -> crate::TViewResult<()> {
-    use crate::utils::ident::quoted;
-    // An integer key is bound as int8[]; any other as text, cast to its type.
-    let integer = |c: &crate::catalog::Collection| {
-        matches!(c.parent_type.as_str(), "smallint" | "integer" | "bigint")
-    };
-    let branches: Vec<String> = at
-        .iter()
-        .enumerate()
-        .map(|(n, &i)| {
-            let c = &lookups[i].0;
-            let key = quoted(&c.parent_column);
-            let keys = if integer(c) {
-                format!("${}::pg_catalog.int8[]", n + 1)
-            } else {
-                format!("${}::pg_catalog.text[]::{}[]", n + 1, c.parent_type)
-            };
-            format!(
-                "SELECT {i}, p.{key}::pg_catalog.text, p.\"id\"::pg_catalog.text FROM {} p \
-                 WHERE p.{key} OPERATOR(pg_catalog.=) ANY ({keys})",
-                c.parent_table
-            )
-        })
-        .collect();
-    let args: Vec<pgrx::datum::DatumWithOid> = at
-        .iter()
-        .map(|&i| {
-            let (c, keys) = &lookups[i];
-            if integer(c) {
-                crate::utils::spi::int8_array(keys.iter().filter_map(|k| k.parse().ok()).collect())
-            } else {
-                crate::utils::spi::text_array(keys.clone())
-            }
-        })
-        .collect();
-    for row in crate::utils::spi::kept_rows(
-        &branches.join(" UNION ALL "),
-        &args,
-        crate::utils::spi::Plan::Generic,
-    )? {
-        let [Some(i), Some(key), Some(id)] = &row[..] else {
-            continue;
-        };
-        let Some((c, _)) = i.parse::<usize>().ok().and_then(|i| lookups.get(i)) else {
-            continue;
-        };
-        let id = crate::catalog::RowId {
-            text: id.clone(),
-            kind: c.parent_id.unwrap_or(crate::catalog::PublicId::String),
-        };
-        found.insert((c.parent_table.clone(), key.clone()), id.json());
-    }
-    Ok(())
-}
-
 /// Resolve every unresolved parent key: from the rows the transaction wrote, else
 /// with `found`, `(collection, key)` → its public id as JSON text, `None` when no
 /// parent row holds the key.
-fn settle(found: &dyn Fn(&crate::catalog::Collection, &str) -> Option<String>) {
+pub fn settle(found: &dyn Fn(&crate::catalog::Collection, &str) -> Option<String>) {
     SET.with_borrow_mut(|set| {
         let resolved: Vec<(usize, Option<String>)> = {
             let written = written_ids(set);
@@ -365,7 +267,7 @@ pub enum Listed {
 }
 
 /// How the feed names each of `parents`, the parents written rows named, as far
-/// as the last flush resolved them ([`resolve`]): the same capture, read before
+/// as the last flush resolved them ([`crate::publish::resolve_parents`]): the same capture, read before
 /// commit by `pg_tviews_flush_and_report()` (#244).
 pub fn listed(
     parents: &[(
@@ -396,14 +298,14 @@ pub fn listed(
 }
 
 /// Publish `typename` by name: its rows changed without being listed (a rebuild).
-pub fn add_type(typename: &Rc<str>) {
+pub(super) fn add_type(typename: &Rc<str>) {
     SET.with_borrow_mut(|set| {
         set.types.insert(Rc::clone(typename));
     });
 }
 
 /// A subtransaction started: where the set stands.
-pub fn mark() -> Mark {
+pub(super) fn mark() -> Mark {
     SET.with_borrow(|set| Mark {
         position: set.entries.len(),
         bytes: set.bytes,
@@ -413,7 +315,7 @@ pub fn mark() -> Mark {
 }
 
 /// The subtransaction of `mark` rolled back: forget what it added.
-pub fn rollback(mark: Mark) {
+pub(super) fn rollback(mark: Mark) {
     SET.with_borrow_mut(|set| {
         set.entries.truncate(mark.position);
         set.members.truncate(mark.members);
@@ -429,7 +331,7 @@ pub fn rollback(mark: Mark) {
 }
 
 /// Forget everything (transaction end).
-pub fn clear() {
+pub(super) fn clear() {
     SET.with_borrow_mut(|set| *set = Set::default());
 }
 

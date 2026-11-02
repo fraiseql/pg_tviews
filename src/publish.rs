@@ -2,7 +2,7 @@
 //! (ADR 0231).
 //!
 //! The transaction callback calls [`at_pre_commit`]. It encodes the
-//! transaction's publish set ([`crate::queue::published`]) into messages of one
+//! transaction's change feed ([`crate::queue::log::feed`]) into messages of one
 //! shape, version 2:
 //!
 //! ```json
@@ -15,10 +15,12 @@
 //! not listed. Nothing here may raise: an error at
 //! `PRE_COMMIT` would roll back the user's transaction.
 
-use crate::queue::published::{self, Folded, Publish};
+use crate::config::Publish;
+use crate::queue::log::feed::{self, Folded, Lookup};
 use pgrx::prelude::*;
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 
 /// The messages one transaction sends at most: past them, the remaining types go
 /// out by name in the last one.
@@ -48,7 +50,7 @@ pub fn at_pre_commit() {
     let Some(publish) = crate::config::publish_changes() else {
         return;
     };
-    if published::is_empty() {
+    if feed::is_empty() {
         return;
     }
     // SAFETY: a built-in function taking no argument, called in a transaction.
@@ -67,7 +69,7 @@ pub fn at_pre_commit() {
         return;
     }
     let channel = CHANNEL.to_string_lossy();
-    for message in published::with_folded(|folded| encode(folded, publish)) {
+    for message in feed::with_folded(|folded| encode(folded, publish)) {
         // SAFETY: pg_notify(text, text), with two non-null text datums, called in
         // a transaction that is not a parallel worker's (the callback ignores
         // those events). The message is under NOTIFY's payload limit.
@@ -98,7 +100,7 @@ pub fn forget_gap() {
 /// cannot carry a notification through PREPARE, and committing it unpublished would
 /// leave caches stale with no signal. Runs at `PRE_PREPARE`: no SPI.
 pub fn refuse_prepare() {
-    if crate::config::publish_changes().is_some() && !published::is_empty() {
+    if crate::config::publish_changes().is_some() && !feed::is_empty() {
         crate::TViewError::PrepareRefused {
             reason: crate::error::PrepareRefusal::Publish,
         }
@@ -319,6 +321,110 @@ fn types_only(types: &BTreeSet<&str>) -> Vec<String> {
         }
     }
     messages.iter().map(Message::render).collect()
+}
+
+/// Resolve the parents' keys the writes since the last call returned to their
+/// public ids: those the transaction wrote itself from its own rows, the others
+/// with one query for every parent TVIEW. Runs at the end of a flush, while SPI
+/// is available (the commit callback has none).
+///
+/// # Errors
+/// What the query returns.
+pub fn resolve_parents() -> crate::TViewResult<()> {
+    let Some(lookups) = feed::unresolved() else {
+        return Ok(());
+    };
+    let found = if lookups.is_empty() {
+        HashMap::new()
+    } else {
+        parent_ids(&lookups)?
+    };
+    feed::settle(&|collection, key| {
+        found
+            .get(&(collection.parent_table.clone(), key.to_string()))
+            .cloned()
+    });
+    Ok(())
+}
+
+/// The public ids, as JSON text, of the parents of `lookups` by
+/// `(parent table, key)`: one statement per owner of parent TVIEWs, run as that
+/// owner as every refresh read is, with a branch per parent TVIEW.
+fn parent_ids(lookups: &[Lookup]) -> crate::TViewResult<HashMap<(String, String), String>> {
+    let mut by_owner: Vec<(pgrx::pg_sys::Oid, Vec<usize>)> = Vec::new();
+    for (i, (c, _)) in lookups.iter().enumerate() {
+        let owner = crate::owner::relation_owner(c.parent_table_oid)?;
+        match by_owner.iter_mut().find(|(o, _)| *o == owner) {
+            Some((_, at)) => at.push(i),
+            None => by_owner.push((owner, vec![i])),
+        }
+    }
+    let mut found = HashMap::new();
+    for (owner, at) in by_owner {
+        let _owner = crate::owner::AsOwner::of_role(owner);
+        parent_ids_of(lookups, &at, &mut found)?;
+    }
+    Ok(found)
+}
+
+/// [`parent_ids`] of the lookups at `at`, into `found`.
+fn parent_ids_of(
+    lookups: &[Lookup],
+    at: &[usize],
+    found: &mut HashMap<(String, String), String>,
+) -> crate::TViewResult<()> {
+    use crate::utils::ident::quoted;
+    // An integer key is bound as int8[]; any other as text, cast to its type.
+    let integer = |c: &crate::catalog::Collection| {
+        matches!(c.parent_type.as_str(), "smallint" | "integer" | "bigint")
+    };
+    let branches: Vec<String> = at
+        .iter()
+        .enumerate()
+        .map(|(n, &i)| {
+            let c = &lookups[i].0;
+            let key = quoted(&c.parent_column);
+            let keys = if integer(c) {
+                format!("${}::pg_catalog.int8[]", n + 1)
+            } else {
+                format!("${}::pg_catalog.text[]::{}[]", n + 1, c.parent_type)
+            };
+            format!(
+                "SELECT {i}, p.{key}::pg_catalog.text, p.\"id\"::pg_catalog.text FROM {} p \
+                 WHERE p.{key} OPERATOR(pg_catalog.=) ANY ({keys})",
+                c.parent_table
+            )
+        })
+        .collect();
+    let args: Vec<pgrx::datum::DatumWithOid> = at
+        .iter()
+        .map(|&i| {
+            let (c, keys) = &lookups[i];
+            if integer(c) {
+                crate::utils::spi::int8_array(keys.iter().filter_map(|k| k.parse().ok()).collect())
+            } else {
+                crate::utils::spi::text_array(keys.clone())
+            }
+        })
+        .collect();
+    for row in crate::utils::spi::kept_rows(
+        &branches.join(" UNION ALL "),
+        &args,
+        crate::utils::spi::Plan::Generic,
+    )? {
+        let [Some(i), Some(key), Some(id)] = &row[..] else {
+            continue;
+        };
+        let Some((c, _)) = i.parse::<usize>().ok().and_then(|i| lookups.get(i)) else {
+            continue;
+        };
+        let id = crate::catalog::RowId {
+            text: id.clone(),
+            kind: c.parent_id.unwrap_or(crate::catalog::PublicId::String),
+        };
+        found.insert((c.parent_table.clone(), key.clone()), id.json());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

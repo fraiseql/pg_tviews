@@ -42,7 +42,7 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
         }
     })?;
     crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
-    crate::queue::affected::record_rebuilt(entity)?;
+    crate::queue::log::record_rebuilt(entity)?;
     Ok(inserted)
 }
 
@@ -63,7 +63,7 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
     let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
     crate::utils::spi::run(&format!("DELETE FROM {qi_tv}"), &[])?;
     let inserted = crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))?;
-    crate::queue::affected::record_rebuilt(entity)?;
+    crate::queue::log::record_rebuilt(entity)?;
     Ok(inserted)
 }
 
@@ -81,7 +81,7 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     let owner = crate::owner::AsOwner::of_entity(entity)?;
     let (_, insert) = rebuild_statements(&owner, entity)?;
     crate::utils::spi::run(&insert, &[])?;
-    crate::queue::affected::record_rebuilt(entity)
+    crate::queue::log::record_rebuilt(entity)
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
@@ -124,7 +124,7 @@ fn rebuild_statements(
 /// that leave go first, so a unique index holds throughout. Returns the
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
-    use crate::queue::affected::Change;
+    use crate::queue::log::Change;
     crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     let _pin = crate::owner::RenderPin::new();

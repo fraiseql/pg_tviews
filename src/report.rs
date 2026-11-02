@@ -3,12 +3,13 @@
 //!
 //! A mutation function calls it last. It flushes whatever is still queued, then
 //! reports every TVIEW row the transaction's refreshes inserted, updated or deleted
-//! so far (the journal in [`crate::queue::affected`]), with each row's public `id`
+//! so far (the write log in [`crate::queue::log`]), with each row's public `id`
 //! and, optionally, its fresh `data`.
 
+use crate::config::Publish;
 use crate::error::{TViewError, TViewResult};
-use crate::queue::affected::{self, Change, NetChange};
-use crate::queue::published::{self, Listed, Publish};
+use crate::queue::log::feed::{self, Listed};
+use crate::queue::log::{self, Change, NetChange};
 use crate::utils::ident;
 use crate::utils::spi::LookupKeys;
 use serde_json::{Map, Value, json};
@@ -47,7 +48,7 @@ pub(crate) fn flush_and_report(
     let wanted = types.map(requested_types).transpose()?;
     crate::flush::flush_refresh_queue()?;
     let capturing = crate::config::publish_changes() == Some(Publish::Rows);
-    let summary = affected::summarize(reset, capturing);
+    let summary = log::summarize(reset, capturing);
     let limit = usize::try_from(max_entities).unwrap_or(0);
     build_report(&summary, limit, include_data, wanted.as_ref())
 }
@@ -133,7 +134,7 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
 }
 
 fn build_report(
-    summary: &affected::Summary,
+    summary: &log::Summary,
     max_entities: usize,
     include_data: bool,
     wanted: Option<&BTreeSet<String>>,
@@ -277,7 +278,7 @@ fn collections(
         .collect();
     let mut ids: std::collections::BTreeMap<&str, (&str, BTreeSet<String>)> =
         std::collections::BTreeMap::new();
-    for ((collection, _), listed) in asked.iter().zip(published::listed(&asked)) {
+    for ((collection, _), listed) in asked.iter().zip(feed::listed(&asked)) {
         let child = &*collection.child_type;
         match listed {
             Listed::Id(id) => {

@@ -45,7 +45,7 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     drain::flush_pending()?;
     // The collections the written rows belong to, named by their parents'
     // public ids while SPI is available (the commit callback has none).
-    crate::queue::published::resolve()
+    crate::publish::resolve_parents()
 }
 
 thread_local! {

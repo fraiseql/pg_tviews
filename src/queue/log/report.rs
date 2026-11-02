@@ -1,4 +1,5 @@
-//! Per-transaction journal of the TVIEW rows refreshes actually changed.
+//! The write log's report reader: the TVIEW rows refreshes actually changed,
+//! as `pg_tviews_flush_and_report` reads them.
 //!
 //! Every refresh write (guarded upsert, delete, direct patch) records the keys it
 //! really inserted, updated or deleted: a refresh that found nothing to change
@@ -70,7 +71,7 @@ impl Recorded {
             id: id.map(|text| meta.row_id(text)),
             change,
             parents: meta.parents(references, old),
-            captured: crate::config::publish_changes() == Some(super::published::Publish::Rows),
+            captured: crate::config::publish_changes() == Some(crate::config::Publish::Rows),
         }
     }
 }
@@ -132,20 +133,16 @@ pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
     FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
 }
 
-/// Record that a refresh write changed a TVIEW row.
-pub fn record(recorded: Recorded) {
-    let counter = match recorded.change {
-        Change::Deleted => crate::stats::Counter::RowsDeleted,
-        _ => crate::stats::Counter::RowsWritten,
-    };
-    crate::stats::add(&recorded.entity, counter, 1);
+/// Note a refresh write in the flush's changed rows.
+pub(super) fn note_flush_change(recorded: &Recorded) {
     FLUSH_CHANGED.with(|c| {
         c.borrow_mut()
             .insert((recorded.entity.clone(), recorded.pk))
     });
-    if let Some(publish) = crate::config::publish_changes() {
-        super::published::add(publish, &recorded);
-    }
+}
+
+/// Keep a refresh write for the report, within `pg_tviews.report_max_tracked`.
+pub(super) fn append(recorded: Recorded) {
     let cap = crate::config::report_max_tracked();
     if cap == 0 {
         return;
@@ -160,26 +157,16 @@ pub fn record(recorded: Recorded) {
     });
 }
 
-/// Record that `entity`'s TVIEW was rebuilt or refilled whole, its rows not
-/// journaled one by one: the report lists its type in `invalidated_types`, and
-/// commit publishes the type by name.
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn record_rebuilt(entity: &str) -> crate::TViewResult<()> {
+/// `entity`'s TVIEW was rebuilt or refilled whole: the report lists its type in
+/// `invalidated_types`.
+pub(super) fn append_rebuilt(entity: &str) {
     if crate::config::report_max_tracked() > 0 {
         JOURNAL.with(|j| j.borrow_mut().overflow.insert(entity.to_string()));
     }
-    if crate::config::publish_changes().is_some()
-        && let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)?
-    {
-        super::published::add_type(&meta.typename);
-    }
-    Ok(())
 }
 
 /// A subtransaction started: where the journal stands.
-pub fn mark() -> Mark {
+pub(super) fn mark() -> Mark {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
         j.open += 1;
@@ -193,7 +180,7 @@ pub fn mark() -> Mark {
 
 /// The subtransaction of `mark` committed: its entries and resets belong to its
 /// parent.
-pub fn release(_mark: Mark) {
+pub(super) fn release(_mark: Mark) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
         j.open = j.open.saturating_sub(1);
@@ -203,7 +190,7 @@ pub fn release(_mark: Mark) {
 
 /// The subtransaction of `mark` rolled back: forget what was journaled since, and
 /// undo the resets made since.
-pub fn rollback(mark: Mark) {
+pub(super) fn rollback(mark: Mark) {
     JOURNAL.with(|j| {
         let mut j = j.borrow_mut();
         j.open = j.open.saturating_sub(1);
@@ -216,7 +203,7 @@ pub fn rollback(mark: Mark) {
 }
 
 /// Forget everything (transaction end).
-pub fn clear() {
+pub(super) fn clear() {
     JOURNAL.with(|j| *j.borrow_mut() = Journal::default());
 }
 

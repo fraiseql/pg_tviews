@@ -2,11 +2,10 @@
 //! patches they captured, the rows the flush touched, and the undo log a
 //! rolled-back subtransaction restores. [`crate::flush`] applies it.
 
-pub mod affected;
 pub mod key;
+pub mod log;
 pub(crate) mod ops;
 pub mod patch;
-pub mod published;
 pub(crate) mod state;
 
 pub use key::RefreshKey;

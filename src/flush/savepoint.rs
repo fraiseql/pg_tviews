@@ -13,7 +13,6 @@ use std::cell::RefCell;
 /// The session state a subtransaction started from.
 struct Savepoint {
     pending: state::Mark,
-    published: crate::queue::published::Mark,
     locks: crate::concurrency::Mark,
     frames: usize,
     suspension: crate::suspend::Suspension,
@@ -27,7 +26,6 @@ thread_local! {
 pub fn start() {
     let savepoint = Savepoint {
         pending: state::mark(),
-        published: crate::queue::published::mark(),
         locks: crate::concurrency::mark(),
         frames: crate::executor::depth(),
         suspension: crate::suspend::snapshot(),
@@ -50,7 +48,6 @@ pub fn commit() {
 pub fn abort() {
     if let Some(savepoint) = SAVEPOINTS.with_borrow_mut(Vec::pop) {
         state::rollback(savepoint.pending);
-        crate::queue::published::rollback(savepoint.published);
         crate::concurrency::rollback(savepoint.locks);
         crate::delta::capture::clear();
         crate::executor::truncate_to(savepoint.frames);

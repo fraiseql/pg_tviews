@@ -162,11 +162,11 @@ pub fn apply_fanout_patch(
     Ok(changed
         .into_iter()
         .map(|(pk, (id, references))| {
-            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+            crate::queue::log::record(crate::queue::log::Recorded::of(
                 meta,
                 pk,
                 id,
-                crate::queue::affected::Change::Updated,
+                crate::queue::log::Change::Updated,
                 &references,
                 None,
             ));
@@ -318,11 +318,11 @@ pub fn apply_entity_patches(
                 materialised.len() as u64 - changed,
             );
             for (pk, _, (id, references)) in materialised.into_iter().filter(|&(_, c, _)| c) {
-                crate::queue::affected::record(crate::queue::affected::Recorded::of(
+                crate::queue::log::record(crate::queue::log::Recorded::of(
                     meta,
                     pk,
                     id,
-                    crate::queue::affected::Change::Updated,
+                    crate::queue::log::Change::Updated,
                     &references,
                     None,
                 ));
