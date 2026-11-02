@@ -1,0 +1,91 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_begin r_reregister w_begin w_rename w_insert r_commit w_commit w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step r_begin: BEGIN;
+step r_reregister: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step w_begin: BEGIN;
+step w_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step w_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (3, 1, 'p3');
+step r_commit: COMMIT;
+step w_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|grace |t    
+      2|bob   |t    
+      3|grace |t    
+(3 rows)
+
+
+starting permutation: w_begin w_rename r_begin r_reregister w_insert w_commit r_commit w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step w_begin: BEGIN;
+step w_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step r_begin: BEGIN;
+step r_reregister: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step w_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (3, 1, 'p3');
+step w_commit: COMMIT;
+step r_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|grace |t    
+      2|bob   |t    
+      3|grace |t    
+(3 rows)
+
+
+starting permutation: w_begin w_rename w_insert w_commit r_begin r_reregister r_commit w_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step w_begin: BEGIN;
+step w_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+step w_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (3, 1, 'p3');
+step w_commit: COMMIT;
+step r_begin: BEGIN;
+step r_reregister: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step r_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|grace |t    
+      2|bob   |t    
+      3|grace |t    
+(3 rows)
+
