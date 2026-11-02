@@ -119,7 +119,6 @@ check its plan with `EXPLAIN`.
 ## Tests
 
 `test/sql/regress/arrays/` covers array dependencies, the three array-join spellings
-and casts of `unnest` elements; the integration files `test/sql/50_array_columns.sql`,
-`51_jsonb_array_update.sql`, `52_array_insert_delete.sql` and
-`53_batch_optimization.sql` cover array columns and JSON arrays under inserts, updates
-and deletes.
+and casts of `unnest` elements; `regress_array_subquery_column.sql` and
+`regress_array_aggregate_writes.sql` there cover array columns and JSON arrays under
+inserts, updates and deletes.

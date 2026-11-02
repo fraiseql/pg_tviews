@@ -18,6 +18,7 @@ use relations::{
     relation_exists, relation_oid, tview_exists,
 };
 pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
+
 #[cfg(test)]
 mod tests;
 
@@ -428,4 +429,24 @@ pub(crate) fn stored_group_keys(
             })
         })
         .transpose()
+}
+
+/// The plan registering `view_oid` as the TVIEW of `entity` would store, with the
+/// default options, without creating anything (the plan-snapshot tests).
+///
+/// # Errors
+/// What registration would refuse the view with.
+pub(crate) fn plan_of(entity: &str, view_oid: pgrx::pg_sys::Oid) -> TViewResult<serde_json::Value> {
+    let base_tables = crate::dependency::base_tables_of(view_oid)?;
+    let derivation = derive(
+        entity,
+        None,
+        &base_tables,
+        view_oid,
+        &Declarations::defaults(),
+    )?;
+    serde_json::to_value(&derivation.plan).map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Encode the plan of tv_{entity}"),
+        pg_error: e.to_string(),
+    })
 }

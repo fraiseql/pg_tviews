@@ -16,7 +16,14 @@ const MAX_VIEW_NESTING: usize = 64;
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
 pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys::Oid>> {
-    let view_oid = get_view_oid(view_name, schema)?;
+    base_tables_of(get_view_oid(view_name, schema)?)
+}
+
+/// [`find_base_tables`] of the view `view_oid`.
+///
+/// # Errors
+/// Returns error if the views nest too deep or a catalog read fails.
+pub fn base_tables_of(view_oid: pg_sys::Oid) -> TViewResult<Vec<pg_sys::Oid>> {
     let depth = crate::lineage::reads::view_nesting(view_oid)?;
     if depth > MAX_VIEW_NESTING {
         return Err(TViewError::DepthExceeded {

@@ -105,7 +105,7 @@ BEGIN
            'tviews.pg_tviews_show_replication()',
            'tviews.pg_tviews_plan_tables(jsonb)', 'tviews.pg_tviews_plan_references(jsonb)',
            'tviews.pg_tviews_plan_roots(jsonb)', 'tviews.pg_tviews_plan_lookups(jsonb)',
-           'tviews.pg_tviews_plan_rebind(text,jsonb)',
+           'tviews.pg_tviews_plan_rebind(text,jsonb)', 'tviews.pg_tviews_plan_of(oid,text)',
            -- the caller's session
            'tviews.pg_tviews_flush_and_report(integer,boolean,boolean,text[])',
            'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',

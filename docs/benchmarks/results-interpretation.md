@@ -88,7 +88,7 @@ ops, fewer for batch/build/refresh).
   tables are out of scope: they propagate only when the parent is itself a
   registered `tv_` entity exposing its `fk_<parent>` key, which this
   single-entity benchmark does not model. The cascade contract is covered by
-  [`test/sql/42_cascade_fk_lineage.sql`](../../test/sql/42_cascade_fk_lineage.sql).
+  [`test/sql/regress/cascade/regress_fk_lineage.sql`](../../test/sql/regress/cascade/regress_fk_lineage.sql).
 - **Non-concurrent baseline.** The baseline is plain `REFRESH MATERIALIZED VIEW`.
   `REFRESH ... CONCURRENTLY` is non-blocking but not faster.
 - **One machine, one client.** Moderate JSON document size, single connection,

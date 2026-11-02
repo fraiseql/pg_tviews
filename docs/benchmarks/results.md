@@ -114,7 +114,7 @@ Median ms; **speedup** = full-refresh ÷ pg_tviews+jsonb_delta.
   (category, reviews) only propagate when the parent is itself a registered `tv_`
   entity exposing its `fk_<parent>` key; this single-entity benchmark embeds that
   data inline and does not exercise cascade propagation. See
-  `test/sql/42_cascade_fk_lineage.sql` for the cascade contract.
+  `test/sql/regress/cascade/regress_fk_lineage.sql` for the cascade contract.
 - **Non-concurrent full refresh.** The baseline is plain `REFRESH MATERIALIZED
   VIEW` (a full O(n) rebuild). `REFRESH ... CONCURRENTLY` trades a unique-index
   requirement and a full diff for non-blocking behaviour; it is not faster.

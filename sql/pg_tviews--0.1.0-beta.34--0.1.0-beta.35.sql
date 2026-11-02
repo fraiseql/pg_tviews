@@ -623,6 +623,16 @@ FROM PUBLIC;
 COMMENT ON VIEW @extschema@.stats IS
 'Refresh statistics of each TVIEW since the server started or pg_tviews_reset_stats()';
 
+-- The plan registration would store for a view, without creating a TVIEW (the
+-- plan-snapshot tests).
+CREATE FUNCTION @extschema@."pg_tviews_plan_of"(
+	"view" oid, /* pgrx_pg_sys::submodules::oids::Oid */
+	"tview" TEXT /* &str */
+) RETURNS jsonb
+STRICT
+LANGUAGE c /* Rust */
+AS 'MODULE_PATHNAME', 'pg_tviews_plan_of_wrapper';
+
 -- What registration derives changed (an aggregate's paths come from its query
 -- tree, the plan records the row key, the plan readers of older versions are
 -- gone): every TVIEW is re-derived here, inside the update, as its owner. A TVIEW

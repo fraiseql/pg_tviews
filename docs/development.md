@@ -212,7 +212,7 @@ src/
 └── utils/              # SPI helpers and shared utilities
 
 test/
-├── sql/                # Regression and integration suites
+├── sql/                # Regression, differential and plan suites
 └── upgrade/            # Upgrade-path check
 
 .github/

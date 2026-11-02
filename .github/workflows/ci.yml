@@ -124,15 +124,11 @@ jobs:
           psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
             || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
 
-      # These scripts create a throwaway database per test and exit non-zero on
+      # The script creates a throwaway database per test and exits non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
       - name: Regression suite (test/sql/regress/)
         if: ${{ !cancelled() }}
         run: REGRESS_NO_SKIP=1 ./test/run_regression_tests.sh
-
-      - name: Integration suite (test/sql/[0-9]*.sql)
-        if: ${{ !cancelled() }}
-        run: ./test/run_integration_tests.sh
 
       # Every TVIEW shape equals its backing view after each of a few hundred
       # seeded random writes. The pg18 job runs every mode (test/lib/modes.sh): the
@@ -149,6 +145,12 @@ jobs:
       - name: Golden files (test/sql/differential/golden.sh)
         if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
         run: ./test/sql/differential/golden.sh
+
+      # The walker read through the plan registration would store, one case per
+      # query shape, against test/sql/plans/expected/.
+      - name: Plan snapshots (test/sql/plans/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: ./test/sql/plans/run.sh
 
       # Random transactions from 8 clients at every isolation level: every TVIEW
       # equals its view in every committed snapshot; single-row writes of values
@@ -180,7 +182,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md docs/concurrency.md \
-            docs/reference/*.md docs/user-guides/*.md
+            docs/reference/*.md docs/user-guides/*.md docs/operations/security.md
 
       # A throwaway cluster restarted without shared_preload_libraries: CREATE
       # EXTENSION and every use of an installed catalog are refused (55000).

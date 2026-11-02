@@ -134,7 +134,7 @@ tables for every scale, and the honest caveats below, are in
   is itself a registered `tv_` entity exposing its `fk_<parent>` key; this
   single-entity benchmark embeds that data inline and does **not** exercise
   cascade propagation. The cascade contract is covered by
-  [`test/sql/42_cascade_fk_lineage.sql`](../../test/sql/42_cascade_fk_lineage.sql).
+  [`test/sql/regress/cascade/regress_fk_lineage.sql`](../../test/sql/regress/cascade/regress_fk_lineage.sql).
 - **jsonb_delta vs native is at parity here.** For these moderately-sized JSON
   documents, arms A and B are statistically indistinguishable. See
   [jsonb-ivm-integration.md](jsonb-ivm-integration.md).

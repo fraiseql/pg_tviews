@@ -5,7 +5,7 @@
 pub mod base_tables;
 pub mod triggers;
 
-pub use base_tables::find_base_tables;
+pub use base_tables::{base_tables_of, find_base_tables};
 pub use triggers::{
     TriggerPlan, install_triggers, remove_entity_triggers, sync_entity_triggers, trigger_plan,
 };

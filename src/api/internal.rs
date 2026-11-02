@@ -22,6 +22,18 @@ fn pg_tviews_invalidate_caches(relid: pg_sys::Oid) {
     unsafe { pg_sys::CacheInvalidateRelcacheByRelid(relid) };
 }
 
+/// The plan registering the view `view` as the TVIEW `tview` (its entity) would
+/// store (default options), without creating it: the plan-snapshot tests
+/// (`test/sql/plans/`) read the walker through it.
+#[pg_extern]
+fn pg_tviews_plan_of(view: pg_sys::Oid, tview: &str) -> Result<pgrx::JsonB, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    crate::ddl::create::plan_of(tview, view)
+        .map(pgrx::JsonB)
+        .map_err(|e| e.report_in(&format!("pg_tviews: the plan of tv_{tview}")))
+}
+
 /// Called by the catalog's `BEFORE INSERT` trigger for each row a restore loads
 /// into `pg_tview_meta`: its plan rebound to this database
 /// ([`crate::catalog::plan::rebind_restored`]).

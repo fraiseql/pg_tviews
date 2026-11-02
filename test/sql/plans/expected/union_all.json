@@ -1,0 +1,52 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_item",
+    "type": "integer"
+  },
+  "paths": [],
+  "references": [],
+  "set_operation": true,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_user.pk_user",
+        "public.tb_user.id",
+        "public.tb_user.name"
+      ],
+      "columns": [
+        "pk_user",
+        "id",
+        "name"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_user.pk_user"
+      ],
+      "relid": "public.tb_user",
+      "sql": "SELECT DISTINCT (d.{c:public.tb_user.pk_user} OPERATOR(pg_catalog.*) '2'::integer) FROM pg_tviews_delta d",
+      "table": "public.tb_user"
+    },
+    {
+      "attnums": [
+        "public.tb_post.pk_post",
+        "public.tb_post.id",
+        "public.tb_post.title"
+      ],
+      "columns": [
+        "pk_post",
+        "id",
+        "title"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_post.pk_post"
+      ],
+      "relid": "public.tb_post",
+      "sql": "SELECT DISTINCT ((d.{c:public.tb_post.pk_post} OPERATOR(pg_catalog.*) '2'::integer) OPERATOR(pg_catalog.+) '1'::integer) FROM pg_tviews_delta d",
+      "table": "public.tb_post"
+    }
+  ],
+  "version": 3
+}
