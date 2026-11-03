@@ -168,7 +168,7 @@ SQL
         psql -X -d postgres -qc "CREATE DATABASE $reference" >/dev/null
         psql -X -d "$reference" -q -f "$here/fixtures.sql"
         psql -X -d "$reference" -q -f "$here/verify.sql"
-        triggers="SELECT pg_catalog.pg_get_triggerdef(t.oid) || ' ' || t.tgenabled
+        triggers="SELECT pg_catalog.pg_get_triggerdef(t.oid) || ' ' || t.tgenabled::pg_catalog.text
                     FROM pg_catalog.pg_trigger t
                     JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
                    WHERE p.pronamespace = 'tviews'::pg_catalog.regnamespace
