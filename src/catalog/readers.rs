@@ -132,10 +132,12 @@ pub fn plans_now() -> crate::TViewResult<(Vec<PlanEntry>, Vec<String>)> {
             let plan = row
                 .named::<pgrx::JsonB>("plan")?
                 .map_or(serde_json::Value::Null, |j| j.0);
-            Ok(match crate::lineage::plan::TviewPlan::decode(&entity, plan) {
-                Ok(plan) => Ok(PlanEntry { entity, plan }),
-                Err(_) => Err(entity),
-            })
+            Ok(
+                match crate::lineage::plan::TviewPlan::decode(&entity, plan) {
+                    Ok(plan) => Ok(PlanEntry { entity, plan }),
+                    Err(_) => Err(entity),
+                },
+            )
         },
     )?;
     let mut plans = Vec::with_capacity(rows.len());
