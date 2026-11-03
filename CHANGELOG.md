@@ -7,24 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (breaking)
-
-- **One set of triggers per table, not one per TVIEW** (ADR 0136, amended). A table carries
-  one set of pg_tviews triggers however many TVIEWs read it: the union of what its readers
-  need, named `trg_tview_<role>_on_<schema>_<table>` and without arguments (was
-  `trg_tview_<role>_<entity>_on_<schema>_<table>`, the entity as argument). Each trigger
-  serves every TVIEW of its kind on the table; a partition gets one flush and one truncate
-  trigger. Creating or dropping a TVIEW no longer changes the triggers of the tables it reads,
-  unless it is the first to need a kind there or the last to stop. Re-registration (which the
-  update runs) replaces the per-TVIEW triggers. A per-TVIEW trigger left behind (an old dump)
-  fails the writes to its table and names `pg_tviews_reregister_all()`; the health check
-  reports it as an error. Nothing in fraiseql or confiture read the old names; a tool matching
-  `trg_tview_<role>_<entity>_` must match `trg_tview_<role>_on_` instead.
-- **A pg_tviews trigger can no longer be disabled for one TVIEW.** `ALTER TABLE … DISABLE
-  TRIGGER` on it stops every TVIEW of the table; `pg_tviews_suspend_triggers()` is the switch
-  for a bulk load. Creating a TVIEW still needs the `TRIGGER` privilege on every table it
-  reads, also when the table's set is already there.
-
 ## [0.1.0-beta.35] - 2026-11-01
 
 ### Changed (breaking)
@@ -82,6 +64,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refresh; `CALL` and `DO` still refresh after each statement they run.
 - **A TVIEW's `id` is always `uuid`**, written in JSON as a string (`PublicId::Number` is
   gone).
+- **One set of triggers per table, not one per TVIEW** (ADR 0136, amended). A table carries
+  one set of pg_tviews triggers however many TVIEWs read it: the union of what its readers
+  need, named `trg_tview_<role>_on_<schema>_<table>` and without arguments (was
+  `trg_tview_<role>_<entity>_on_<schema>_<table>`, the entity as argument). Each trigger
+  serves every TVIEW of its kind on the table; a partition gets one flush and one truncate
+  trigger. Creating or dropping a TVIEW no longer changes the triggers of the tables it reads,
+  unless it is the first to need a kind there or the last to stop. Re-registration (which the
+  update runs) replaces the per-TVIEW triggers. A per-TVIEW trigger left behind (an old dump)
+  fails the writes to its table and names `pg_tviews_reregister_all()`; the health check
+  reports it as an error. Nothing in fraiseql or confiture read the old names; a tool matching
+  `trg_tview_<role>_<entity>_` must match `trg_tview_<role>_on_` instead.
+- **A pg_tviews trigger can no longer be disabled for one TVIEW.** `ALTER TABLE … DISABLE
+  TRIGGER` on it stops every TVIEW of the table; `pg_tviews_suspend_triggers()` is the switch
+  for a bulk load. Creating a TVIEW still needs the `TRIGGER` privilege on every table it
+  reads, also when the table's set is already there.
 
 ### Fixed
 
@@ -232,6 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not exist fails.
 - Update callers of the renamed functions and views in step (confiture, fraiseql).
 - The new library is loaded at the next server start (`shared_preload_libraries`).
+- The update's re-registration replaces every per-TVIEW trigger on the base tables by the
+  per-table sets (`trg_tview_<role>_on_<schema>_<table>`). A per-TVIEW trigger restored later
+  from an older dump fails the writes to its table until `pg_tviews_reregister_all()`.
 
 ## [0.1.0-beta.34] - 2026-10-30
 
