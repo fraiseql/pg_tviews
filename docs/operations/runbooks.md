@@ -169,16 +169,16 @@ WHERE component IN ('extension', 'catalog', 'reregister');
 SELECT status, message
 FROM tviews.pg_tviews_check_health()
 WHERE component = 'triggers';
--- WARNING | 1 orphaned trigger found: trg_tview_row_post_on_app_tb_user on app.tb_user
+-- WARNING | 1 orphaned trigger found: trg_tview_row_on_app_tb_user on app.tb_user
 ```
 
 **Resolution**:
 
 ```sql
 -- An orphaned trigger: drop it
-DROP TRIGGER trg_tview_row_post_on_app_tb_user ON app.tb_user;
+DROP TRIGGER trg_tview_row_on_app_tb_user ON app.tb_user;
 
--- Missing triggers, or triggers without an entity: re-install them
+-- Missing triggers, or triggers of an older release (one per TVIEW): re-install them
 SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
