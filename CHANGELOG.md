@@ -7,59 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Opens 0.1.0-beta.36.
-
-### Changed (breaking)
-- A mutation refreshes its TVIEWs once (#286, ADR 0286). Statements run inside a
-  top-level statement (a function's, as fraiseql's `SELECT app.fn(…)` runs them, or a
-  trigger's) leave their refresh to it: the TVIEWs are refreshed when it ends, or earlier,
-  at the first query inside it that reads a TVIEW's table, which then reads on a snapshot
-  taken after that refresh. A function writing one row in 13 statements refreshed it,
-  and every TVIEW row embedding it, 13 times; now once. Consequences: a refresh error
-  raises at that read (inside the function, where its handlers see it) or at the end of
-  the top-level statement (outside them); `pg_tviews.max_refresh_rows` counts one such
-  refresh; `CALL` and `DO` still refresh after each statement they run.
-
-### Fixed
-- A fan-out patch (a parent's copied columns written into its children) left the
-  children of a parent whose primary key changed with the old parent's values: the
-  update's row images did not pair, which the patch took as nothing to write (#288).
-  Such an update now maps the rows to recompute.
-- A fan-out patch wrote a parent's columns into the children of a parent that a
-  condition of its own excludes (`LEFT JOIN … ON o.pk_org = t.fk_org AND o.deleted_at
-  IS NULL`) (#289). A table read with a condition on another of its columns gets no
-  fan-out: its writes recompute the rows they reach.
-- `DROP DATABASE` left the dropped database's TVIEWs in the cluster's statistics
-  table (4,096 slots): a cluster that creates and drops databases (test runs) ended
-  with every TVIEW untracked until a restart (#290). The slots are freed when the drop
-  succeeds.
-
-### Security
-- A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone. It
-  reads the base tables with the owner's privileges, so the `SELECT` grants it copied
-  from `tv_<entity>` handed back every row row-level security hid on the table. No
-  grant is copied any more; a privilege granted on a backing view is revoked at the
-  next `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO`, `REASSIGN OWNED`, create or
-  rebuild, and the update revokes the ones existing installs hold.
-
-### Added
-- Health component `contents`: TVIEWs whose table is empty while their definition
-  yields rows, read as each TVIEW's owner (what a deploy probe read through the
-  backing view before).
-- Coverage of the SQL suites: `scripts/sql-coverage.sh` runs the regression and
-  isolation suites against an instrumented build; CI holds the merged line coverage
-  at 91 % or more (92.7 % measured; the unit tests alone cover 28.4 %).
-
-### Removed
-- `PublicId::Number`: a TVIEW's `id` is always `uuid`, written in JSON as a string.
-- The regression tests of jsonb_delta's array helpers (`jsonb_extract_id`,
-  `jsonb_array_update_where_batch`, …), which pg_tviews never calls; the contract test
-  of the functions it does call stays.
-
-### Internal
-- One recompute by key set (`refresh/recompute.rs`) for one key or many: the single-key
-  path wrote the same statement.
-
 ## [0.1.0-beta.35] - 2026-11-01
 
 ### Changed (breaking)
@@ -106,6 +53,17 @@ Opens 0.1.0-beta.36.
 - **After `ALTER TABLE … RENAME COLUMN`, a TVIEW's stored definition is PostgreSQL's rendering
   of its backing view** (`pg_get_viewdef`), always. It was the author's text rewritten in
   place when a check accepted the rewrite. `pg_tviews_defines_view()` is gone.
+- **A mutation refreshes its TVIEWs once** (#286, ADR 0286). Statements run inside a
+  top-level statement (a function's, as fraiseql's `SELECT app.fn(…)` runs them, or a
+  trigger's) leave their refresh to it: the TVIEWs are refreshed when it ends, or earlier,
+  at the first query inside it that reads a TVIEW's table, which then reads on a snapshot
+  taken after that refresh. A function writing one row in 13 statements refreshed it,
+  and every TVIEW row embedding it, 13 times; now once. Consequences: a refresh error
+  raises at that read (inside the function, where its handlers see it) or at the end of
+  the top-level statement (outside them); `pg_tviews.max_refresh_rows` counts one such
+  refresh; `CALL` and `DO` still refresh after each statement they run.
+- **A TVIEW's `id` is always `uuid`**, written in JSON as a string (`PublicId::Number` is
+  gone).
 
 ### Fixed
 
@@ -158,6 +116,26 @@ Opens 0.1.0-beta.36.
 - **A session's `plan_cache_mode` no longer changes how writes plan** (#281): refreshes run under
   `auto`. `force_generic_plan` planned every lookup by an array for ten keys (#235's whole-table
   scans), and `force_custom_plan` planned every kept statement again at each call.
+- **A fan-out patch (a parent's copied columns written into its children) no longer leaves
+  the children of a parent whose primary key changed with the old parent's values** (#288):
+  the update's row images did not pair, which the patch took as nothing to write. Such an
+  update now maps the rows to recompute.
+- **A fan-out patch no longer writes a parent's columns into the children of a parent that
+  a condition of its own excludes** (`LEFT JOIN … ON o.pk_org = t.fk_org AND o.deleted_at
+  IS NULL`) (#289). A table read with a condition on another of its columns gets no
+  fan-out: its writes recompute the rows they reach.
+- **`DROP DATABASE` frees the dropped database's slots in the cluster's statistics table**
+  (4,096 slots) when the drop succeeds (#290): a cluster that created and dropped databases
+  (test runs) ended with every TVIEW untracked until a restart.
+
+### Security
+
+- **A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone.** It
+  reads the base tables with the owner's privileges, so the `SELECT` grants it copied
+  from `tv_<entity>` handed back every row row-level security hid on the table. No
+  grant is copied any more; a privilege granted on a backing view is revoked at the
+  next `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO`, `REASSIGN OWNED`, create or
+  rebuild, and the update revokes the ones existing installs hold.
 
 ### Changed
 
@@ -183,6 +161,23 @@ Opens 0.1.0-beta.36.
 - **`tviews.pg_tview_helpers` is gone**: nothing read it.
 - **A `CREATE TABLE tv_* AS` statement is read by PostgreSQL's own lexer** to find its SELECT;
   the `sqlparser` dependency is gone.
+- **One recompute by key set** (`refresh/recompute.rs`) for one key or many: the single-key
+  path wrote the same statement.
+
+### Added
+
+- **Health component `contents`**: TVIEWs whose table is empty while their definition
+  yields rows, read as each TVIEW's owner (what a deploy probe read through the backing
+  view before), for the TVIEWs of owners the caller belongs to.
+- **Coverage of the SQL suites**: `scripts/sql-coverage.sh` runs the regression and
+  isolation suites against an instrumented build; CI holds the merged line coverage at
+  91 % or more (92.7 % measured; the unit tests alone cover 28.4 %).
+
+### Removed
+
+- The regression tests of jsonb_delta's array helpers (`jsonb_extract_id`,
+  `jsonb_array_update_where_batch`, …), which pg_tviews never calls; the contract test
+  of the functions it does call stays.
 
 ### Documentation
 
@@ -208,6 +203,9 @@ Opens 0.1.0-beta.36.
   (`docs/operations/upgrade.md`, the runbook for both). Between the package swap and the
   update, writes and pg_tviews functions fail with 55000 and the hint naming the fix; a
   function this release removed raises the same error, never `could not find function`.
+- The update revokes every role's privileges on the backing views except their owner's.
+  A deploy probe that read backing views as another role reads the health component
+  `contents` instead (fraiseql/fraisier#504).
 - A writer at REPEATABLE READ or SERIALIZABLE must move to READ COMMITTED before the update.
 - Grant the operator role the new `_all` functions again
   (`pg_tviews_ensure_propagation_indexes_all(boolean)`, `pg_tviews_reset_stats_all()`): the

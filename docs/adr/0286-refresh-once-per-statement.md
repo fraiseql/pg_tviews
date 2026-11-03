@@ -1,6 +1,6 @@
 # ADR 0286: Refresh once per top-level statement, or at the first read of a TVIEW
 
-- Status: Accepted (0.1.0-beta.36)
+- Status: Accepted (0.1.0-beta.35)
 - Related: [ADR 0207](0207-concurrent-maintenance.md) (value locks), [ADR 0220](0220-settings.md)
   (`max_refresh_rows`), [concurrency](../concurrency.md), #286, fraiseql/fraiseql#1897
 
