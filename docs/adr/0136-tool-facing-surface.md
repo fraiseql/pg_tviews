@@ -645,3 +645,30 @@ table): the trigger sets of a TVIEW that has nothing to refresh add 1-11 µs to 
 10.5 % for a partitioned table under load). One trigger set per table would save that and
 nothing more: an extra TVIEW that does refresh costs its refresh (33-45 % of a lone
 write), which stays. Below the 10 % bar set for the change, it is not made.
+
+## Amendment (after 0.1.0-beta.35): one trigger set per table
+
+Supersedes the amendment above and the entity-as-argument identification of Decision 1's
+triggers. A table carries one set of pg_tviews triggers, `trg_tview_<tag>_on_<schema>_<table>`
+with no argument: the union of what the TVIEWs reading it need. Each handler serves every
+TVIEW of its kind on the table, found by relid in the backend's plan cache
+(`catalog::table_readers`); the delta trigger takes one sorted value-lock pass for all of
+them (#277). The set of a table is a function of the catalog (`sync_tables`), maintained on
+create, replace, re-register, drop and partition DDL with no reference count. Creating a
+TVIEW still requires the `TRIGGER` privilege on every table it reads. A trigger can no longer
+be disabled for one TVIEW; `pg_tviews_suspend_triggers()` is the switch.
+
+The reason is clarity, not speed: `\d` of a base table no longer grows with every TVIEW, and
+creating one is no longer DDL on its sources. It was made only because it costs nothing.
+Measured on a quiet dedicated machine (Hetzner CCX33, AMD EPYC-Milan, stock PostgreSQL 18,
+2026-11-03), base 0d4c08a5 against the change, built and run in the same session:
+
+- statements and plans per write (`test/bench/write_path/counts.sh`): identical on all eight
+  write shapes;
+- `triggers.sh 5 10 1 3 5`: an idle extra TVIEW (`miss`) cost 0.0025-0.0035 ms per write
+  (1.0-1.4 % of a lone write) and now costs 0.0017 ms or less (≤ 0.7 %, within noise of 0);
+  each extra TVIEW of a 100-row update costs 10 % less (row 1.09 → 0.98 ms, partitioned
+  1.10 → 0.99 ms), one OLD/NEW diff per row instead of one per TVIEW; a write with one TVIEW
+  is within ±2 % (row bulk 2.3 % faster);
+- `compare.sh` (5 rounds × 15 s, 1 and 16 clients, paired): no write slower, mean ratios
+  0.87-1.006, every 95 % interval reaching 1.00 or below.
