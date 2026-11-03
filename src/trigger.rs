@@ -107,8 +107,8 @@ fn trigger_tupdesc<'a>(trigger: &'a PgTrigger<'a>) -> Option<PgTupleDesc<'a>> {
     }
 }
 
-/// Trigger handler function for TVIEW cascades
-/// This is called by triggers installed on base tables when rows change
+/// The row trigger of a table: one per table (and the copy `PostgreSQL` makes
+/// on each partition), serving every TVIEW that reads the table's rows by key.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_trigger_handler<'a>(
@@ -118,6 +118,7 @@ fn pg_tview_trigger_handler<'a>(
     crate::revision::check();
     crate::concurrency::require_read_committed();
     crate::delta::require_level(trigger, true);
+    crate::delta::require_table_trigger(trigger);
     // A lookup that fails fails the write: committing it with nothing queued would
     // leave the TVIEWs over the table stale.
     let table_oid = trigger
@@ -129,39 +130,44 @@ fn pg_tview_trigger_handler<'a>(
             .raise()
         })
         .oid();
-    // The TVIEW this trigger serves (its argument). A table read by several
-    // TVIEWs has one trigger each.
-    let served = crate::delta::trigger_entity(trigger);
     // A row of a partition: what pg_tviews knows is its partitioned table.
     let table_oid = crate::catalog::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
+    let readers = crate::catalog::table_readers(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
     let all_paths = crate::catalog::cascade_paths(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
-    let paths: Vec<&crate::lineage::plan::LocalPath> = all_paths
-        .iter()
-        .filter(|p| p.entity_name == served)
-        .collect();
-    // The changed columns, compared datum by datum: only when a local path or a
-    // link check reads them.
-    let changed = (!paths.is_empty() || !crate::concurrency::links_changed())
+    // The changed columns, compared datum by datum, once for every TVIEW: only
+    // when a local path or a link check reads them.
+    let changed = (!all_paths.is_empty() || !crate::concurrency::links_changed())
         .then(|| changed_columns(trigger))
         .flatten();
-    note_row_write(trigger, &served, table_oid, changed.as_deref());
+    for served in readers.row() {
+        note_row_write(trigger, served, table_oid, changed.as_deref());
+    }
     // If triggers are suspended, record the change instead of enqueuing
     if crate::suspend::is_suspended() {
-        crate::suspend::record_change(&served);
+        for served in readers.row() {
+            crate::suspend::record_change(served);
+        }
         return Ok(None);
     }
 
-    // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
-    enqueue_local_keys(trigger, &paths, changed.as_deref());
+    for served in readers.row() {
+        // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
+        let paths: Vec<&crate::lineage::plan::LocalPath> = all_paths
+            .iter()
+            .filter(|p| p.entity_name == served)
+            .collect();
+        enqueue_local_keys(trigger, &paths, changed.as_deref());
 
-    // A partitioned table whose writes map through a query (ADR 0157): the
-    //    row trigger is the one copied onto every partition, so map this row.
-    if let Err(e) = crate::delta::map_row(trigger, &served, table_oid) {
-        e.raise_in(&format!(
-            "pg_tviews: could not map the changed row to tv_{served} keys"
-        ));
+        // A partitioned table whose writes map through a query (ADR 0157): the
+        // row trigger is the one copied onto every partition, so map this row.
+        if let Err(e) = crate::delta::map_row(trigger, served, table_oid) {
+            e.raise_in(&format!(
+                "pg_tviews: could not map the changed row to tv_{served} keys"
+            ));
+        }
     }
 
     Ok(None)
@@ -477,9 +483,10 @@ fn capture_value(
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
-    _trigger: &'a PgTrigger<'a>,
+    trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
+    crate::delta::require_table_trigger(trigger);
     if !crate::executor::flush_deferred() {
         flush_after_statement();
     }

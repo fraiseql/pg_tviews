@@ -308,15 +308,15 @@ fn reregister_check() -> Check {
     }
 }
 
-/// `pg_tviews`' triggers against the tables the TVIEWs read.
 /// `pg_tviews`' triggers against the plans: a missing or disabled one leaves a
-/// TVIEW stale (an error); an orphaned or untagged one does no harm (a warning).
+/// TVIEW stale, one an older release installed per TVIEW fails the writes to its
+/// table (errors); an orphaned one does no harm (a warning).
 fn trigger_check() -> Check {
     match crate::dependency::triggers::trigger_problems() {
         Ok(p)
             if p.orphaned.is_empty()
                 && p.missing.is_empty()
-                && p.untagged.is_empty()
+                && p.per_tview.is_empty()
                 && p.disabled.is_empty() =>
         {
             ok("triggers", "All triggers properly linked")
@@ -335,8 +335,8 @@ fn trigger_check() -> Check {
                 ),
                 (&p.orphaned, "orphaned trigger", "found"),
                 (
-                    &p.untagged,
-                    "trigger without an entity",
+                    &p.per_tview,
+                    "trigger of an older release",
                     "(run pg_tviews_reregister_all())",
                 ),
             ]
@@ -346,7 +346,7 @@ fn trigger_check() -> Check {
                 format!("{} {action}: {}", count(list.len(), what), sample(list))
             })
             .collect();
-            if p.disabled.is_empty() && p.missing.is_empty() {
+            if p.disabled.is_empty() && p.missing.is_empty() && p.per_tview.is_empty() {
                 warning("triggers", parts.join("; "))
             } else {
                 error("triggers", parts.join("; "))

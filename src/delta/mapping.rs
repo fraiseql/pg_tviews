@@ -2,7 +2,6 @@
 //! query, or written into every row they reach as a fan-out patch.
 
 use super::Event;
-use super::capture::Statement;
 use super::render::{computed_columns, delta_sql, key_sql_type, row_pairing};
 use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
@@ -144,33 +143,57 @@ fn route(
     })
 }
 
-/// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
-/// them.
-pub(super) fn map_statement(
+/// A TVIEW a statement's rows reach: its entity, catalog row and route.
+type Routed<'a> = (&'a str, std::rc::Rc<TviewMeta>, Route);
+
+/// Map the rows a statement changed in `table_oid` to the keys of each TVIEW of
+/// `entities` (the table's delta readers, in order) and enqueue them. Every
+/// TVIEW's route comes first (it notes the write's links), then one pass takes
+/// the value locks of all of them (ADR 0207, #277), then each is looked up.
+///
+/// # Errors
+/// The entity whose mapping failed, with the error.
+pub(super) fn map_statement<'a>(
+    trigger: &PgTrigger<'_>,
+    entities: &[&'a str],
+    table_oid: Oid,
+    event: Event,
+) -> Result<(), (&'a str, TViewError)> {
+    let mut routed: Vec<Routed<'a>> = Vec::with_capacity(entities.len());
+    for &entity in entities {
+        let meta = TviewMeta::load_reaching(entity, table_oid)
+            .and_then(|meta| {
+                meta.ok_or_else(|| TViewError::TviewNotFound {
+                    name: entity.to_string(),
+                })
+            })
+            .map_err(|e| (entity, e))?;
+        let Some(mapping) = meta.key_mapping(table_oid, None) else {
+            refresh_all(entity, "its mapping of a written table is unknown");
+            continue;
+        };
+        let route = route(trigger, &meta, mapping, table_oid, event).map_err(|e| (entity, e))?;
+        routed.push((entity, meta, route));
+    }
+    // Refreshes of the TVIEW rows these rows feed meet this write on the
+    // values (ADR 0207): locked before any query finds rows by them.
+    capture_pass(trigger, &routed, table_oid)?;
+    for (entity, meta, route) in &routed {
+        apply(trigger, entity, meta, route, table_oid, event).map_err(|e| (*entity, e))?;
+    }
+    Ok(())
+}
+
+/// Enqueue the keys of `meta`'s TVIEW the statement's rows reach by `route`, its
+/// value locks taken.
+fn apply(
     trigger: &PgTrigger<'_>,
     entity: &str,
+    meta: &TviewMeta,
+    route: &Route,
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<()> {
-    let statement = Statement::of(trigger, table_oid);
-    // A pass of the statement covered this TVIEW: its locks are held and its
-    // route known.
-    let (meta, route, locked) =
-        if let Some((meta, route)) = statement.and_then(|s| s.recorded(entity)) {
-            (meta, route, true)
-        } else {
-            let meta = TviewMeta::load_reaching(entity, table_oid)?.ok_or_else(|| {
-                TViewError::TviewNotFound {
-                    name: entity.to_string(),
-                }
-            })?;
-            let Some(mapping) = meta.key_mapping(table_oid, None) else {
-                refresh_all(entity, "its mapping of a written table is unknown");
-                return Ok(());
-            };
-            let route = route(trigger, &meta, mapping, table_oid, event)?;
-            (meta, route, false)
-        };
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         refresh_all(entity, "its mapping of a written table is unknown");
         return Ok(());
@@ -194,17 +217,6 @@ pub(super) fn map_statement(
             }
         }
         Route::Mapped { delta } => {
-            // Refreshes of the TVIEW rows these rows feed meet this write on the
-            // values (ADR 0207): locked before any query finds rows by them.
-            if !locked {
-                statement_locks(
-                    trigger,
-                    statement,
-                    (entity, &meta, &delta),
-                    table_oid,
-                    event,
-                )?;
-            }
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
@@ -219,7 +231,7 @@ pub(super) fn map_statement(
             // transaction linked to these values is found. Rows the first
             // lookup missed have their read set locked by the flush, as every
             // row it computes.
-            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql)?;
+            let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
@@ -249,64 +261,28 @@ fn lookup(
     )
 }
 
-/// The value locks of the capture of the statement by `first`, a TVIEW and the
-/// delta of its mapped rows: taken by the statement's first delta trigger on
-/// the table, for every TVIEW whose trigger fires for it, or for `first` alone.
-fn statement_locks(
+/// One pass of the value locks of the TVIEWs `routed` maps through a query, for
+/// the statement's changed rows: each one's writer locks and, once the
+/// transaction changed a link, the read set of the rows its lookup finds now,
+/// unlocked. Taken in one sorted pass, so that two statements writing the same
+/// values never wait on each other in crossed orders (#277).
+///
+/// # Errors
+/// The entity whose locks could not be read, with the error.
+fn capture_pass<'a>(
     trigger: &PgTrigger<'_>,
-    statement: Option<Statement>,
-    first: (&str, &TviewMeta, &str),
+    routed: &[Routed<'a>],
     table_oid: Oid,
-    event: Event,
-) -> TViewResult<()> {
-    let entity = first.0;
-    // The first trigger of the statement takes the pass for itself and for the
-    // triggers after it; one no pass covered (a COPY) takes its own.
-    let later: Vec<String> = statement
-        .filter(|s| !s.has_record())
-        .and_then(|_| super::capture::firing_entities(trigger))
-        .map(|all| {
-            let at = all.iter().position(|e| e == entity).unwrap_or(0);
-            all[at..].iter().filter(|e| *e != entity).cloned().collect()
+) -> Result<(), (&'a str, TViewError)> {
+    let mapped: Vec<(&'a str, &TviewMeta, &str)> = routed
+        .iter()
+        .filter_map(|(entity, meta, route)| match route {
+            Route::Mapped { delta } => Some((*entity, &**meta, delta.as_str())),
+            _ => None,
         })
-        .unwrap_or_default();
-    let covered = capture_pass(trigger, first, &later, table_oid, event)?;
-    if let Some(statement) = statement {
-        statement.record(covered);
-    }
-    Ok(())
-}
-
-/// One pass of the value locks of `first` and the TVIEWs `later` for the
-/// statement's changed rows: each one's writer locks and, once the transaction
-/// changed a link, the read set of the rows its lookup finds now, unlocked.
-/// Returns how the statement's rows reach each TVIEW of `later`, for its own
-/// trigger.
-fn capture_pass(
-    trigger: &PgTrigger<'_>,
-    first: (&str, &TviewMeta, &str),
-    later: &[String],
-    table_oid: Oid,
-    event: Event,
-) -> TViewResult<std::collections::HashMap<String, super::capture::Routed>> {
-    // Every write's links first: they decide whether the read sets are locked.
-    let mut covered = std::collections::HashMap::new();
-    for entity in later {
-        let Some(meta) = TviewMeta::load_reaching(entity, table_oid)? else {
-            continue;
-        };
-        let Some(mapping) = meta.key_mapping(table_oid, None) else {
-            continue;
-        };
-        let route = route(trigger, &meta, mapping, table_oid, event)?;
-        covered.insert(entity.clone(), (meta, route));
-    }
-    // In the order the triggers fire.
-    let mut mapped = vec![first];
-    for entity in later {
-        if let Some((meta, Route::Mapped { delta })) = covered.get(entity) {
-            mapped.push((entity.as_str(), &**meta, delta.as_str()));
-        }
+        .collect();
+    if mapped.is_empty() {
+        return Ok(());
     }
     let links = crate::concurrency::links_changed();
     let mut pass = Pass::default();
@@ -314,22 +290,25 @@ fn capture_pass(
         let Some(mapping) = meta.key_mapping(table_oid, None) else {
             continue;
         };
-        crate::concurrency::changed_rows(mapping, &mut pass, |column| {
-            with_transition_tables(trigger, entity, |client, table| {
-                texts(client, Some(table), &changed_values(delta, column), &[])
-            })
-        })?;
-        if !links {
-            continue;
-        }
-        let Some(keys_sql) = rendered(entity, mapping)? else {
-            continue;
+        let mut locks = || -> TViewResult<()> {
+            crate::concurrency::changed_rows(mapping, &mut pass, |column| {
+                with_transition_tables(trigger, entity, |client, table| {
+                    texts(client, Some(table), &changed_values(delta, column), &[])
+                })
+            })?;
+            if !links {
+                return Ok(());
+            }
+            let Some(keys_sql) = rendered(entity, mapping)? else {
+                return Ok(());
+            };
+            let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
+            super::capture::add_read_set(meta, &keys, &mut pass)
         };
-        let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
-        super::capture::add_read_set(meta, &keys, &mut pass)?;
+        locks().map_err(|e| (entity, e))?;
     }
     crate::concurrency::take(&pass);
-    Ok(covered)
+    Ok(())
 }
 
 /// Write an UPDATE into every TVIEW row it reaches instead of recomputing them,

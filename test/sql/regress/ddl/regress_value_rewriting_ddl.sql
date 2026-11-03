@@ -77,14 +77,14 @@ DO $$
 DECLARE trg text;
 BEGIN
     SELECT tgname INTO trg FROM pg_trigger
-     WHERE tgrelid = 'tb_feel'::regclass AND tgname LIKE 'trg_tview_row_feel_%';
+     WHERE tgrelid = 'tb_feel'::regclass AND tgname LIKE 'trg_tview_row_on_%';
     EXECUTE format('ALTER TABLE tb_feel ENABLE REPLICA TRIGGER %I', trg);
 END $$;
 DO $$
 DECLARE report text;
 BEGIN
     SELECT pg_catalog.string_agg(c::text, ' ') INTO report FROM tviews.pg_tviews_check_health() c;
-    IF report NOT LIKE '%trg_tview_row_feel_%tb_feel%ENABLE REPLICA%' THEN
+    IF report NOT LIKE '%trg_tview_row_on_public_tb_feel%ENABLE REPLICA%' THEN
         RAISE EXCEPTION 'value-rewriting DDL FAIL: the health check misses an ENABLE REPLICA trigger: %',
             report;
     END IF;

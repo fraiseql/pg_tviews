@@ -50,7 +50,6 @@ pub fn abort() {
     if let Some(savepoint) = SAVEPOINTS.with_borrow_mut(Vec::pop) {
         state::rollback(savepoint.pending);
         crate::concurrency::rollback(savepoint.locks);
-        crate::delta::capture::clear();
         crate::executor::rollback(&savepoint.executor);
         crate::suspend::restore(savepoint.suspension);
     }

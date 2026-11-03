@@ -161,6 +161,29 @@ SQL
     echo "catalog identical to a fresh install ($(wc -l <"$tmp/fresh") facts)"
 
     if [[ "$mode" == update ]]; then
+        # The tables carry the triggers the same TVIEWs get on a fresh install:
+        # one set per table, the per-TVIEW triggers of older releases gone.
+        reference=pg_tviews_upgrade_reference
+        psql -X -d postgres -qc "DROP DATABASE IF EXISTS $reference" >/dev/null
+        psql -X -d postgres -qc "CREATE DATABASE $reference" >/dev/null
+        psql -X -d "$reference" -q -f "$here/fixtures.sql"
+        psql -X -d "$reference" -q -f "$here/verify.sql"
+        triggers="SELECT pg_catalog.pg_get_triggerdef(t.oid) || ' ' || t.tgenabled
+                    FROM pg_catalog.pg_trigger t
+                    JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
+                   WHERE p.pronamespace = 'tviews'::pg_catalog.regnamespace
+                     AND p.proname IN ('pg_tview_trigger_handler', 'pg_tview_flush_trigger',
+                                       'pg_tview_delta_trigger', 'pg_tview_truncate_trigger')
+                     AND t.tgparentid = 0
+                   ORDER BY 1"
+        psql -X -At -d "$upgraded" -c "$triggers" >"$tmp/upgraded_triggers"
+        psql -X -At -d "$reference" -c "$triggers" >"$tmp/fresh_triggers"
+        if ! diff -u "$tmp/fresh_triggers" "$tmp/upgraded_triggers"; then
+            fail "the upgraded tables' triggers differ from a fresh install (- fresh, + upgraded)"
+        fi
+        echo "base-table triggers identical to a fresh install ($(wc -l <"$tmp/fresh_triggers") triggers)"
+        psql -X -d postgres -qc "DROP DATABASE $reference" >/dev/null
+
         psql -X -d "$upgraded" -q -f "$here/verify.sql"
         echo "TVIEWs follow their base tables after the upgrade"
         psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"

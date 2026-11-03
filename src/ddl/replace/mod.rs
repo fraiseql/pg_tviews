@@ -448,8 +448,9 @@ fn replace_in_place(
             "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
         ))
     })?;
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
-    crate::dependency::sync_entity_triggers(&reads, entity)?;
+    crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
     {
         // The rows are recomputed as the TVIEW's owner, as every refresh is.
         let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;

@@ -61,15 +61,16 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         crate::owner::require_owner(owned, &format!("tv_{entity_name}"))?;
     }
 
-    // Remove the TVIEW's triggers from its base tables. They are found by
-    // their function and the entity they carry, not through the backing view, which
-    // may already be gone when the drop follows a base table or helper view dropped
-    // with CASCADE.
-    crate::dependency::remove_entity_triggers(entity_name)?;
+    // The tables whose triggers serve it, from its stored plan, not through the
+    // backing view, which may already be gone when the drop follows a base table
+    // or helper view dropped with CASCADE.
+    let read_before = crate::catalog::readers::tables_of(entity_name)?;
 
     // Deregister first: the sql_drop event trigger the drops below fire then finds
     // no TVIEW of its own to clean up, and the drop is recorded once.
     drop_metadata(entity_name)?;
+    // Their triggers now serve the TVIEWs left.
+    crate::dependency::sync_after_drop(&read_before)?;
 
     // Drop the materialized table (schema-resolved via OID).
     // Honor the caller's CASCADE/RESTRICT behavior so an explicit
@@ -126,8 +127,9 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
         drop_backing_view(entity)?;
     }
 
-    crate::dependency::remove_entity_triggers(entity)?;
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     drop_metadata(entity)?;
+    crate::dependency::sync_after_drop(&read_before)?;
     crate::cache::invalidate_all();
     crate::audit::log_drop(entity)?;
     if table_left == Some(true) {

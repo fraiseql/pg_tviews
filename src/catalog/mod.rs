@@ -5,11 +5,12 @@ pub(crate) mod indexes;
 mod partition;
 pub mod plan;
 pub mod queries;
+pub mod readers;
 pub mod registered;
 pub mod resolve;
 pub mod row;
 
-pub use cached::{cascade_paths, graph, plans, tview_tables};
+pub use cached::{cascade_paths, graph, plans, table_readers, tview_tables};
 pub use collections::Collection;
 pub use graph::EntityDepGraph;
 pub use partition::partition_root;

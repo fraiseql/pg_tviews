@@ -15,6 +15,8 @@ thread_local! {
     static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
     /// Table → the local paths starting at it.
     static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
+    /// Table → the TVIEWs reading it, with the triggers each needs there.
+    static TABLE_READERS: Memo<Oid, std::rc::Rc<super::readers::TableReaders>> = Memo::new();
     /// Every TVIEW's table (one entry, keyed by `()`).
     static TVIEW_TABLES: Memo<(), std::rc::Rc<std::collections::HashSet<Oid>>> = Memo::new();
 }
@@ -75,6 +77,25 @@ pub fn cascade_paths(table_oid: Oid) -> crate::TViewResult<std::rc::Rc<[LocalPat
                 .cloned()
                 .collect::<Vec<_>>()
                 .into())
+        })
+    })
+}
+
+/// The TVIEWs reading `table_oid` (the root of a partition tree), with the
+/// triggers each needs there: what its one set of `pg_tviews` triggers serves
+/// (cached for the backend, as [`cascade_paths`]).
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn table_readers(
+    table_oid: Oid,
+) -> crate::TViewResult<std::rc::Rc<super::readers::TableReaders>> {
+    TABLE_READERS.with(|m| {
+        m.get_or_load(table_oid, || {
+            // SAFETY: a syscache lookup by OID.
+            let relkind = unsafe { pgrx::pg_sys::get_rel_relkind(table_oid) };
+            let partitioned = relkind == pgrx::pg_sys::RELKIND_PARTITIONED_TABLE.cast_signed();
+            Ok(super::readers::TableReaders::from_plans(&plans()?, table_oid, partitioned).into())
         })
     })
 }

@@ -4,8 +4,8 @@
 -- and resolved each TVIEW's base table as ('tb_' || entity)::regclass: wrong for an
 -- aggregate TVIEW and for any TVIEW reading more than tb_<entity>, and an ERROR for
 -- one off the search_path. Now a trigger is pg_tviews' when it calls one of its
--- trigger functions, and orphaned when the entity it carries is not registered or
--- does not read its table.
+-- trigger functions, and orphaned when no registered TVIEW needs it on its table
+-- (a table carries one set, the union of what its readers need).
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/operations/regress_health_check.sql
 
@@ -89,7 +89,7 @@ END $$;
 
 -- 2. A pg_tviews trigger on a table no TVIEW reads is orphaned.
 CREATE TRIGGER trg_tview_planted AFTER INSERT ON public.audit_me
-    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");
+    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler();
 DO $$ BEGIN
     IF public.trigger_check() NOT LIKE 'WARNING: 1 orphaned trigger%trg_tview_planted%' THEN
         RAISE EXCEPTION '#139 FAIL: planted trigger not reported: %', public.trigger_check();
@@ -97,8 +97,9 @@ DO $$ BEGIN
 END $$;
 DROP TRIGGER trg_tview_planted ON public.audit_me;
 
--- A dropped pg_tviews trigger is reported missing; one without an entity (as
--- older releases installed them) is reported for re-registration.
+-- A dropped pg_tviews trigger is reported missing, with the TVIEWs it serves; one
+-- naming a TVIEW (older releases installed one set per TVIEW) is reported for
+-- re-registration.
 DO $$
 DECLARE t record;
 BEGIN
@@ -108,25 +109,25 @@ BEGIN
     EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
 END $$;
 DO $$ BEGIN
-    IF public.trigger_check() NOT LIKE 'ERROR: 1 missing trigger%user_orders (pg_tview_flush_trigger) on app.tb_order%' THEN
+    IF public.trigger_check() NOT LIKE 'ERROR: 1 missing trigger%pg_tview_flush_trigger on app.tb_order (%user_orders%)%' THEN
         RAISE EXCEPTION '#139 FAIL: missing trigger not reported: %', public.trigger_check();
     END IF;
 END $$;
-CREATE TRIGGER trg_tview_untagged AFTER INSERT ON public.audit_me
-    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler();
+CREATE TRIGGER trg_tview_per_tview AFTER INSERT ON public.audit_me
+    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");
 DO $$ BEGIN
-    IF public.trigger_check() NOT LIKE '%1 trigger without an entity%trg_tview_untagged%' THEN
-        RAISE EXCEPTION '#139 FAIL: untagged trigger not reported: %', public.trigger_check();
+    IF public.trigger_check() NOT LIKE 'ERROR:%1 trigger of an older release%trg_tview_per_tview%' THEN
+        RAISE EXCEPTION '#139 FAIL: per-TVIEW trigger not reported: %', public.trigger_check();
     END IF;
 END $$;
-DROP TRIGGER trg_tview_untagged ON public.audit_me;
+DROP TRIGGER trg_tview_per_tview ON public.audit_me;
 SET search_path TO app, public, tviews;
 SELECT pg_tviews_drop('user_orders');
 RESET search_path;
 
--- 3. The triggers of a TVIEW whose registration is gone are orphaned: row, flush and
---    TRUNCATE on tb_post; three delta triggers, flush and TRUNCATE on tb_user, whose
---    writes map through a query (ADR 0157).
+-- 3. The triggers of the tables only a TVIEW whose registration is gone read are
+--    orphaned: row, flush and TRUNCATE on tb_post; three delta triggers, flush and
+--    TRUNCATE on tb_user, whose writes map through a query (ADR 0157).
 DELETE FROM tviews.pg_tview_meta WHERE entity = 'post';
 DO $$ BEGIN
     IF public.trigger_check() NOT LIKE 'WARNING: 8 orphaned triggers%' THEN

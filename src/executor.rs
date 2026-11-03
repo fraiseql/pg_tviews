@@ -37,10 +37,8 @@ static mut PREV_EXECUTOR_FINISH: pg_sys::ExecutorFinish_hook_type = None;
 static mut PREV_EXECUTOR_END: pg_sys::ExecutorEnd_hook_type = None;
 
 thread_local! {
-    /// The number of each running query's frame, innermost last.
-    static FRAMES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    /// The number of the last frame pushed: each frame of the backend has its own.
-    static LAST_FRAME: Cell<u64> = const { Cell::new(0) };
+    /// The number of running queries' frames.
+    static FRAMES: Cell<usize> = const { Cell::new(0) };
     /// The queries started on a snapshot of their own after a flush, until they end.
     static RESNAPPED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     /// Whether a flush was left to an enclosing statement since the last flush:
@@ -80,13 +78,13 @@ pub unsafe fn install_hooks() {
 /// Whether the flush trigger firing now leaves the queue to an enclosing
 /// statement (a frame below the innermost one), which then flushes it.
 pub fn flush_deferred() -> bool {
-    defer_if(FRAMES.with(|f| f.borrow().len() > 1))
+    defer_if(FRAMES.get() > 1)
 }
 
 /// Whether a statement is running, which then flushes what is queued now when
 /// the outermost one ends, or at a read of a TVIEW before that.
 pub fn defers_flush() -> bool {
-    defer_if(FRAMES.with(|f| !f.borrow().is_empty()))
+    defer_if(FRAMES.get() > 0)
 }
 
 fn defer_if(deferring: bool) -> bool {
@@ -98,14 +96,7 @@ fn defer_if(deferring: bool) -> bool {
 
 /// Whether no query is running.
 fn outermost() -> bool {
-    FRAMES.with(|f| f.borrow().is_empty())
-}
-
-/// The number of the innermost running query's frame: during its `AFTER`
-/// statement triggers, the same for each of them and for no other statement.
-/// `None` outside the executor (a `COPY` fires its triggers without one).
-pub fn frame() -> Option<u64> {
-    FRAMES.with(|f| f.borrow().last().copied())
+    FRAMES.get() == 0
 }
 
 /// Where the executor's state stood when a subtransaction started.
@@ -119,7 +110,7 @@ pub struct Mark {
 /// Record where the executor's state stands: a subtransaction starts.
 pub fn mark() -> Mark {
     Mark {
-        frames: FRAMES.with(|f| f.borrow().len()),
+        frames: FRAMES.get(),
         resnapped: RESNAPPED.with(|r| r.borrow().clone()),
         deferred: DEFERRED.get(),
         refreshed_at: REFRESHED_AT.get(),
@@ -130,7 +121,7 @@ pub fn mark() -> Mark {
 /// gone, even those whose frames or end an error skipped, and a flush it ran is
 /// undone with its writes, so the work that flush took is deferred again.
 pub fn rollback(mark: &Mark) {
-    FRAMES.with(|f| f.borrow_mut().truncate(mark.frames));
+    FRAMES.set(FRAMES.get().min(mark.frames));
     RESNAPPED.with(|r| r.borrow_mut().clone_from(&mark.resnapped));
     DEFERRED.set(mark.deferred);
     REFRESHED_AT.set(mark.refreshed_at);
@@ -139,7 +130,7 @@ pub fn rollback(mark: &Mark) {
 /// Forget every frame, every query started on its own snapshot and the last
 /// refresh: the transaction ended, so no query is running.
 pub fn reset() {
-    FRAMES.with(|f| f.borrow_mut().clear());
+    FRAMES.set(0);
     RESNAPPED.with(|r| r.borrow_mut().clear());
     REFRESHED_AT.set(None);
     DEFERRED.set(false);
@@ -162,18 +153,14 @@ struct Frame;
 
 impl Frame {
     fn push() -> Self {
-        let number = LAST_FRAME.get().wrapping_add(1);
-        LAST_FRAME.set(number);
-        FRAMES.with(|f| f.borrow_mut().push(number));
+        FRAMES.set(FRAMES.get() + 1);
         Self
     }
 }
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        FRAMES.with(|f| {
-            f.borrow_mut().pop();
-        });
+        FRAMES.set(FRAMES.get().saturating_sub(1));
     }
 }
 

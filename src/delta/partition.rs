@@ -15,19 +15,19 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
-/// Refresh in full every TVIEW whose row trigger sits on the root of `table`'s
-/// partition tree: the rows of a partition attached to it or detached from it
-/// changed with no row trigger firing.
+/// Refresh in full every TVIEW the row trigger on the root of `table`'s
+/// partition tree serves: the rows of a partition attached to it or detached
+/// from it changed with no row trigger firing.
 ///
 /// # Errors
 /// Returns an error if the catalog query or a refresh fails.
 pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
     let root = crate::catalog::partition_root(table)?;
-    let entities = crate::dependency::triggers::row_trigger_entities(root)?;
-    if entities.is_empty() {
+    let readers = crate::catalog::table_readers(root)?;
+    if readers.row().next().is_none() {
         return Ok(());
     }
-    for entity in &entities {
+    for entity in readers.row() {
         if suspended() {
             crate::suspend::record_change(entity);
         } else {
@@ -129,8 +129,8 @@ fn readers_above(partition: Oid) -> TViewResult<Vec<(String, Oid)>> {
         "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
         partition,
     )? {
-        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
-            readers.push((entity, ancestor));
+        for entity in crate::catalog::table_readers(ancestor)?.row() {
+            readers.push((entity.to_string(), ancestor));
         }
     }
     Ok(readers)
