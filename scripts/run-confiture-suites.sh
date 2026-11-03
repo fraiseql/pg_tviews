@@ -62,6 +62,8 @@ with psycopg.connect(url, autocommit=True) as conn:
         "pg_trgm (contrib) is not installed on this server"
     server = conn.info.server_version // 10000
 
+    # pg_tviews requires jsonb_delta; it stays installed for the suites.
+    conn.execute("CREATE EXTENSION IF NOT EXISTS jsonb_delta")
     conn.execute("CREATE EXTENSION pg_tviews")
     try:
         live_catalog.require_supported_pg_tviews_on(conn)
