@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-beta.35] - 2026-11-01
+## [0.1.0-beta.35] - 2026-11-03
 
 ### Changed (breaking)
 
@@ -2648,7 +2648,15 @@ First beta: a feature-complete transactional materialized JSONB view system.
 
 - Initial project structure on pgrx.
 
-[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.25...HEAD
+[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.35...HEAD
+[0.1.0-beta.35]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.34...v0.1.0-beta.35
+[0.1.0-beta.34]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.33...v0.1.0-beta.34
+[0.1.0-beta.33]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.32...v0.1.0-beta.33
+[0.1.0-beta.32]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.31...v0.1.0-beta.32
+[0.1.0-beta.31]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.30...v0.1.0-beta.31
+[0.1.0-beta.30]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.27...v0.1.0-beta.30
+[0.1.0-beta.27]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.26...v0.1.0-beta.27
+[0.1.0-beta.26]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.25...v0.1.0-beta.26
 [0.1.0-beta.25]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.24...v0.1.0-beta.25
 [0.1.0-beta.24]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.23...v0.1.0-beta.24
 [0.1.0-beta.23]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.22...v0.1.0-beta.23
