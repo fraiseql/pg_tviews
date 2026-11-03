@@ -90,7 +90,9 @@ setting.
   (`src/flush/savepoint.rs`), so its writes are never refreshed.
 - A query that refreshed, or whose snapshot predated a refresh, reads on a newer snapshot
   than the statement that called it: a STABLE function then sees transactions its caller's
-  snapshot does not, as a VOLATILE one does under `READ COMMITTED`.
+  snapshot does not, as a VOLATILE one does under `READ COMMITTED`. A cursor fetched
+  after a refresh in its transaction reads its TVIEW-reading functions' rows on such a
+  snapshot too, the rest of its rows on its own.
 - A read between two writes of the same rows refreshes them twice; read the result back
   once, after the last write.
 - Every query pays one thread-local check in `ExecutorStart` and `ExecutorRun`; the range

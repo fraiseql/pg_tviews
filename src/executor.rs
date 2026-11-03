@@ -111,7 +111,7 @@ pub fn frame() -> Option<u64> {
 /// Where the executor's state stood when a subtransaction started.
 pub struct Mark {
     frames: usize,
-    resnapped: usize,
+    resnapped: Vec<usize>,
     deferred: bool,
     refreshed_at: Option<pg_sys::CommandId>,
 }
@@ -120,7 +120,7 @@ pub struct Mark {
 pub fn mark() -> Mark {
     Mark {
         frames: FRAMES.with(|f| f.borrow().len()),
-        resnapped: RESNAPPED.with(|r| r.borrow().len()),
+        resnapped: RESNAPPED.with(|r| r.borrow().clone()),
         deferred: DEFERRED.get(),
         refreshed_at: REFRESHED_AT.get(),
     }
@@ -131,7 +131,7 @@ pub fn mark() -> Mark {
 /// undone with its writes, so the work that flush took is deferred again.
 pub fn rollback(mark: &Mark) {
     FRAMES.with(|f| f.borrow_mut().truncate(mark.frames));
-    RESNAPPED.with(|r| r.borrow_mut().truncate(mark.resnapped));
+    RESNAPPED.with(|r| r.borrow_mut().clone_from(&mark.resnapped));
     DEFERRED.set(mark.deferred);
     REFRESHED_AT.set(mark.refreshed_at);
 }

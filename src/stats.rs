@@ -124,12 +124,11 @@ impl Table {
         None
     }
 
-    /// Free the slots of database `db`, and the table is no longer full.
+    /// Free the slots of database `db` (the table has room again if it held any).
     fn free_database(&mut self, db: u32) {
         while let Some(i) = self.slots.iter().position(|slot| slot.db == db) {
             self.free(i);
         }
-        self.overflowed = false;
     }
 
     /// Free slot `i`, moving back the slots after it that probed past it.
@@ -377,6 +376,7 @@ pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
     let mut shared = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE).ok_or_else(unavailable)?;
     if whole_database {
         shared.free_database(db);
+        shared.overflowed = false;
     }
     for table in tables {
         match shared.find_or_take(db, table.to_u32(), now) {

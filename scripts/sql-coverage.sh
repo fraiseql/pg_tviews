@@ -22,7 +22,11 @@ out="$(realpath -m "${2:-target/sql-coverage}")"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bindir="$("$PG_CONFIG" --bindir)"
 work="$out/work"
-rm -rf "$out"; mkdir -p "$work/pkg/lib" "$work/pkg/share/extension"
+# Only a directory this script made is emptied.
+if [[ -e "$out" && ! -f "$out/.sql-coverage" ]]; then
+  echo "refusing to empty $out: not made by sql-coverage.sh" >&2; exit 2
+fi
+rm -rf "$out"; mkdir -p "$work/pkg/lib" "$work/pkg/share/extension"; touch "$out/.sql-coverage"
 
 # jsonb_delta, built plain: its coverage is not ours.
 (cd "$JSONB_DELTA_DIR" && CARGO_TARGET_DIR="$work/jd-target" cargo pgrx package \

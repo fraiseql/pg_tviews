@@ -16,9 +16,9 @@ Opens 0.1.0-beta.36.
   at the first query inside it that reads a TVIEW's table, which then reads on a snapshot
   taken after that refresh. A function writing one row in 13 statements refreshed it,
   and every TVIEW row embedding it, 13 times; now once. Consequences: a refresh error
-  raises at that read or at the end of the top-level statement, outside the function's
-  exception handlers; `pg_tviews.max_refresh_rows` counts one such refresh; `CALL` and
-  `DO` still refresh after each statement they run.
+  raises at that read (inside the function, where its handlers see it) or at the end of
+  the top-level statement (outside them); `pg_tviews.max_refresh_rows` counts one such
+  refresh; `CALL` and `DO` still refresh after each statement they run.
 
 ### Fixed
 - A fan-out patch (a parent's copied columns written into its children) left the

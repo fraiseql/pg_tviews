@@ -148,6 +148,12 @@ SELECT must(status = 'WARNING' AND message LIKE '%app.tv_note%' AND message NOT 
             'contents on an emptied TVIEW: ' || message)
 FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
 SELECT must(count(*) = 1, 'one contents row') FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+-- What a definition yields is its owner's to know: a role that is not a member of
+-- the owner is not told about tv_note.
+SET ROLE regress_bvp_reader;
+SELECT must(status = 'OK', 'a non-owner learned of an emptied TVIEW: ' || message)
+FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+RESET ROLE;
 
 DROP SCHEMA app CASCADE;
 DROP EXTENSION pg_tviews CASCADE;

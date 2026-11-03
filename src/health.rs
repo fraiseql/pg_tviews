@@ -219,7 +219,14 @@ fn seq_scan_check() -> Check {
 /// TVIEWs whose table is empty while their definition yields rows (a restore
 /// that left the data out, a table emptied by hand). Each is read as its owner,
 /// who alone may read its backing view; a populated table is not read further.
+/// Only the TVIEWs of owners the caller has the privileges of are read: what the
+/// definition yields is the owner's to know. An UNLOGGED TVIEW, empty after a
+/// crash by design, is left out, and nothing is read on a standby in recovery.
 fn contents_check() -> Check {
+    // SAFETY: reads shared memory state.
+    if unsafe { pgrx::pg_sys::RecoveryInProgress() } {
+        return ok("contents", "Not checked during recovery");
+    }
     let metas = match crate::catalog::TviewMeta::load_all() {
         Ok(metas) => metas,
         Err(e) => return error("contents", format!("could not be checked: {e}")),
@@ -240,7 +247,7 @@ fn contents_check() -> Check {
     if empty.is_empty() {
         ok(
             "contents",
-            "Every TVIEW holds the rows its definition yields",
+            "Every TVIEW checked holds the rows its definition yields",
         )
     } else {
         warning(
@@ -255,8 +262,22 @@ fn contents_check() -> Check {
 }
 
 /// The TVIEW's qualified name when its table is empty and its backing view is
-/// not, read as its owner.
+/// not, read as its owner; `None` too for a TVIEW not checked ([`contents_check`]).
 fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
+    // SAFETY: a syscache lookup by OID.
+    if unsafe { pgrx::pg_sys::get_rel_persistence(meta.tview_oid) }
+        == pgrx::pg_sys::RELPERSISTENCE_UNLOGGED.cast_signed()
+    {
+        return Ok(None);
+    }
+    let callers = crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
+         WHERE c.oid = $1",
+        &[crate::utils::spi::oid(meta.tview_oid)],
+    )?;
+    if callers != Some(true) {
+        return Ok(None);
+    }
     let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
     let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;

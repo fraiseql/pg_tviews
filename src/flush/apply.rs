@@ -220,8 +220,8 @@ impl Flush {
         Ok(())
     }
 
-    /// Recompute `keys` from the view, and queue the parents of the rows touched to recompute too: their
-    /// child's whole document changed.
+    /// Recompute `keys` from the view, and queue the parents of the rows touched
+    /// to recompute too: their child's whole document changed.
     fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();
         let touched = crate::refresh::recompute(&*self.meta(entity)?, &keys)?;

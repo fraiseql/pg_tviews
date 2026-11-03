@@ -10,6 +10,9 @@ on:
 # pure-Rust unit tests (`coverage`), and of the regression and isolation suites run
 # against an instrumented build, merged with the unit tests (`sql-coverage`, held at
 # a floor: the measured value less a point).
+permissions:
+  contents: read
+
 env:
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
   JSONB_DELTA_REF: "v0.3.0"
@@ -84,7 +87,7 @@ jobs:
       - name: Install pgrx and cargo-llvm-cov
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo install --locked cargo-llvm-cov
+          cargo install --locked cargo-llvm-cov --version 0.9.1
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Fetch jsonb_delta
