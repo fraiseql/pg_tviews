@@ -8,7 +8,7 @@
 #
 # A listener idle in a transaction holds the queue; notifications fill it past
 # 90 %; then every write commits unpublished, and another session sees
-# pg_tviews_feed_gaps() move by exactly the transactions skipped.
+# pg_tviews_count_feed_gaps() move by exactly the transactions skipped.
 #
 # FEED_GAPS_PORT picks the port (default 5499).
 
@@ -67,7 +67,7 @@ for _ in $(seq 200); do
 done
 [[ "$(sql -c "SELECT pg_notification_queue_usage() > 0.9")" == t ]] || fail "queue never filled"
 
-before="$(sql -c "SELECT tviews.pg_tviews_feed_gaps()")"
+before="$(sql -c "SELECT tviews.pg_tviews_count_feed_gaps()")"
 out="$(sql 2>&1 <<'SQL'
 SET pg_tviews.publish_changes = rows;
 INSERT INTO tb_tag (pk_tag, name) VALUES (1, 'a');
@@ -75,18 +75,18 @@ INSERT INTO tb_tag (pk_tag, name) VALUES (2, 'b');
 BEGIN;
 UPDATE tb_tag SET name = 'c';
 COMMIT;
-SELECT 'per-session counter ' || (tviews.pg_tviews_queue_stats() ? 'publish_skipped');
+SELECT 'per-session counter ' || (tviews.pg_tviews_show_queue() ? 'publish_skipped');
 SQL
 )"
 grep -q 'per-session counter false' <<<"$out" || fail "queue stats still count skips per session: $out"
 grep -q 'not published' <<<"$out" || fail "no WARNING: $out"
-after="$(sql -c "SELECT tviews.pg_tviews_feed_gaps()")"
+after="$(sql -c "SELECT tviews.pg_tviews_count_feed_gaps()")"
 (( after - before == 3 )) || fail "feed gaps moved by $((after - before)), expected 3"
 
 # A rolled-back transaction publishes nothing and is no gap.
 sql -c "BEGIN" -c "SET LOCAL pg_tviews.publish_changes = rows" \
     -c "INSERT INTO tb_tag (pk_tag, name) VALUES (3, 'd')" -c "ROLLBACK" >/dev/null
-[[ "$(sql -c "SELECT tviews.pg_tviews_feed_gaps()")" == "$after" ]] || fail "a rollback counted"
+[[ "$(sql -c "SELECT tviews.pg_tviews_count_feed_gaps()")" == "$after" ]] || fail "a rollback counted"
 
 # The listener reads again once its transaction ends: no more gaps.
 echo "COMMIT;" >&3
@@ -95,6 +95,6 @@ for _ in $(seq 100); do
     sleep 0.1
 done
 sql -c "SET pg_tviews.publish_changes = rows" -c "INSERT INTO tb_tag (pk_tag, name) VALUES (4, 'e')" >/dev/null
-[[ "$(sql -c "SELECT tviews.pg_tviews_feed_gaps()")" == "$after" ]] || fail "a published transaction counted"
+[[ "$(sql -c "SELECT tviews.pg_tviews_count_feed_gaps()")" == "$after" ]] || fail "a published transaction counted"
 
 echo "feed gaps: PASS"

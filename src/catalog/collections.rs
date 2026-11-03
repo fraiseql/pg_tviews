@@ -2,7 +2,7 @@
 //! (ADR 0231, payload version 2).
 //!
 //! Each reference of the TVIEW to another one ([`crate::lineage::Reference`],
-//! resolved by `tviews.pg_tview_references`) makes a collection: the comments of
+//! resolved by `tviews.references`) makes a collection: the comments of
 //! post P are the `tv_comment` rows whose `fk_post` holds P's key, and their
 //! collection key is `Comment.fk_post:<P's public id>`. A write of a child row
 //! returns, per reference, the parent's key and, when it recomputes the row, the
@@ -30,7 +30,7 @@ pub struct Collection {
     /// The referenced TVIEW's identity column, and its type (`format_type`).
     pub parent_column: String,
     pub parent_type: String,
-    /// How the parent's public id is written; `None` without an `id` column.
+    /// The parent's public id column; `None` without one.
     pub parent_id: Option<PublicId>,
     /// The parent's type, and whether its identity is its `pk_<entity>`, the key
     /// its own written rows are journaled by.
@@ -53,7 +53,7 @@ pub type OldKeys = std::collections::HashMap<i64, Vec<Option<String>>>;
 /// SQL over the catalog row of [`super::meta_select`]: the TVIEW's collections, a
 /// `jsonb` array of `[column, parent table, parent oid, parent column, its type,
 /// id kind, parent entity, parent typename option]`, the parent of each reference
-/// the one `tviews.pg_tview_references` marks `chosen`, as `tviews.registry` publishes.
+/// the one `tviews.references` marks `chosen`, as `tviews.registry` publishes.
 pub(super) fn collections_sql() -> String {
     let schema = crate::utils::ext_schema();
     format!(
@@ -61,17 +61,12 @@ pub(super) fn collections_sql() -> String {
                      x.column_name, pg_catalog.format('%I.%I', pn.nspname, pc.relname), \
                      x.parent_table::pg_catalog.int8, x.parent_column, \
                      pg_catalog.format_type(pa.atttypid, NULL), \
-                     (SELECT CASE WHEN ia.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
-                                                      'pg_catalog.int4'::pg_catalog.regtype, \
-                                                      'pg_catalog.int8'::pg_catalog.regtype, \
-                                                      'pg_catalog.numeric'::pg_catalog.regtype) \
-                                  THEN 'number' ELSE 'string' END \
-                      FROM pg_catalog.pg_attribute ia \
+                     EXISTS (SELECT FROM pg_catalog.pg_attribute ia \
                       WHERE ia.attrelid = x.parent_table AND ia.attname = 'id' \
                         AND ia.attnum > 0 AND NOT ia.attisdropped), \
                      x.parent, pm.graphql_typename) \
                  ORDER BY x.column_name) \
-          FROM {schema}.pg_tview_references x \
+          FROM {schema}.references x \
           JOIN {schema}.pg_tview_meta pm ON pm.entity = x.parent \
           JOIN pg_catalog.pg_class pc ON pc.oid = x.parent_table \
           JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace \
@@ -103,14 +98,11 @@ pub(super) fn decode(
                 parent_table_oid: pgrx::pg_sys::Oid::from(
                     u32::try_from(row.get(2)?.as_u64()?).ok()?,
                 ),
-                parent_keyed_by_pk: parent_column == format!("pk_{parent_entity}"),
+                parent_keyed_by_pk: parent_column
+                    == crate::lineage::plan::key_column(&parent_entity),
                 parent_column,
                 parent_type: text(4)?,
-                parent_id: match row.get(5)?.as_str() {
-                    Some("number") => Some(PublicId::Number),
-                    Some(_) => Some(PublicId::String),
-                    None => None,
-                },
+                parent_id: (row.get(5)?.as_bool() == Some(true)).then_some(PublicId),
                 parent_typename: super::typename(&parent_entity, text(7)).into(),
             }))
         })
@@ -151,7 +143,7 @@ impl TviewMeta {
     #[must_use]
     pub fn publishes_collections(&self) -> bool {
         !self.collections.is_empty()
-            && crate::config::publish_changes() == Some(crate::queue::published::Publish::Rows)
+            && crate::config::publish_changes() == Some(crate::config::Publish::Rows)
     }
 
     /// When the change feed names collections, per reference of the row written
@@ -172,14 +164,15 @@ impl TviewMeta {
                 .iter()
                 .flat_map(|c| {
                     let key = format!("{row}.{}", crate::utils::ident::quoted(&c.column));
-                    let id = match c.parent_id {
-                        Some(_) => format!(
+                    let id = if c.parent_id.is_some() {
+                        format!(
                             "(SELECT p.\"id\"::pg_catalog.text FROM {} p \
                              WHERE p.{} OPERATOR(pg_catalog.=) {key})",
                             c.parent_table,
                             crate::utils::ident::quoted(&c.parent_column)
-                        ),
-                        None => "NULL::pg_catalog.text".to_string(),
+                        )
+                    } else {
+                        "NULL::pg_catalog.text".to_string()
                     };
                     [format!("{key}::pg_catalog.text"), id]
                 })
@@ -289,7 +282,7 @@ mod tests {
                     16400,
                     "pk_user",
                     "integer",
-                    "string",
+                    true,
                     "user",
                     null
                 ],
@@ -342,7 +335,7 @@ mod tests {
         let c = decoded();
         assert_eq!(&*c[0].key, "Comment.fk_author");
         assert_eq!(&*c[0].child_type, "Comment");
-        assert_eq!(c[0].parent_id, Some(PublicId::String));
+        assert_eq!(c[0].parent_id, Some(PublicId));
         assert_eq!(&*c[0].parent_typename, "User");
         assert!(c[0].parent_keyed_by_pk);
         assert_eq!(c[1].parent_id, None, "a parent without an id column");

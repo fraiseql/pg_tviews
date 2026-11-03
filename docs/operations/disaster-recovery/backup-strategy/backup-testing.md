@@ -62,7 +62,7 @@ The key checks, if you prefer to run them by hand:
 ```sql
 -- No component in error or warning
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 -- Every TVIEW is registered and points at existing relations
@@ -112,13 +112,13 @@ in `postgresql.conf`; `recovery.conf` no longer exists since PostgreSQL 12). Onc
 restored server is out of recovery:
 ```sql
 -- UNLOGGED TVIEWs are empty after a physical restore
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 
 -- Rebuild the emptied ones, then rerun Steps 2-4 above
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs it in every
-database when recovery ends (`pg_tviews.auto_rebuild_databases`, default `*`); `pg_tviews_replication_status()` then shows `needs_rebuild = false`.
+database when recovery ends (`pg_tviews.auto_rebuild_databases`, default `*`); `pg_tviews_show_replication()` then shows `needs_rebuild = false`.
 
 ## Recording Results
 

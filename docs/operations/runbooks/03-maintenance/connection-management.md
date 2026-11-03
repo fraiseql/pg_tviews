@@ -106,7 +106,7 @@ a pooler (pgbouncer), fewer application connections, or a higher `max_connection
 ### Writes to base tables became slow
 Each write also refreshes the TVIEW rows it affects. Check fan-out and indexes with
 `SELECT * FROM tviews.pg_tviews_profile();` and missing propagation indexes with
-`SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);`.
+`SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);`.
 See [Performance Monitoring](../01-health-monitoring/performance-monitoring.md).
 
 ## Related Runbooks

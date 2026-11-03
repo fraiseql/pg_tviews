@@ -11,13 +11,13 @@
 
 \echo ''
 \echo '1. Current state (this transaction)'
-SELECT tviews.pg_tviews_is_suspended() AS suspended,
-       tviews.pg_tviews_suspended_entities() AS changed_while_suspended;
+SELECT tviews.pg_tviews_show_suspended() IS NOT NULL AS suspended,
+       tviews.pg_tviews_show_suspended() AS changed_while_suspended;
 
 \echo ''
 \echo '2. Health problems that may call for it'
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info'
 ORDER BY component;
 

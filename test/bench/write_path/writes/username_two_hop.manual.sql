@@ -6,7 +6,7 @@ BEGIN;
 SET LOCAL session_replication_role = replica;
 UPDATE bench.tb_user SET username = 'user' || :u || '_' || (random() * 1e9)::bigint WHERE pk_user = :u;
 UPDATE bench.tv_comment t
-SET data = jsonb_set(t.data, '{post,author,username}', to_jsonb(u.username)), updated_at = now()
+SET data = jsonb_set(t.data, '{post,author,username}', to_jsonb(u.username))
 FROM bench.tb_user u
 WHERE u.pk_user = :u
   AND t.fk_post IN (SELECT p.pk_post FROM bench.tb_post p WHERE p.fk_author = :u);

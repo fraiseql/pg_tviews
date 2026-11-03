@@ -107,8 +107,8 @@ fn trigger_tupdesc<'a>(trigger: &'a PgTrigger<'a>) -> Option<PgTupleDesc<'a>> {
     }
 }
 
-/// Trigger handler function for TVIEW cascades
-/// This is called by triggers installed on base tables when rows change
+/// The row trigger of a table: one per table (and the copy `PostgreSQL` makes
+/// on each partition), serving every TVIEW that reads the table's rows by key.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_trigger_handler<'a>(
@@ -116,7 +116,9 @@ fn pg_tview_trigger_handler<'a>(
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     crate::delta::require_level(trigger, true);
+    crate::delta::require_table_trigger(trigger);
     // A lookup that fails fails the write: committing it with nothing queued would
     // leave the TVIEWs over the table stale.
     let table_oid = trigger
@@ -128,39 +130,44 @@ fn pg_tview_trigger_handler<'a>(
             .raise()
         })
         .oid();
-    // The TVIEW this trigger serves (its argument). A table read by several
-    // TVIEWs has one trigger each.
-    let served = crate::delta::trigger_entity(trigger);
     // A row of a partition: what pg_tviews knows is its partitioned table.
     let table_oid = crate::catalog::partition_root(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not resolve the partition root"));
-    let all_paths = crate::cache::cascade_paths(table_oid)
+    let readers = crate::catalog::table_readers(table_oid)
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
-    let paths: Vec<&crate::catalog::plan::LocalPath> = all_paths
-        .iter()
-        .filter(|p| p.entity_name == served)
-        .collect();
-    // The changed columns, compared datum by datum: only when a local path or a
-    // link check reads them.
-    let changed = (!paths.is_empty() || !crate::concurrency::links_changed())
+    let all_paths = crate::catalog::cascade_paths(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
+    // The changed columns, compared datum by datum, once for every TVIEW: only
+    // when a local path or a link check reads them.
+    let changed = (!all_paths.is_empty() || !crate::concurrency::links_changed())
         .then(|| changed_columns(trigger))
         .flatten();
-    note_row_write(trigger, &served, table_oid, changed.as_deref());
+    for served in readers.row() {
+        note_row_write(trigger, served, table_oid, changed.as_deref());
+    }
     // If triggers are suspended, record the change instead of enqueuing
     if crate::suspend::is_suspended() {
-        crate::suspend::record_change(&served);
+        for served in readers.row() {
+            crate::suspend::record_change(served);
+        }
         return Ok(None);
     }
 
-    // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
-    enqueue_local_keys(trigger, &paths, changed.as_deref());
+    for served in readers.row() {
+        // Every TVIEW key this row holds, its TVIEW's own rows included (ADR 0169).
+        let paths: Vec<&crate::lineage::plan::LocalPath> = all_paths
+            .iter()
+            .filter(|p| p.entity_name == served)
+            .collect();
+        enqueue_local_keys(trigger, &paths, changed.as_deref());
 
-    // A partitioned table whose writes map through a query (ADR 0157): the
-    //    row trigger is the one copied onto every partition, so map this row.
-    if let Err(e) = crate::delta::map_row(trigger, &served, table_oid) {
-        e.raise_in(&format!(
-            "pg_tviews: could not map the changed row to tv_{served} keys"
-        ));
+        // A partitioned table whose writes map through a query (ADR 0157): the
+        // row trigger is the one copied onto every partition, so map this row.
+        if let Err(e) = crate::delta::map_row(trigger, served, table_oid) {
+            e.raise_in(&format!(
+                "pg_tviews: could not map the changed row to tv_{served} keys"
+            ));
+        }
     }
 
     Ok(None)
@@ -218,7 +225,7 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 /// both.
 fn enqueue_local_keys(
     trigger: &PgTrigger,
-    paths: &[&crate::catalog::plan::LocalPath],
+    paths: &[&crate::lineage::plan::LocalPath],
     changed: Option<&[String]>,
 ) {
     if paths.is_empty() {
@@ -275,7 +282,7 @@ fn enqueue_local_keys(
 /// Enqueue the key a local path reads off one image of the changed row (its
 /// `initial_col`).
 fn follow_local_path(
-    path: &crate::catalog::plan::LocalPath,
+    path: &crate::lineage::plan::LocalPath,
     image: *mut pg_sys::HeapTupleData,
     tupdesc: &PgTupleDesc<'_>,
 ) {
@@ -309,7 +316,7 @@ fn follow_local_path(
 /// cached plan, a raw datum diff, and typed value extraction — no SPI.
 fn try_capture_direct_patch(
     trigger: &PgTrigger,
-    path: &crate::catalog::plan::LocalPath,
+    path: &crate::lineage::plan::LocalPath,
     changed: Option<&[String]>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     if !crate::config::direct_patch_enabled() {
@@ -333,10 +340,7 @@ fn try_capture_direct_patch(
         .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
     let direct = &meta.plan.direct;
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
-    if direct.is_empty()
-        || !changed.iter().all(|c| data_key(c).is_some())
-        || !crate::jsonb_delta::check_jsonb_delta_available()
-    {
+    if direct.is_empty() || !changed.iter().all(|c| data_key(c).is_some()) {
         return None;
     }
     let new_tuple = trigger.new()?;
@@ -473,15 +477,16 @@ fn capture_value(
 /// finds an empty queue and returns immediately.
 ///
 /// A refresh error fails the statement. If triggers are suspended, this trigger
-/// skips the flush. Inside an enclosing statement that writes a TVIEW's base
-/// table (a trigger writing its own table), it leaves the queue to that
-/// statement's flush.
+/// skips the flush. Inside an enclosing statement (a mutation function's
+/// statement, a trigger writing its own table) it leaves the queue to that
+/// statement's end, or to a read of a TVIEW before it ([`crate::executor`]).
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires Result return type
 fn pg_tview_flush_trigger<'a>(
-    _trigger: &'a PgTrigger<'a>,
+    trigger: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
+    crate::delta::require_table_trigger(trigger);
     if !crate::executor::flush_deferred() {
         flush_after_statement();
     }
@@ -498,8 +503,5 @@ pub fn flush_after_statement() {
     }
     if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in("TVIEW refresh failed");
-    }
-    if let Err(e) = crate::audit::flush_audit_buffer() {
-        e.raise_in("Audit flush failed");
     }
 }

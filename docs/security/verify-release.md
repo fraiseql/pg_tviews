@@ -4,7 +4,7 @@ Each GitHub release of pg_tviews carries, for tag `v<version>`:
 
 | Asset | What it is |
 |---|---|
-| `pg_tviews-v<version>.tar.gz` | The extension: `lib/pg_tviews.so` and `extension/pg_tviews*` (control file, install and upgrade scripts) |
+| `pg_tviews-v<version>.tar.gz` | The extension: `lib/pg_tviews.so` and `extension/pg_tviews*` (control file, install script and the update script from the previous release) |
 | `pg_tviews-v<version>.tar.gz.sigstore` | Sigstore bundle: keyless signature of the tarball by the release workflow |
 | `SHA256SUMS` | SHA-256 of the tarball |
 | `pg_tviews-v<version>.spdx.json`, `.cyclonedx.json`, `.sbom.txt` | SBOMs, the first two with `.sigstore` bundles |

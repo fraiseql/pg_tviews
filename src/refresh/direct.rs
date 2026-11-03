@@ -79,8 +79,8 @@ fn apply_direct_patch(
     }
 
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-    let schema = crate::jsonb_delta::require_jsonb_delta_schema()?;
+    let qi_pk = crate::utils::ident::quoted(meta.key_column());
+    let schema = crate::jsonb_delta::schema()?;
     let (patch_expr, path_args) = build_direct_patch_expr(&schema, shape);
 
     let sql = format!(
@@ -158,35 +158,15 @@ pub fn apply_fanout_patch(
         changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
     }
 
-    // REPEATABLE READ: the patch reached every row the latest snapshot holds
-    // with these values (a row it couldn't see would keep the old value).
-    if crate::concurrency::crosscheck::enabled()
-        && let Some(keys) = LookupKeys::of(rows.iter().map(|(key, _)| *key).collect())
-    {
-        let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-        let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
-        let qi_lookup = crate::utils::ident::quoted(lookup_col);
-        let lookup = format!(
-            "SELECT t.{qi_pk}::pg_catalog.text FROM {qi_tv} t WHERE {}",
-            keys.predicate(&format!("t.{qi_lookup}"), 1)
-        );
-        let args = keys.args();
-        // Read-write, as the patch: its snapshot sees this flush's own writes.
-        let found = crate::utils::spi::kept_rows(&lookup, &args, keys.plan())?;
-        crate::concurrency::crosscheck::discovered_by(&lookup, &args, keys.plan(), &found)?;
-    }
-    crate::metrics::metrics_api::record_direct_patches_applied(
-        &meta.entity_name,
-        changed.len() as u64,
-    );
+    crate::stats::record_direct_patches_applied(&meta.entity_name, changed.len() as u64);
     Ok(changed
         .into_iter()
         .map(|(pk, (id, references))| {
-            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+            crate::queue::log::record(crate::queue::log::Recorded::of(
                 meta,
                 pk,
                 id,
-                crate::queue::affected::Change::Updated,
+                crate::queue::log::Change::Updated,
                 &references,
                 None,
             ));
@@ -241,7 +221,7 @@ fn write_fanout(
         return Ok(Vec::new());
     };
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qi_pk = crate::utils::ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = crate::utils::ident::quoted(meta.key_column());
     let qi_lookup = crate::utils::ident::quoted(lookup_col);
     // The rows written, and where each one's values come from: the keys take
     // parameters 1 to `width`, the values the next one, the paths the rest.
@@ -305,7 +285,7 @@ fn write_fanout(
 }
 
 /// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
-/// by `pg_tviews.batch_size`). Increments the
+/// by [`super::BATCH_KEYS`]). Increments the
 /// applied/fallback counters. Returns the pks that fell back (row not materialised)
 /// and must be recomputed by the caller.
 pub fn apply_entity_patches(
@@ -324,7 +304,7 @@ pub fn apply_entity_patches(
         groups.entry(shape).or_default().push((pk, chain));
     }
 
-    let batch = crate::config::batch_size();
+    let batch = crate::refresh::BATCH_KEYS;
     let mut fallback = Vec::new();
     for rows in groups.into_values() {
         for chunk in rows.chunks(batch) {
@@ -332,17 +312,17 @@ pub fn apply_entity_patches(
             let present: HashSet<i64> = materialised.iter().map(|&(pk, ..)| pk).collect();
             let changed = materialised.iter().filter(|&&(_, c, _)| c).count() as u64;
 
-            crate::metrics::metrics_api::record_direct_patches_applied(&meta.entity_name, changed);
-            crate::metrics::metrics_api::record_noop_skipped(
+            crate::stats::record_direct_patches_applied(&meta.entity_name, changed);
+            crate::stats::record_noop_skipped(
                 &meta.entity_name,
                 materialised.len() as u64 - changed,
             );
             for (pk, _, (id, references)) in materialised.into_iter().filter(|&(_, c, _)| c) {
-                crate::queue::affected::record(crate::queue::affected::Recorded::of(
+                crate::queue::log::record(crate::queue::log::Recorded::of(
                     meta,
                     pk,
                     id,
-                    crate::queue::affected::Change::Updated,
+                    crate::queue::log::Change::Updated,
                     &references,
                     None,
                 ));
@@ -356,10 +336,7 @@ pub fn apply_entity_patches(
     }
 
     if !fallback.is_empty() {
-        crate::metrics::metrics_api::record_direct_patch_fallbacks(
-            &meta.entity_name,
-            fallback.len() as u64,
-        );
+        crate::stats::record_direct_patch_fallbacks(&meta.entity_name, fallback.len() as u64);
     }
     Ok(fallback)
 }
@@ -461,7 +438,7 @@ mod tests {
     /// A parent `TviewMeta` whose plan embeds `child` once.
     fn parent_meta(child: &str, kind: EmbedKind, path: &[&str]) -> TviewMeta {
         let mut meta = TviewMeta::default();
-        meta.plan.embeds.push(crate::catalog::plan::PlanEmbed {
+        meta.plan.embeds.push(crate::lineage::plan::PlanEmbed {
             entity: child.to_string(),
             lookups: vec![format!("{child}_pk")],
             kind,

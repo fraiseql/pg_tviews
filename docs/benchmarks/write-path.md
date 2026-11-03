@@ -40,6 +40,55 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.35 against 0.1.0-beta.34's write path (2026-11-02)
+
+Stock PostgreSQL 18.6, release builds of main at 169e0e32 (the write path of 0.1.0-beta.34
+plus #279/#282) and of 0.1.0-beta.35 at e15fd198, jsonb_delta 0.3.0,
+`synchronous_commit = off`, `autovacuum = off`, both postmasters pinned to the same two
+cores. The machine was busy throughout (other builds, load average 17-70), so the timed
+runs ran without the quiet-machine gate; the statement counts are unaffected by load.
+
+Statements executed and planned per write (`pg_stat_statements`, `track = all`, 200 writes
+of each kind on a fresh copy) are the same in both builds:
+
+| write | statements / write | plans / write |
+|---|---:|---:|
+| `bio` | 5.1 | 1.08 |
+| `username` | 8.1 | 1.09 |
+| `title` | 5.1 | 1.08 |
+| `comment_insert` | 7.1 | 3.15 |
+| `bio_bulk100` | 6.1 | 1.11 |
+| `untracked_insert` | 1.0 | 1.00 |
+
+`compare.sh`, ten interleaved rounds of 10 s at one client, every run kept: the paired
+ratio beta.35 / main is 0.92-1.08 for every write, and every 95 % interval contains 1
+(`bio` 1.08 [0.96, 1.20], `username` 0.98 [0.92, 1.04], `title` 0.92 [0.77, 1.07],
+`comment_insert` 1.02 [0.91, 1.13], `bio_bulk100` 1.00 [0.91, 1.09], `untracked_insert`
+0.99 [0.91, 1.08]). The same comparison on a quiet machine during the release's
+development stayed within 1.02. The first write of a new backend, and the first after DDL
+on a base table, take 4 ms in both builds.
+
+**Writing a row once per mutation** (`mutations.sh`): pg_tviews refreshes at the end of
+each statement, so a mutation function that writes one row in several statements
+refreshes it, and every row embedding it, each time.
+
+| mutation | per statement | once per row |
+|---|---|---|
+| 13 single-field UPDATEs of a location embedded in 10 allocations, against one UPDATE | 8.76 ms, 141.5 TVIEW rows written | 0.75 ms, 11 rows |
+| INSERT then UPDATE of its identifier, against one INSERT | 1.14 ms, 2 rows | 0.28 ms, 1 row |
+| 10 child INSERTs touching one parent, against one INSERT … SELECT | 10.93 ms, 110 rows | 1.24 ms, 11 rows |
+
+**Patch or recompute** (`fanout.sh`, a category name copied into N items): the fan-out
+patch is 5-30 % faster than recomputing the items when their documents are inline (1.2 KB;
+N = 1000: 10.8 ms against 13.2 ms) and no faster when they are TOASTed (4.2 KB; N = 1000:
+70.7 ms against 67.0 ms). Across two hops (`shapes.sh`) the patch takes 0.89 ms against
+1.43 ms for a recompute.
+
+**One more TVIEW on a table** (`triggers.sh`): the trigger sets of an extra TVIEW that has
+nothing to refresh add 1-11 µs to a write (2-6 % of a lone write on an ordinary table,
+measured under load; 2.6 % on a quiet machine); refreshing it costs what its own refresh
+costs.
+
 ## 0.1.0-beta.34 against 0.1.0-beta.33 (2026-10-29)
 
 Stock PostgreSQL 18.6 (Arch), release builds (beta.34 at 7d830f98, `.so` md5 bb023cd0…;
@@ -229,7 +278,7 @@ planned depends on what it looks rows up by:
   writes run under `auto`, so each statement is planned as it was kept.
 - **More keys**: the statement takes them as an array and is planned at each
   execution, for their count (about 30 µs to a few ms; `per_execution_plans` in
-  `pg_tviews_queue_stats()` counts them). Wider shapes would cost memory and time: a
+  `pg_tviews_show_queue()` counts them). Wider shapes would cost memory and time: a
   kept plan grows with its parameters (a nine-table read set's plan of 256 keys keeps
   about 1.7 MB per backend), and the planner hashes an array of constants it compares
   rows with outside an index, not an array of parameters. Such a write recomputes over

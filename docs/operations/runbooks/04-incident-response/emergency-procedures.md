@@ -20,11 +20,11 @@ the database.
 ```sql
 -- What pg_tviews reports as broken
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 -- Empty TVIEWs (UNLOGGED after a crash, or on a standby)
-SELECT * FROM tviews.pg_tviews_replication_status() WHERE is_empty OR needs_rebuild;
+SELECT * FROM tviews.pg_tviews_show_replication() WHERE is_empty OR needs_rebuild;
 
 -- Sessions waiting on locks
 SELECT pid, state, wait_event_type, now() - xact_start AS xact_age, left(query, 80) AS query
@@ -82,10 +82,10 @@ SELECT tviews.pg_tviews_refresh('user');                       -- one entity
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true); -- empty ones
 ```
 
-### Action 4: Repair registration after an upgrade
+### Action 4: Repair registration
 ```sql
 SELECT * FROM tviews.pg_tviews_reregister_all();
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 ```
 
 ### Action 5: Recreate a TVIEW
@@ -108,7 +108,7 @@ TVIEWs is enough. Restore to a separate database first and check it with
 ```sql
 -- No warnings or errors
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check() WHERE severity <> 'info';
+FROM tviews.pg_tviews_check_health() WHERE severity <> 'info';
 
 -- Refresh statistics: full_refreshes counts the Action 3 refreshes
 SELECT entity, full_refreshes, rows_written, stats_reset FROM tviews.stats ORDER BY entity;

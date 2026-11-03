@@ -15,7 +15,20 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 10;
+pub const CATALOG_REVISION: i32 = 11;
+
+/// Whether the library was loaded from `shared_preload_libraries`, the only
+/// supported mode: set by `_PG_init` in the postmaster, inherited by its backends.
+static PRELOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record, from `_PG_init`, whether the library is being preloaded.
+pub fn note_preload() {
+    // SAFETY: reads a postmaster-owned global set before libraries are preloaded.
+    let preloading = unsafe { pg_sys::process_shared_preload_libraries_in_progress };
+    if preloading {
+        PRELOADED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 thread_local! {
     /// Whether this backend already found a matching catalog. A mismatch is not
@@ -42,6 +55,15 @@ pub fn check() {
     if MATCHED.get() || in_own_script() {
         return;
     }
+    if !PRELOADED.load(std::sync::atomic::Ordering::Relaxed) {
+        pg_sys::panic::ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+            "pg_tviews is not in shared_preload_libraries",
+            function_name!(),
+        )
+        .set_hint("Add pg_tviews to shared_preload_libraries and restart the server.")
+        .report(PgLogLevel::ERROR);
+    }
     match installed() {
         Installed::Matches => {}
         Installed::Differs(revision) => pg_sys::panic::ErrorReport::new(
@@ -62,10 +84,7 @@ pub fn check() {
             ),
             function_name!(),
         )
-        .set_hint(
-            "a 0.1.0 install cannot be updated in place: run scripts/migrate-from-0.1.0.sql \
-             from the pg_tviews release",
-        )
+        .set_hint(RECREATE)
         .report(PgLogLevel::ERROR),
         Installed::Unreadable(why) => pg_sys::panic::ErrorReport::new(
             PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
@@ -81,12 +100,22 @@ pub fn is_current() -> bool {
     MATCHED.get() || in_own_script() || matches!(installed(), Installed::Matches)
 }
 
+/// The revision of the one release this library updates from (0.1.0-beta.34).
+pub const PREVIOUS_REVISION: i32 = 10;
+
+/// What fixes a catalog this library has no update for.
+pub const RECREATE: &str = "this release updates only from 0.1.0-beta.34: DROP EXTENSION \
+     pg_tviews CASCADE, CREATE EXTENSION pg_tviews and create the TVIEWs again \
+     (docs/operations/upgrade.md)";
+
 /// What fixes a catalog of `revision` for this library.
 #[must_use]
 pub const fn remedy(revision: i32) -> &'static str {
     if revision > CATALOG_REVISION {
         "the installed extension is newer than this library: install the pg_tviews package \
          that matches it"
+    } else if revision < PREVIOUS_REVISION {
+        RECREATE
     } else {
         "run ALTER EXTENSION pg_tviews UPDATE"
     }

@@ -1,4 +1,5 @@
--- Regression test for issue #48, FALLBACK path (jsonb_delta NOT installed).
+-- Regression test for issue #48, FALLBACK path (the patch path off: every write
+-- recomputes).
 --
 -- On the buggy tree the fallback path drops multi-row INSERTs (the bulk refresh
 -- was `UPDATE … FROM unnest()`, UPDATE-only) and leaves stale rows on DELETE.
@@ -7,15 +8,15 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_refresh_fallback.sql
 -- expect-output: refresh_fallback: PASS
---
--- Deliberately does NOT create the jsonb_delta extension.
+
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
 
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
-CREATE EXTENSION pg_tviews;   -- no jsonb_delta on purpose
+CREATE EXTENSION pg_tviews CASCADE;
+SET pg_tviews.direct_patch_enabled = off;
 
 DROP TABLE IF EXISTS tv_order CASCADE;
 DROP VIEW  IF EXISTS tviews.public__tv_order CASCADE;

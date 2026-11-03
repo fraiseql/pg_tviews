@@ -344,20 +344,20 @@ pub(super) fn resolve_tables(
 /// # Errors
 /// Returns an error if it does not exist or is not a table.
 pub(super) fn resolve_table(name: &str, option: &str) -> TViewResult<pg_sys::Oid> {
-    let lookup = |e: spi::Error| {
+    let lookup = |e: TViewError| {
         crate::utils::spi::catalog_error(&format!("Look up a table of {option}"), &e)
     };
     let relation = {
         // Named as the caller writes names.
         let _caller = crate::owner::CallerPath::enter();
-        Spi::get_one_with_args::<pg_sys::Oid>(
+        crate::utils::spi::one::<pg_sys::Oid>(
             "SELECT pg_catalog.to_regclass($1)::pg_catalog.oid",
             &[crate::utils::spi::text(name)],
         )
         .map_err(lookup)?
     };
     let table = match relation {
-        Some(oid) => Spi::get_one_with_args::<bool>(
+        Some(oid) => crate::utils::spi::one::<bool>(
             "SELECT relkind IN ('r', 'p', 'm', 'f') FROM pg_catalog.pg_class WHERE oid = $1",
             &[crate::utils::spi::oid(oid)],
         )
@@ -384,20 +384,20 @@ pub(super) fn resolve_function_reads(
 ) -> TViewResult<Vec<(String, Vec<pg_sys::Oid>)>> {
     let mut reads = Vec::new();
     for (function, tables) in declared {
-        let lookup = |e: spi::Error| {
+        let lookup = |e: TViewError| {
             crate::utils::spi::catalog_error("Look up a function of function_reads", &e)
         };
         let procedure = {
             // Named as the caller writes names.
             let _caller = crate::owner::CallerPath::enter();
-            Spi::get_one_with_args::<pg_sys::Oid>(
+            crate::utils::spi::one::<pg_sys::Oid>(
                 "SELECT pg_catalog.to_regprocedure($1)::pg_catalog.oid",
                 &[crate::utils::spi::text(function.as_str())],
             )
             .map_err(lookup)?
         };
         let signature = match procedure {
-            Some(oid) => Spi::get_one_with_args::<String>(
+            Some(oid) => crate::utils::spi::one::<String>(
                 &format!(
                     "SELECT {} FROM pg_catalog.pg_proc p WHERE p.oid = $1",
                     crate::lineage::FUNCTION_SIGNATURE

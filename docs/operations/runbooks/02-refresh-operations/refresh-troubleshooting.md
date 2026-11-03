@@ -21,7 +21,7 @@ There is no queue table, no background job and no record of refresh errors. So:
 ```sql
 -- Problems pg_tviews can detect (triggers, catalog, re-registration, jsonb_delta)
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 -- How writes to each base table reach each TVIEW
@@ -47,7 +47,7 @@ limit:
 | Message | Cause | Action |
 |---------|-------|--------|
 | error from the view's expressions | The definition fails on the new rows | Fix the data, or the definition with `pg_tviews_create_or_replace` |
-| `refresh queue backpressure: queue size (...) would exceed max_queue_size (...)` | One statement queued more keys than `pg_tviews.max_queue_size` | Split the statement, or raise the GUC for the session ([Batch Refresh](batch-refresh.md)) |
+| `refresh queue backpressure: queue size (N) would exceed max_queue_size (M)` | One transaction queued more keys than `pg_tviews.max_queue_size` | Split the statement, or suspend refresh for it ([Batch Refresh](batch-refresh.md)) |
 | `permission denied ...` | The TVIEW owner cannot read a table the view reads | Grant the owner access |
 | lock timeout / deadlock on `tv_*` | Concurrent writers refreshing the same TVIEW rows | Retry; keep transactions short |
 
@@ -89,20 +89,20 @@ Then find why the write was not mapped:
    SELECT name, uncascaded_tables, options->>'uncascaded_policy' AS uncascaded_policy
    FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
    ```
-2. **Re-registration pending**: after an extension upgrade, TVIEWs with
-   `needs_reregister` may lack the current triggers.
+2. **Re-registration pending**: TVIEWs with `needs_reregister` may lack the current
+   triggers (`ALTER EXTENSION pg_tviews UPDATE` leaves none).
    ```sql
    SELECT schema, name FROM tviews.registry WHERE needs_reregister;
    SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
 3. **Suspended writes**: a transaction that committed implicitly while suspended
    (logs a `WARNING` naming the stale TVIEWs).
-4. **How a table's writes map to keys**: `pg_tviews_mapping_query` returns the query
+4. **How a table's writes map to keys**: `pg_tviews_show_mapping_query` returns the query
    that turns a statement's changed rows of a `mapped` table into TVIEW keys (empty
    when the key is read off the row). Run its plan to see whether it finds the keys
    you expect:
    ```sql
-   SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
+   SELECT tviews.pg_tviews_show_mapping_query('tv_post', 'tb_user'::regclass);
    ```
 5. **Triggers disabled** on a base table (`ALTER TABLE ... DISABLE TRIGGER`, or
    `session_replication_role = replica` during a load):
@@ -122,7 +122,7 @@ embed it, or `SELECT tviews.pg_tviews_refresh_all();` ([Manual Refresh](manual-r
 
 ```sql
 -- Counters of this session (compare before/after one write, in the same session)
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 
 -- Plan of one key's refresh
 EXPLAIN ANALYZE SELECT * FROM public.v_post WHERE pk_post = 1;
@@ -133,14 +133,14 @@ SELECT entity, hot_ratio, n_dead_tup, unused_indexes, missing_propagation_indexe
 FROM tviews.pg_tviews_profile('post');
 
 -- Indexes the propagation from embedded TVIEWs needs
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
 ```
 
 With `pg_stat_statements`, the refresh statements on `tviews.<schema>__tv_<entity>` / `tv_<entity>`
 show their mean time and calls.
 
 **Solutions**: add the indexes the view's joins and the mapping queries need
-(`pg_tviews_ensure_propagation_indexes()` without `dry_run` creates the propagation
+(`pg_tviews_ensure_propagation_indexes_all()` without `dry_run` creates the propagation
 ones); `VACUUM ANALYZE` the TVIEW if dead tuples are high; reduce fan-out (one base
 row embedded in very many TVIEW rows).
 
@@ -148,9 +148,9 @@ row embedded in very many TVIEW rows).
 
 **Symptoms**: `TVIEW ... does not exist` (42704).
 
-Functions take the entity without the `tv_` prefix (`pg_tviews_refresh('user')`),
-except `pg_tviews_reregister`, `pg_tviews_drop` and `pg_tviews_mapping_query`,
-which take the TVIEW name. List the names:
+Functions take the TVIEW as its entity (`user`), its table (`tv_user`) or its
+schema-qualified table (`public.tv_user`); `tb_` and `v_` names are not accepted. List
+the names:
 
 ```sql
 SELECT schema, name, entity FROM tviews.registry ORDER BY schema, name;

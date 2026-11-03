@@ -3,4 +3,5 @@ default_version = '@CARGO_VERSION@'
 module_pathname = '$libdir/pg_tviews'
 relocatable = false
 schema = tviews
-superuser = false
+superuser = true
+requires = 'jsonb_delta'

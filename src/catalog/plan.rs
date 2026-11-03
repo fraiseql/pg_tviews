@@ -1,121 +1,8 @@
-//! A TVIEW's propagation plan (ADR 0203): everything registration derives from
-//! its backing view's query tree, stored as one versioned document in
-//! `pg_tview_meta.plan` and read back by the triggers and the flush.
+//! Storing and loading a TVIEW's propagation plan (ADR 0203): the version check
+//! of a stored document. The plan's types are [`crate::lineage::plan`]'s.
 
 use crate::error::{TViewError, TViewResult};
-use pgrx::pg_sys::Oid;
-use serde::{Deserialize, Serialize};
-
-/// The version this library writes. It also reads version 1, a plan without
-/// references, and version 2, one without the columns its rows are linked by
-/// (what the upgrade scripts of earlier releases write before they re-derive);
-/// a plan of any other version is re-derived by `ALTER EXTENSION pg_tviews
-/// UPDATE`, never read.
-pub const PLAN_VERSION: u32 = 3;
-
-/// The oldest version this library reads.
-const OLDEST_READ: u32 = 1;
-
-/// What a TVIEW's definition says about propagating writes to its rows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TviewPlan {
-    pub version: u32,
-    /// The rows come from the branches of a set operation (UNION, INTERSECT,
-    /// EXCEPT): they are recomputed, never patched.
-    #[serde(default)]
-    pub set_operation: bool,
-    /// The TVIEWs it embeds.
-    #[serde(default)]
-    pub embeds: Vec<PlanEmbed>,
-    /// The direct-patch map: `(column of the table holding the identity, data
-    /// key)` for the columns copied into `data` and read nowhere else.
-    #[serde(default)]
-    pub direct: Vec<(String, String)>,
-    /// How a write to each base table maps to its keys (ADR 0157): what the
-    /// statement trigger runs.
-    #[serde(default)]
-    pub tables: Vec<crate::lineage::KeyMapping>,
-    /// The tables whose rows carry the key: what the row trigger reads.
-    #[serde(default)]
-    pub paths: Vec<LocalPath>,
-    /// The output columns a foreign key of the root table proves to hold another
-    /// table's key (`tviews.registry.references` publishes those naming a TVIEW).
-    #[serde(default)]
-    pub references: Vec<crate::lineage::Reference>,
-}
-
-/// Another TVIEW this one embeds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEmbed {
-    pub entity: String,
-    /// The output columns of this TVIEW equal to the child's `pk_<child>`, one
-    /// per read of the child: the parents of a refreshed child row are the rows
-    /// holding its key in one of them.
-    pub lookups: Vec<String>,
-    pub kind: crate::lineage::EmbedKind,
-    /// Where the child's document lands in `data` (empty for a scalar embed).
-    #[serde(default)]
-    pub path: Vec<String>,
-}
-
-/// A table whose changed row holds a key of the TVIEW in `initial_col`: the
-/// table holding the identity (`root`), a table joined on the key, or a source of
-/// an aggregate TVIEW's group key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalPath {
-    pub source_oid: Oid,
-    pub source_table: String,
-    pub entity_name: String,
-    pub initial_col: String,
-    /// The columns of the table the TVIEW reads: an UPDATE touching none of
-    /// them changes no row. Empty means unknown: every UPDATE refreshes.
-    #[serde(default)]
-    pub source_columns: Vec<String>,
-    /// The table holds the TVIEW's identity: its own rows are the TVIEW's rows.
-    #[serde(default)]
-    pub root: bool,
-    /// The attribute number of `initial_col` when registered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_attnum: Option<i16>,
-}
-
-/// How an UPDATE of a mapped table is written into every TVIEW row it reaches
-/// in one statement: the rows whose `lookup_col` holds the changed
-/// row's key, each changed column in `fields` written at its path in `data`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FanoutPatch {
-    pub lookup_col: String,
-    /// `(source column, path in data)` pairs copied unchanged; a column copied
-    /// to several paths has a pair for each.
-    #[serde(deserialize_with = "fanout_fields")]
-    pub fields: Vec<(String, Vec<String>)>,
-    /// For a table two equalities away, through a table in between: the query
-    /// template from the changed rows' key values (`$1`, `int8[]`) to the
-    /// `lookup_col` values they reach, as `(key, lookup value)` pairs (#228).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub via: Option<String>,
-}
-
-/// The fields of a fan-out patch. A plan written before nested paths holds a
-/// top-level key where a path now is: it reads as that one-key path.
-fn fanout_fields<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<(String, Vec<String>)>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Path {
-        Keys(Vec<String>),
-        Key(String),
-    }
-    let fields: Vec<(String, Path)> = Vec::deserialize(deserializer)?;
-    Ok(fields
-        .into_iter()
-        .map(|(column, path)| match path {
-            Path::Keys(keys) => (column, keys),
-            Path::Key(key) => (column, vec![key]),
-        })
-        .collect())
-}
+use crate::lineage::plan::{PLAN_VERSION, PlanEmbed, TviewPlan};
 
 impl TviewPlan {
     /// Decode `entity`'s stored plan.
@@ -124,11 +11,12 @@ impl TviewPlan {
     /// A [`TViewError::CatalogError`] naming the entity when the document does not
     /// decode or is of another version: never read as "no dependencies".
     pub fn decode(entity: &str, json: serde_json::Value) -> TViewResult<Self> {
-        let plan: Self = serde_json::from_value(json).map_err(|e| TViewError::CatalogError {
-            operation: format!("Read the propagation plan of tv_{entity}"),
-            pg_error: e.to_string(),
-        })?;
-        if !(OLDEST_READ..=PLAN_VERSION).contains(&plan.version) {
+        let mut plan: Self =
+            serde_json::from_value(json).map_err(|e| TViewError::CatalogError {
+                operation: format!("Read the propagation plan of tv_{entity}"),
+                pg_error: e.to_string(),
+            })?;
+        if plan.version != PLAN_VERSION {
             return Err(TViewError::CatalogError {
                 operation: format!("Read the propagation plan of tv_{entity}"),
                 pg_error: format!(
@@ -137,6 +25,10 @@ impl TviewPlan {
                     plan.version
                 ),
             });
+        }
+        // A plan stored before the key was recorded: the convention names it.
+        if plan.key.column.is_empty() {
+            plan.key.column = crate::lineage::plan::key_column(entity);
         }
         if let Some(table) = plan
             .tables
@@ -178,9 +70,82 @@ impl TviewPlan {
     }
 }
 
+/// `plan` as it reads in this database, after a restore: its tables bound to the
+/// relations of the same qualified names, its column numbers to the columns of
+/// the same names (a table dumped with dropped columns comes back without their
+/// holes). Run as each restored catalog row is inserted, never re-deriving: the
+/// restore has not created the triggers yet. For a row written by `pg_tviews`
+/// itself the rebind is the identity.
+///
+/// # Errors
+/// The catalog cannot be read; `Ok(Err(_))` names what the plan names that this
+/// database lacks, or numbers without naming.
+pub fn rebind_restored(
+    plan: &TviewPlan,
+) -> TViewResult<Result<TviewPlan, crate::lineage::plan::Unbound>> {
+    use crate::lineage::plan::Unbound;
+    use std::collections::HashMap;
+    let names: Vec<String> = plan.tables.iter().map(|t| t.table.clone()).collect();
+    let mut relids: HashMap<u32, u32> = HashMap::with_capacity(names.len());
+    let mut missing: Vec<String> = Vec::new();
+    let found = crate::utils::spi::catalog_rows(
+        "SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid \
+           FROM pg_catalog.unnest($1::pg_catalog.text[]) WITH ORDINALITY AS t(q, n) ORDER BY t.n",
+        &[crate::utils::spi::text_array_of(&names)],
+        |row| row.get::<pgrx::pg_sys::Oid>(1),
+    )?;
+    for (table, oid) in plan.tables.iter().zip(found) {
+        match oid {
+            Some(oid) => {
+                relids.insert(table.relid, oid.to_u32());
+            }
+            None => missing.push(table.table.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        return Ok(Err(Unbound::Table(missing.join(", "))));
+    }
+    let numbered = plan.numbered_columns();
+    let mut attnums: HashMap<(u32, i16), i16> = HashMap::with_capacity(numbered.len());
+    let here: Vec<pgrx::pg_sys::Oid> = numbered
+        .iter()
+        .map(|(r, _, _)| pgrx::pg_sys::Oid::from(relids.get(r).copied().unwrap_or(0)))
+        .collect();
+    let columns: Vec<String> = numbered.iter().map(|(_, _, n)| n.clone()).collect();
+    let found = crate::utils::spi::catalog_rows(
+        "SELECT (SELECT a.attnum FROM pg_catalog.pg_attribute a \
+                  WHERE a.attrelid = k.relid AND a.attname = k.name \
+                    AND a.attnum > 0 AND NOT a.attisdropped) \
+           FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.oid[]), \
+                           pg_catalog.unnest($2::pg_catalog.text[])) WITH ORDINALITY AS k(relid, name, n) \
+          ORDER BY k.n",
+        &[
+            crate::utils::spi::oid_array(here),
+            crate::utils::spi::text_array_of(&columns),
+        ],
+        |row| row.get::<i16>(1),
+    )?;
+    for ((relid, attnum, name), new) in numbered.iter().zip(found) {
+        let Some(new) = new else {
+            let table = plan
+                .tables
+                .iter()
+                .find(|t| t.relid == *relid)
+                .map_or_else(|| relid.to_string(), |t| t.table.clone());
+            return Ok(Err(Unbound::Column(table, name.clone())));
+        };
+        attnums.insert((*relid, *attnum), new);
+    }
+    Ok(plan.rebound(&|r| relids.get(&r).copied(), &|r, a| {
+        attnums.get(&(r, a)).copied()
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lineage::plan::{FanoutPatch, LocalPath};
+    use pgrx::pg_sys::Oid;
 
     #[test]
     fn a_plan_round_trips() {
@@ -213,6 +178,10 @@ mod tests {
                 unique: false,
                 nullable: false,
             }],
+            key: crate::lineage::plan::PlanKey {
+                column: "pk_post".into(),
+                type_name: "bigint".into(),
+            },
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);
@@ -256,19 +225,26 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_plan_reads_as_one_without_references() {
-        // What upgrade scripts of earlier releases write before re-deriving.
-        let plan = TviewPlan::decode("post", serde_json::json!({"version": 1})).unwrap();
+    fn only_the_current_version_reads() {
+        // The update re-derives every plan: an older one is never read.
+        for version in [1, 2, 4] {
+            let err =
+                TviewPlan::decode("post", serde_json::json!({"version": version})).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("plan version {version} is not 3")),
+                "{err}"
+            );
+        }
+        let plan = TviewPlan::decode("post", serde_json::json!({"version": 3})).unwrap();
         assert!(plan.references.is_empty());
-        let err = TviewPlan::decode("post", serde_json::json!({"version": 4})).unwrap_err();
-        assert!(err.to_string().contains("plan version 4 is not 3"), "{err}");
     }
 
     #[test]
-    fn fanout_fields_read_paths_and_top_level_keys() {
+    fn fanout_fields_read_paths() {
         let fanout: FanoutPatch = serde_json::from_value(serde_json::json!({
             "lookup_col": "fk_user",
-            "fields": [["name", "author_name"], ["bio", ["author", "bio"]]]
+            "fields": [["name", ["author_name"]], ["bio", ["author", "bio"]]]
         }))
         .unwrap();
         assert_eq!(
@@ -361,7 +337,7 @@ mod tests {
             TviewPlan::decode("post", other),
             Err(TViewError::CatalogError { .. })
         ));
-        let broken = serde_json::json!({"version": 1, "embeds": 3});
+        let broken = serde_json::json!({"version": 3, "embeds": 3});
         assert!(TviewPlan::decode("post", broken).is_err());
     }
 }

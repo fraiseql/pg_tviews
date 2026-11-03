@@ -1,0 +1,83 @@
+{
+  "direct": [
+    [
+      "text",
+      "text"
+    ]
+  ],
+  "embeds": [
+    {
+      "entity": "doc",
+      "kind": "scalar",
+      "lookups": [
+        "fk_doc"
+      ],
+      "path": []
+    }
+  ],
+  "key": {
+    "column": "pk_note",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "note",
+      "initial_attnum": "public.tb_note.pk_note",
+      "initial_col": "pk_note",
+      "root": true,
+      "source_columns": [
+        "pk_note",
+        "id",
+        "fk_doc",
+        "text"
+      ],
+      "source_oid": "public.tb_note",
+      "source_table": "tb_note"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_note.pk_note",
+        "public.tb_note.id",
+        "public.tb_note.fk_doc",
+        "public.tb_note.text"
+      ],
+      "column": "pk_note",
+      "columns": [
+        "pk_note",
+        "id",
+        "fk_doc",
+        "text"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_note.pk_note",
+        "public.tb_note.fk_doc"
+      ],
+      "relid": "public.tb_note",
+      "table": "public.tb_note"
+    },
+    {
+      "attnums": [
+        "public.tv_doc.pk_doc",
+        "public.tv_doc.data"
+      ],
+      "columns": [
+        "pk_doc",
+        "data"
+      ],
+      "entity": "doc",
+      "kind": "propagated",
+      "links": [
+        "public.tv_doc.pk_doc"
+      ],
+      "relid": "public.tv_doc",
+      "table": "public.tv_doc",
+      "tview": "doc"
+    }
+  ],
+  "version": 3
+}

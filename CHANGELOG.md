@@ -9,7 +9,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-beta.35] - 2026-11-01
 
+### Changed (breaking)
+
+- **Writers run at READ COMMITTED.** A write to a table a TVIEW reads, a flush, and the
+  refresh and rebuild functions refuse a REPEATABLE READ or SERIALIZABLE transaction with
+  0A000 and a hint; reads are not concerned. Such a writer could not see what it waited for
+  on the value locks, so it was failed after the fact (40001) by a snapshot cross-check that
+  cost about 20 % of its time; the cross-check and the fail-fast lock policy are gone.
+  pg_tviews no longer raises 40001 (`docs/concurrency.md`).
+- **jsonb_delta is required** (`requires = 'jsonb_delta'` in the control file): `CREATE
+  EXTENSION pg_tviews` without it fails with 42704 (`CASCADE` installs it), and `DROP
+  EXTENSION jsonb_delta` is refused while pg_tviews is installed. The optional mode goes with
+  `pg_tviews_check_jsonb_delta()` and the health check's jsonb_delta item.
+- **A TVIEW over a table a logical-replication subscription writes is refused** (0A000), at
+  create, replace and re-registration: the apply worker fires no statement trigger, so such a
+  TVIEW went stale silently (or, with its triggers enabled `ALWAYS`, the subscription retried
+  forever). Create the TVIEW on the publisher and publish its table. The health check reports
+  pg_tviews' triggers on a table subscribed later.
+- **One naming rule for the public surface** (ADR 0211): functions are `pg_tviews_<verb>`,
+  relations in `tviews` are nouns, a function acting on every TVIEW ends in `_all` and is an
+  operator's, and a function acting on or showing one TVIEW requires owning it. Old names are
+  removed, not aliased; `docs/reference/api.md` lists every old → new name. In short:
+  `pg_tviews_check_health()`, `pg_tviews_show_queue()` (with the queued keys; it replaces
+  `pg_tviews_debug_queue()`), `pg_tviews_show_suspended()` (NULL when not suspended; it
+  replaces `pg_tviews_is_suspended()`), `pg_tviews_resolve()`, `pg_tviews_count_feed_gaps()`,
+  `pg_tviews_show_replication()`, `pg_tviews_show_mapping_query()`,
+  `pg_tviews_show_read_sets()`, `pg_tviews_reset_stats(tview)` /
+  `pg_tviews_reset_stats_all()`, `pg_tviews_ensure_propagation_indexes(tview)` /
+  `pg_tviews_ensure_propagation_indexes_all()`, and the views `tviews.reads` and
+  `tviews.references`. `contract_version()` is 3.
+- **Five settings**: `publish_changes`, `max_refresh_rows`, `audit_enabled`,
+  `lock_escalation_threshold` and `auto_rebuild_databases`. `max_propagation_depth`,
+  `max_dependency_depth`, `batch_size`, `cache_size` and `report_max_tracked` are fixed limits
+  named by their errors (a flush applies at most 1,000 entity batches, views nest at most 64
+  deep, a refresh statement takes 1,000 keys, a memo 10,000 entries, the report 10,000 rows);
+  setting one now fails. `max_queue_size` is kept, hidden and superuser-only.
+  `lock_escalation_threshold` no longer takes `-1` (never escalate), which could exhaust the
+  shared lock table.
+- **pg_tviews must be preloaded, and installed by a superuser**: `CREATE EXTENSION` fails with
+  55000 unless `pg_tviews` is in `shared_preload_libraries`, and so does every write and
+  function of an installed catalog if the preload is removed later. The control file says
+  `superuser = true`.
+- **After `ALTER TABLE … RENAME COLUMN`, a TVIEW's stored definition is PostgreSQL's rendering
+  of its backing view** (`pg_get_viewdef`), always. It was the author's text rewritten in
+  place when a check accepted the rewrite. `pg_tviews_defines_view()` is gone.
+- **A mutation refreshes its TVIEWs once** (#286, ADR 0286). Statements run inside a
+  top-level statement (a function's, as fraiseql's `SELECT app.fn(…)` runs them, or a
+  trigger's) leave their refresh to it: the TVIEWs are refreshed when it ends, or earlier,
+  at the first query inside it that reads a TVIEW's table, which then reads on a snapshot
+  taken after that refresh. A function writing one row in 13 statements refreshed it,
+  and every TVIEW row embedding it, 13 times; now once. Consequences: a refresh error
+  raises at that read (inside the function, where its handlers see it) or at the end of
+  the top-level statement (outside them); `pg_tviews.max_refresh_rows` counts one such
+  refresh; `CALL` and `DO` still refresh after each statement they run.
+- **A TVIEW's `id` is always `uuid`**, written in JSON as a string (`PublicId::Number` is
+  gone).
+- **One set of triggers per table, not one per TVIEW** (ADR 0136, amended). A table carries
+  one set of pg_tviews triggers however many TVIEWs read it: the union of what its readers
+  need, named `trg_tview_<role>_on_<schema>_<table>` and without arguments (was
+  `trg_tview_<role>_<entity>_on_<schema>_<table>`, the entity as argument). Each trigger
+  serves every TVIEW of its kind on the table; a partition gets one flush and one truncate
+  trigger. Creating or dropping a TVIEW no longer changes the triggers of the tables it reads,
+  unless it is the first to need a kind there or the last to stop. Re-registration (which the
+  update runs) replaces the per-TVIEW triggers. A per-TVIEW trigger left behind (an old dump)
+  fails the writes to its table and names `pg_tviews_reregister_all()`; the health check
+  reports it as an error. Nothing in fraiseql or confiture read the old names; a tool matching
+  `trg_tview_<role>_<entity>_` must match `trg_tview_<role>_on_` instead.
+- **A pg_tviews trigger can no longer be disabled for one TVIEW.** `ALTER TABLE … DISABLE
+  TRIGGER` on it stops every TVIEW of the table; `pg_tviews_suspend_triggers()` is the switch
+  for a bulk load. Creating a TVIEW still needs the `TRIGGER` privilege on every table it
+  reads, also when the table's set is already there.
+
 ### Fixed
+
+- **A restore no longer leaves plans naming the wrong columns.** A table dumped with dropped
+  columns comes back without their holes, and the plan's column numbers named other columns:
+  writes failed (42883, 22P02) or refreshed the wrong rows silently. The restore now rebinds
+  every column number to the restored column of the same name, and fails (42703) when a name
+  no longer resolves. The health check's new `columns` component names a column whose stored
+  number lost its name (`docs/operations/disaster-recovery.md`).
+- **An implicit commit of suspended writes fails** (55000, with a hint to resume first). An
+  explicit `COMMIT` caught up; several statements in one query string, or a `COMMIT` inside a
+  procedure, committed stale TVIEWs with only a WARNING.
+- **pg_tviews' PL/pgSQL keeps the SQLSTATE of an error it cannot handle**: a failed cleanup
+  after a dependent drop fails the `DROP` instead of committing a half-deregistered TVIEW, and
+  `pg_tviews_reregister_all(strict => true)` raises with the first failure's SQLSTATE instead
+  of P0001, so a lock timeout or a deadlock can be retried.
+- **An aggregate TVIEW follows every table its groups read.** Its paths came from the declared
+  `group_keys`: a table whose column equals the group key but that the declaration did not
+  list (read in a subquery correlated on the key) left the groups stale on its writes. The
+  paths now come from the query tree; a declared key the definition does not group by, or an
+  unknown table or column, fails `CREATE`.
+- **A write a user trigger makes during the flush reaches every TVIEW reading it.** A trigger
+  on a TVIEW's table that wrote a base table had that table's TVIEW refreshed again, but not
+  the TVIEWs embedding it, already refreshed in the same flush: they kept the old row.
+- **Showing how a TVIEW maps or locks writes requires owning it**
+  (`pg_tviews_show_mapping_query()`, `pg_tviews_show_read_sets()`,
+  `pg_tviews_show_cascade_path()`), as acting on it does; resetting one TVIEW's statistics
+  now checks ownership too, and an owner can ensure its own TVIEW's propagation indexes.
+- **Audit rows roll back with the savepoint that wrote them** (`pg_tviews.audit_enabled`):
+  entries are written where they happen instead of being buffered until the statement's end.
 
 - **Two writes that change links no longer deadlock on value locks in one statement each**
   (#277). A writer took its exclusive value locks in the delta trigger, one read-set column
@@ -32,6 +131,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A session's `plan_cache_mode` no longer changes how writes plan** (#281): refreshes run under
   `auto`. `force_generic_plan` planned every lookup by an array for ten keys (#235's whole-table
   scans), and `force_custom_plan` planned every kept statement again at each call.
+- **A fan-out patch (a parent's copied columns written into its children) no longer leaves
+  the children of a parent whose primary key changed with the old parent's values** (#288):
+  the update's row images did not pair, which the patch took as nothing to write. Such an
+  update now maps the rows to recompute.
+- **A fan-out patch no longer writes a parent's columns into the children of a parent that
+  a condition of its own excludes** (`LEFT JOIN … ON o.pk_org = t.fk_org AND o.deleted_at
+  IS NULL`) (#289). A table read with a condition on another of its columns gets no
+  fan-out: its writes recompute the rows they reach.
+- **`DROP DATABASE` frees the dropped database's slots in the cluster's statistics table**
+  (4,096 slots) when the drop succeeds (#290): a cluster that created and dropped databases
+  (test runs) ended with every TVIEW untracked until a restart.
+
+### Security
+
+- **A TVIEW's backing view (`tviews.<schema>__tv_<entity>`) is its owner's alone.** It
+  reads the base tables with the owner's privileges, so the `SELECT` grants it copied
+  from `tv_<entity>` handed back every row row-level security hid on the table. No
+  grant is copied any more; a privilege granted on a backing view is revoked at the
+  next `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO`, `REASSIGN OWNED`, create or
+  rebuild, and the update revokes the ones existing installs hold.
 
 ### Changed
 
@@ -49,6 +168,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pg_tviews_queue_stats()` counts the lookups still planned at execution (over 128 keys).
 - **A statement routes each TVIEW once** (#281): the first delta trigger's pass keeps what the
   later triggers of the statement need.
+- **A stored plan is read through one decoder per language**: in SQL, `pg_tviews_plan_tables`,
+  `_references`, `_roots` and `_lookups` (plain SQL, readable without the library), which the
+  registry views use; no view reads the plan's jsonb by path any more.
+- **The health check reports mapping queries that scan a large table** (component
+  `seq_scans`), with today's indexes and statistics: registration printed the advice once.
+- **`tviews.pg_tview_helpers` is gone**: nothing read it.
+- **A `CREATE TABLE tv_* AS` statement is read by PostgreSQL's own lexer** to find its SELECT;
+  the `sqlparser` dependency is gone.
+- **One recompute by key set** (`refresh/recompute.rs`) for one key or many: the single-key
+  path wrote the same statement.
+
+### Added
+
+- **Health component `contents`**: TVIEWs whose table is empty while their definition
+  yields rows, read as each TVIEW's owner (what a deploy probe read through the backing
+  view before), for the TVIEWs of owners the caller belongs to.
+- **Coverage of the SQL suites**: `scripts/sql-coverage.sh` runs the regression and
+  isolation suites against an instrumented build; CI holds the merged line coverage at
+  91 % or more (92.7 % measured; the unit tests alone cover 28.4 %).
+
+### Removed
+
+- The regression tests of jsonb_delta's array helpers (`jsonb_extract_id`,
+  `jsonb_array_update_where_batch`, …), which pg_tviews never calls; the contract test
+  of the functions it does call stays.
 
 ### Documentation
 
@@ -60,8 +204,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes
 
-- `ALTER EXTENSION pg_tviews UPDATE` changes no catalog object (catalog revision 10). The
-  new library is loaded at the next server start (`shared_preload_libraries`).
+- `ALTER EXTENSION pg_tviews UPDATE` (catalog revision 11) adds the plan decoder functions
+  and redefines the restore trigger, the registry views and the PL/pgSQL handlers; it renames
+  the functions and views above, and drops `pg_tviews_check_jsonb_delta()`,
+  `pg_tviews_defines_view()`, `pg_tviews_is_suspended()`, `pg_tviews_debug_queue()` and
+  `tviews.pg_tview_helpers`. It then re-derives every TVIEW itself, as its owner (an
+  aggregate's paths now come from its query tree; the plan records the row key): a TVIEW
+  that no longer analyses fails the update, named, and nothing changes. jsonb_delta must be
+  installed first (the update refuses otherwise). Measured: 50 ms for 1 TVIEW, 1.2 s for
+  50, 2.2 s for 200.
+- **Only 0.1.0-beta.34 updates to this release.** The older update scripts and
+  `scripts/migrate-from-0.1.0.sql` are gone: an older install is dropped and recreated
+  (`docs/operations/upgrade.md`, the runbook for both). Between the package swap and the
+  update, writes and pg_tviews functions fail with 55000 and the hint naming the fix; a
+  function this release removed raises the same error, never `could not find function`.
+- The update revokes every role's privileges on the backing views except their owner's.
+  A deploy probe that read backing views as another role reads the health component
+  `contents` instead (fraiseql/fraisier#504).
+- A writer at REPEATABLE READ or SERIALIZABLE must move to READ COMMITTED before the update.
+- Grant the operator role the new `_all` functions again
+  (`pg_tviews_ensure_propagation_indexes_all(boolean)`, `pg_tviews_reset_stats_all()`): the
+  update drops the "NULL = every TVIEW" signatures and the grants on them. Remove the removed
+  settings from `postgresql.conf` and `ALTER … SET`: a reserved `pg_tviews.` name that does
+  not exist fails.
+- Update callers of the renamed functions and views in step (confiture, fraiseql).
+- The new library is loaded at the next server start (`shared_preload_libraries`).
+- The update's re-registration replaces every per-TVIEW trigger on the base tables by the
+  per-table sets (`trg_tview_<role>_on_<schema>_<table>`). A per-TVIEW trigger restored later
+  from an older dump fails the writes to its table until `pg_tviews_reregister_all()`.
 
 ## [0.1.0-beta.34] - 2026-10-30
 

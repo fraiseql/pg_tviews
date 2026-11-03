@@ -40,9 +40,9 @@ END $$;
 
 -- ── a session starts with an empty queue ────────────────────────────────────
 DO $$ BEGIN
-    IF jsonb_array_length(tviews.pg_tviews_debug_queue()) <> 0 THEN
+    IF jsonb_array_length((tviews.pg_tviews_show_queue()->'queued')) <> 0 THEN
         RAISE EXCEPTION 'FAIL: work queued by an earlier transaction is still queued: %',
-            tviews.pg_tviews_debug_queue();
+            (tviews.pg_tviews_show_queue()->'queued');
     END IF;
 END $$;
 
@@ -81,9 +81,9 @@ END $$;
 
 -- ── the next transaction starts with an empty queue ─────────────────────────
 DO $$ BEGIN
-    IF jsonb_array_length(tviews.pg_tviews_debug_queue()) <> 0 THEN
+    IF jsonb_array_length((tviews.pg_tviews_show_queue()->'queued')) <> 0 THEN
         RAISE EXCEPTION 'FAIL: work queued by a failed transaction is still queued: %',
-            tviews.pg_tviews_debug_queue();
+            (tviews.pg_tviews_show_queue()->'queued');
     END IF;
 END $$;
 UPDATE tb_author SET name = 'ben (renamed)' WHERE pk_author = 2;

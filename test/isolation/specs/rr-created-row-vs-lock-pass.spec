@@ -1,9 +1,7 @@
 # REPEATABLE READ twin of created-row-vs-lock-pass (#277): a write whose rows a
-# concurrent creation links new rows to never waits for the creation and then
-# locks what it brought in. A creation still open makes the writer's lock pass
-# fail at once with 40001; one committed after the writer's snapshot makes its
-# lookup, checked against the latest snapshot, fail with 40001. Retried, the
-# write succeeds, and the TVIEW is fresh.
+# concurrent creation links new rows to. At REPEATABLE READ the write is refused
+# with 0A000 before its lock pass; retried at READ COMMITTED, it succeeds and the
+# TVIEW is fresh.
 
 setup
 {

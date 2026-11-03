@@ -1,7 +1,6 @@
 //! Parent discovery for the flush: the rows of the TVIEWs that embed a changed
 //! TVIEW's rows, found through the lookup columns of their plans.
 
-use pgrx::prelude::*;
 use std::collections::HashMap;
 
 use crate::catalog::KeyType;
@@ -92,9 +91,9 @@ fn prune_edge(graph: &crate::catalog::EntityDepGraph, child: &str, parent: &str,
     let prune = graph
         .document_edges
         .contains(&(child.to_string(), parent.to_string()))
-        && !crate::queue::affected::changed_in_flush(child, pk);
+        && !crate::queue::log::changed_in_flush(child, pk);
     if prune {
-        crate::metrics::metrics_api::record_propagation_pruned(parent);
+        crate::stats::record_propagation_pruned(parent);
     }
     prune
 }
@@ -135,7 +134,6 @@ fn find_affected_keys_batch(
     };
     let mut query = select(&qi_parent, &children, 1);
     let mut args = children.args();
-    let mut plan = children.plan();
     if let Some(appeared) = LookupKeys::of_with(in_view.to_vec(), child_pks.len()) {
         let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
         query = format!(
@@ -143,13 +141,11 @@ fn find_affected_keys_batch(
             select(&qi_view, &appeared, 1 + children.width())
         );
         args.extend(appeared.args());
-        plan = plan.and(appeared.plan());
     }
     let _owner = crate::owner::AsOwner::of_entity(parent)?;
     // Read-write: a fresh snapshot, which sees what the locks waited for.
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
-        let mut found = Vec::new();
         for row in crate::utils::spi::kept_update(client, &query, &args)? {
             let Some(child_pk) = row["child_key"].value::<i64>()? else {
                 continue;
@@ -159,14 +155,8 @@ fn find_affected_keys_batch(
                 KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
             };
             if let Some(key) = key {
-                found.push(vec![Some(child_pk.to_string()), Some(key.to_string())]);
                 result.entry(child_pk).or_default().push(key);
             }
-        }
-        // REPEATABLE READ: no parent row the latest snapshot holds is missed.
-        if crate::concurrency::crosscheck::enabled() {
-            let latest = crate::utils::spi::latest_rows_connected(&query, &args, Some(plan))?;
-            crate::concurrency::crosscheck::discovered(&found, &latest);
         }
         Ok::<_, crate::TViewError>(result)
     })

@@ -1,0 +1,81 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [],
+  "key": {
+    "column": "pk_org",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "org",
+      "initial_attnum": "public.tb_org.pk_org",
+      "initial_col": "pk_org",
+      "root": true,
+      "source_columns": [
+        "pk_org",
+        "id",
+        "name"
+      ],
+      "source_oid": "public.tb_org",
+      "source_table": "tb_org"
+    },
+    {
+      "entity_name": "org",
+      "initial_attnum": "public.tb_user.fk_org",
+      "initial_col": "fk_org",
+      "root": false,
+      "source_columns": [
+        "pk_user",
+        "fk_org"
+      ],
+      "source_oid": "public.tb_user",
+      "source_table": "tb_user"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_org.pk_org",
+        "public.tb_org.id",
+        "public.tb_org.name"
+      ],
+      "column": "pk_org",
+      "columns": [
+        "pk_org",
+        "id",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_org.pk_org"
+      ],
+      "relid": "public.tb_org",
+      "table": "public.tb_org"
+    },
+    {
+      "attnums": [
+        "public.tb_user.pk_user",
+        "public.tb_user.fk_org"
+      ],
+      "column": "fk_org",
+      "columns": [
+        "pk_user",
+        "fk_org"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_user.fk_org"
+      ],
+      "relid": "public.tb_user",
+      "table": "public.tb_user"
+    }
+  ],
+  "version": 3
+}

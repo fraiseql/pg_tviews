@@ -1,20 +1,18 @@
-//! A backing view's privileges follow its TVIEW's table.
-//!
-//! A backing view lives in the extension's schema, where a grant on the
-//! application's schema (`GRANT SELECT ON ALL TABLES IN SCHEMA app`, default
-//! privileges on `app`) never reaches it. Whoever can `SELECT` from a TVIEW's
-//! table can therefore `SELECT` from its backing view: the view's `SELECT`
-//! grants are made those of the table when the view is created or rebuilt, and
-//! again after every `GRANT` or `REVOKE` on a table. `ALTER TABLE tv_* OWNER TO`
-//! gives the view the new owner. Only `SELECT` is copied: the view reads the base
-//! tables with its owner's privileges, and a write through it would too.
+//! A backing view runs its TVIEW's `SELECT` over the base tables with its owner's
+//! privileges, so a role granted it reads every row the definition yields,
+//! whatever row-level security restricts on the TVIEW's table. It is therefore
+//! its owner's alone: no grant is copied from the table, and one made on the view
+//! (`GRANT … ON ALL TABLES IN SCHEMA tviews`, default privileges) is revoked when
+//! the view is created or rebuilt and after every `GRANT`, `REVOKE`,
+//! `ALTER TABLE … OWNER TO` and `REASSIGN OWNED`. `ALTER TABLE tv_* OWNER TO`
+//! gives the view the new owner. Readers read the TVIEW's table.
 
 use crate::error::TViewResult;
 use pgrx::prelude::*;
 
 /// Give the backing view of the TVIEW whose table is `table` (of every TVIEW
-/// when `None`) that table's owner, when `owners`, and its `SELECT`
-/// grants. Run after a statement that may have changed them, and when a
+/// when `None`) that table's owner, when `owners`, and take every privilege on
+/// it from the other roles. Run after a statement that may have changed them, and when a
 /// backing view is created or rebuilt.
 ///
 /// # Errors
@@ -28,14 +26,14 @@ pub(crate) fn follow(table: Option<pg_sys::Oid>, owners: bool) -> TViewResult<()
     if owners {
         follow_owners(table)?;
     }
-    follow_grants(table)
+    revoke_grants(table)
 }
 
-/// Each statement runs as the view's owner, who may always grant on it: the
+/// Each statement runs as the view's owner, who may always revoke on it: the
 /// caller needs no privilege on the view.
-fn follow_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
+fn revoke_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
     // Read-write: a fresh snapshot, which sees the statement just run.
-    let changes = crate::catalog::queries::grant_changes(table)?;
+    let changes = crate::catalog::queries::grant_revocations(table)?;
     for (view, statement) in changes {
         let (Some(view), Some(statement)) = (view, statement) else {
             continue;

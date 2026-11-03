@@ -32,17 +32,20 @@ FraiseQL names its columns by role (the "trinity" identifiers):
 | `fk_<parent>` | `bigint` | foreign key to the parent's `pk_<parent>` |
 | `<parent>_id` | `uuid` | the parent's public id, for filtering (optional) |
 
-These names fit pg_tviews, but only one is required: the definition outputs a
-`pk_<entity>` column named after the TVIEW. pg_tviews reads the definition from
-PostgreSQL's query tree, so it follows joins whatever the tables and columns are
-called. In a TVIEW's table, some names fix the column type: `pk_<entity>` and `fk_*`
-are `bigint`, `id` is `uuid`, `data` is `jsonb`; `id` and `*_id` columns are indexed
+`pk_<entity>`, `id` and `fk_<parent>` are pg_tviews' key contract ([Keys](../reference/ddl.md#keys)): the
+definition outputs `pk_<entity>`, an integer named after the TVIEW, which is the row
+key and the TVIEW table's primary key (another type is refused, `42804`); `id` is a
+`uuid`, the public identifier `pg_tviews_flush_and_report()` and the change feed
+carry; `fk_<entity>` holds the referenced row's `pk_<entity>`. pg_tviews reads the
+definition from PostgreSQL's query tree, so it follows joins whatever the tables and
+columns are called. In a TVIEW's table, `pk_<entity>` is `bigint`, `id` is `uuid` and
+`data` is `jsonb`; `id` and `*_id` columns are indexed
 ([DDL Reference](../reference/ddl.md#columns)).
 
 ## Example
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 SET search_path = "$user", public, tviews;
 
 CREATE TABLE tb_user (
@@ -154,6 +157,27 @@ SELECT data FROM tv_post WHERE id = (SELECT id FROM tb_post WHERE identifier = '
 SELECT data FROM tv_post WHERE user_id = (SELECT id FROM tb_user WHERE identifier = 'alice');
 ```
 
+### One refresh per mutation
+
+A mutation is one statement, `SELECT app.fn(…)`, however many statements `fn` runs:
+its TVIEWs are refreshed once, when it ends, from the final state
+([ADR 0286](../adr/0286-refresh-once-per-statement.md)). Writing a row in several
+statements costs no extra refresh:
+
+```sql fragment
+-- One refresh of the post, and of every TVIEW row embedding it
+UPDATE tb_post SET title = $2 WHERE id = $1;
+UPDATE tb_post SET content = $3 WHERE id = $1;
+```
+
+A query in `fn` that reads a TVIEW refreshes what was queued before it, so a mutation
+that returns its result from `tv_*` returns it fresh; each such read between writes
+adds a refresh, so read the result back once, after the last write. A refresh that
+fails (`54000` past `pg_tviews.max_refresh_rows`, a value too large for a column)
+raises at that read, or when the mutation's statement ends, outside `fn`'s exception
+handlers: a handler that turns errors into a mutation result catches refresh errors
+only around the read.
+
 ## What a write refreshes
 
 ```sql
@@ -178,16 +202,16 @@ a materialized view) is refused unless it declares what a write to that table do
 
 - Every TVIEW gets a statement-level trigger: a bulk statement refreshes the rows it
   affected once, at its end.
-- With the `jsonb_delta` extension installed, eligible single-row updates patch the
-  stored documents instead of recomputing them
-  ([Installation](installation.md#jsonb_delta)).
-- `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes()` find the
+- An update that only changes columns copied into `data` as they are patches the
+  stored documents instead of recomputing them; `jsonb_delta`, which pg_tviews
+  requires, does the nested merges ([Installation](installation.md#jsonb_delta)).
+- `pg_tviews_profile()` and `pg_tviews_ensure_propagation_indexes_all()` find the
   indexes a TVIEW's lookups need ([Profile](../reference/profile.md)).
 
 ## Monitoring
 
 ```sql
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 SELECT * FROM pg_tviews_profile();   -- size, HOT ratio, missing indexes per TVIEW
 SELECT * FROM tviews.stats;          -- refresh counters per TVIEW, from any session
 ```
@@ -201,7 +225,7 @@ SELECT * FROM tviews.stats;          -- refresh counters per TVIEW, from any ses
 SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
 -- missing triggers, unreadable plans
-SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM pg_tviews_check_health() WHERE status <> 'OK';
 ```
 
 `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs missing triggers (it is

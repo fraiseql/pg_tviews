@@ -57,7 +57,7 @@ The examples below run in order in one database.
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 ```
 
 ### Identity
@@ -183,7 +183,8 @@ Each write costs the rows it reaches. Two dimensions drive it:
   them on every write to it ([below](#fan-out)). `tviews.pg_tviews_profile()` reports the
   fan-out of each lookup column, projects its cost per write and warns above a threshold.
 - **Depth**: each level of TVIEW embedding TVIEW adds a round of refreshes. Keep chains
-  short; `pg_tviews.max_propagation_depth` (default 100) stops a runaway chain.
+  short. A flush applies at most 1,000 entity batches (`54001`); only a loop reaches
+  it, such as a trigger on a TVIEW table writing back what the refresh reads.
 
 `pg_tviews.max_queue_size` (default 1,000,000 keys) bounds the work one transaction can queue:
 beyond it the write fails with SQLSTATE 54000. Split a write that reaches more rows into
@@ -267,7 +268,7 @@ leave room for HOT updates.
   wrote: prefer set-based statements to row-by-row loops.
 - For bulk loads, `tviews.pg_tviews_suspend_triggers()` defers refreshes, and
   `tviews.pg_tviews_resume_triggers()` rebuilds the TVIEWs written meanwhile.
-- `tviews.pg_tviews_ensure_propagation_indexes()` creates the indexes the refresh lookups
+- `tviews.pg_tviews_ensure_propagation_indexes_all()` creates the indexes the refresh lookups
   need.
 
 ### Read replicas
@@ -278,7 +279,7 @@ a standby cannot read it, and promotion or a crash restart empties it until a wo
 refills it. `ALTER TABLE tv_x SET LOGGED` (or the `logged` option) switches it back:
 
 ```sql
-SELECT entity, persistence, replica_readable FROM tviews.pg_tviews_replication_status();
+SELECT entity, persistence, replica_readable FROM tviews.pg_tviews_show_replication();
 ```
 
 A replica never refreshes a TVIEW: it replays the primary's. See
@@ -317,19 +318,19 @@ See [Operator Guide](operators.md) and [Security](../operations/security.md).
 ## Monitoring
 
 ```sql
-SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE status <> 'OK';
 SELECT entity, needs_reregister, uncascaded_tables FROM tviews.registry;
 SELECT entity, view_recomputes, rows_written, refresh_ms FROM tviews.stats;
 SELECT entity, persistence, heap_bytes, hot_ratio, warnings FROM tviews.pg_tviews_profile();
 ```
 
-- `pg_tviews_health_check()`: catalog, plans, triggers, `jsonb_delta`; an empty result above
-  is healthy.
+- `pg_tviews_check_health()`: catalog, plans, triggers, mapping queries that scan a large
+  table (`seq_scans`); an empty result above is healthy.
 - `tviews.registry`: one row per TVIEW, the stable read contract for tools
   ([read contract](../reference/read-contract.md)).
 - `tviews.stats`: refresh work per TVIEW, cumulative, readable from any session.
 - `pg_tviews_profile()`: sizes, dead tuples, fan-out, with warnings.
-- `pg_tviews_queue_stats()`: the current session's refresh work, for debugging.
+- `pg_tviews_show_queue()`: the current session's refresh work, for debugging.
 
 ## Trade-offs
 

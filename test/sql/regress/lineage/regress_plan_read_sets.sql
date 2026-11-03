@@ -4,7 +4,7 @@
 -- writer of the table locks its rows' values of that column. They exist even
 -- when no row of the table matches (an outer join to a row not inserted yet).
 --
--- tviews.pg_tviews_read_set_queries(tview, table) renders them; each query is
+-- tviews.pg_tviews_show_read_sets(tview, table) renders them; each query is
 -- run here with the keys of a row and must return the values that row reads.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/lineage/regress_plan_read_sets.sql
@@ -26,7 +26,7 @@ CREATE FUNCTION read_values(tview text, tbl regclass, keys bigint[])
 RETURNS TABLE(column_name text, vals text[]) LANGUAGE plpgsql AS $$
 DECLARE r record;
 BEGIN
-    FOR r IN SELECT * FROM tviews.pg_tviews_read_set_queries(tview, tbl) LOOP
+    FOR r IN SELECT * FROM tviews.pg_tviews_show_read_sets(tview, tbl) LOOP
         column_name := r.column_name;
         IF r.query IS NULL THEN
             vals := NULL;
@@ -92,7 +92,7 @@ SELECT pg_tviews_create('tv_ranked', $$
 SELECT must((SELECT count(*) FROM read_values('tv_ranked', 'tb_rank', '{1}')
              WHERE column_name IS NULL AND vals IS NULL) = 1,
             'no equality: ' || (SELECT array_agg(r::text)
-                                FROM tviews.pg_tviews_read_set_queries('tv_ranked', 'tb_rank'::regclass) r)::text);
+                                FROM tviews.pg_tviews_show_read_sets('tv_ranked', 'tb_rank'::regclass) r)::text);
 
 -- 6. Another TVIEW's table read like a base table (no output column holds its key).
 SELECT pg_tviews_create('tv_user', $$
@@ -112,12 +112,12 @@ SELECT must(NOT EXISTS (
     'a mapped table without read sets');
 SELECT must(NOT EXISTS (
     SELECT 1 FROM tviews.pg_tview_meta m, jsonb_array_elements(m.plan->'tables') t,
-         tviews.pg_tviews_read_set_queries(m.entity, (t->>'relid')::oid) q
+         tviews.pg_tviews_show_read_sets(m.entity, (t->>'relid')::oid) q
     WHERE q.column_name IS NOT NULL AND q.query IS NULL),
     'a read set that does not render');
 
 -- 8. A table that is not mapped by a query has none: the table holding the key.
-SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_read_set_queries('tv_note', 'tb_post'::regclass)),
+SELECT must(NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_show_read_sets('tv_note', 'tb_post'::regclass)),
             'the table holding the key has read sets');
 
 \echo 'plan_read_sets: PASS'

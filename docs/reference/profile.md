@@ -3,7 +3,7 @@
 To follow the examples, a TVIEW to profile:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 CREATE TABLE tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                       title text);
 SELECT tviews.pg_tviews_create('tv_post',

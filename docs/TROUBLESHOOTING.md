@@ -34,7 +34,7 @@ not on the `search_path`.
 `tviews` to the database's `search_path`, or create the extension:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 ```
 
 ### `relation "tv_product" does not exist`
@@ -49,7 +49,9 @@ SELECT schema, name FROM tviews.registry WHERE name = 'tv_product';
 ### Every pg_tviews call fails with `55000` after an upgrade
 
 The library and the installed extension are at different versions. Run
-`ALTER EXTENSION pg_tviews UPDATE;` in the database; the hint names the fix.
+`ALTER EXTENSION pg_tviews UPDATE;` in the database; the hint names the fix. An
+install older than the previous release is dropped and recreated instead
+([Upgrading pg_tviews](operations/upgrade.md)).
 
 ## Creating a TVIEW
 
@@ -88,7 +90,7 @@ fails rather than leave the TVIEW stale.
 **Solution**:
 
 ```sql
-SELECT * FROM tviews.pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE status <> 'OK';
 SELECT * FROM tviews.pg_tviews_reregister_all();   -- re-installs missing triggers
 ```
 
@@ -103,14 +105,15 @@ decode (a catalog edited by hand, a restore out of step). Run the hint, then che
 
 ```sql
 SELECT tviews.pg_tviews_reregister('tv_post');
-SELECT * FROM tviews.pg_tviews_health_check() WHERE component = 'plans';
+SELECT * FROM tviews.pg_tviews_check_health() WHERE component = 'plans';
 ```
 
-### `could not serialize access due to concurrent update` (`40001`)
+### `a REPEATABLE READ transaction cannot write to a table TVIEWs read` (`0A000`)
 
-A `REPEATABLE READ` or `SERIALIZABLE` transaction's refresh would have recomputed a
-TVIEW row from a snapshot older than another writer's committed change. Retry the
-transaction. See [Concurrency](concurrency.md).
+Writers run at `READ COMMITTED`: a transaction at `REPEATABLE READ` or `SERIALIZABLE`
+that writes to a table a TVIEW reads, or refreshes TVIEWs, is refused before it writes.
+Run it at `READ COMMITTED`; keep rules spanning rows with constraints and
+`SELECT … FOR UPDATE`. See [Concurrency](concurrency.md).
 
 ### `permission denied` (`42501`)
 
@@ -158,4 +161,4 @@ do the quoting (`psql -v scale="$scale"`, not `-v scale="'$scale'"`).
 
 Open an issue with what you ran, the full error (with its SQLSTATE, DETAIL and HINT:
 `\set VERBOSITY verbose` in psql), `SELECT tviews.pg_tviews_version();`, and the output
-of `SELECT * FROM tviews.pg_tviews_health_check();`.
+of `SELECT * FROM tviews.pg_tviews_check_health();`.

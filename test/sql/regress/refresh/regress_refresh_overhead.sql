@@ -27,7 +27,7 @@ INSERT INTO tb_item (n) SELECT g FROM generate_series(1, 100) g;
 CREATE TABLE tv_item AS SELECT pk_item, id, jsonb_build_object('n', n) AS data FROM tb_item;
 
 CREATE FUNCTION lookups() RETURNS INT LANGUAGE sql AS
-$$ SELECT (pg_tviews_queue_stats()->>'catalog_lookups')::int $$;
+$$ SELECT (pg_tviews_show_queue()->>'catalog_lookups')::int $$;
 CREATE FUNCTION pk_scans() RETURNS BIGINT LANGUAGE sql AS $$
     SELECT pg_stat_clear_snapshot();
     SELECT idx_scan FROM pg_stat_user_indexes WHERE indexrelname = 'tb_item_pkey'

@@ -1,0 +1,109 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_vnote",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "vnote",
+      "initial_attnum": "public.tb_vnote.pk_vnote",
+      "initial_col": "pk_vnote",
+      "root": true,
+      "source_columns": [
+        "pk_vnote",
+        "id",
+        "tag",
+        "fk_customer"
+      ],
+      "source_oid": "public.tb_vnote",
+      "source_table": "tb_vnote"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_vnote.pk_vnote",
+        "public.tb_vnote.id",
+        "public.tb_vnote.tag",
+        "public.tb_vnote.fk_customer"
+      ],
+      "column": "pk_vnote",
+      "columns": [
+        "pk_vnote",
+        "id",
+        "tag",
+        "fk_customer"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_vnote.pk_vnote",
+        "public.tb_vnote.tag",
+        "public.tb_vnote.fk_customer"
+      ],
+      "relid": "public.tb_vnote",
+      "table": "public.tb_vnote"
+    },
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.name",
+        "public.tb_customer.name_up"
+      ],
+      "columns": [
+        "pk_customer",
+        "name",
+        "name_up"
+      ],
+      "hop": [
+        "pk_customer",
+        "fk_customer"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_customer.pk_customer",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_vnote.fk_customer} FROM {r:public.tb_vnote} o1 WHERE o1.{c:public.tb_vnote.pk_vnote} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_customer",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_vnote.pk_vnote} FROM pg_tviews_delta d, {r:public.tb_vnote} o1 WHERE (d.{c:public.tb_customer.pk_customer} OPERATOR(pg_catalog.=) o1.{c:public.tb_vnote.fk_customer})",
+      "table": "public.tb_customer"
+    },
+    {
+      "attnums": [
+        "public.tb_vtag.raw",
+        "public.tb_vtag.norm"
+      ],
+      "columns": [
+        "raw",
+        "norm"
+      ],
+      "hop": [
+        "norm",
+        "tag"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_vtag.raw",
+        "public.tb_vtag.norm"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_vtag.norm",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_vnote.tag} FROM {r:public.tb_vnote} o1 WHERE o1.{c:public.tb_vnote.pk_vnote} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_vtag",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_vnote.pk_vnote} FROM pg_tviews_delta d, {r:public.tb_vnote} o1 WHERE (d.{c:public.tb_vtag.norm} OPERATOR(pg_catalog.=) o1.{c:public.tb_vnote.tag})",
+      "table": "public.tb_vtag"
+    }
+  ],
+  "version": 3
+}

@@ -12,8 +12,8 @@ This document outlines backup strategies, recovery procedures, and disaster reco
 - `tviews.registry` (each TVIEW's `schema`, `name`, `query` and `options`: enough to
   recreate it with `pg_tviews_create_or_replace`)
 - `pg_tview_meta` table (TVIEW definitions and metadata)
-- `pg_tview_helpers` table (helper view relationships)
-- `pg_tview_audit_log` table (audit trail)
+- `pg_tview_audit_log` table (audit trail): not part of `pg_dump` output, it records
+  the operations of this cluster; copy it with `COPY` if you keep it
 - Base tables (`tb_*`) containing your data
 
 **Optional (Can Recreate)**:
@@ -24,7 +24,7 @@ This document outlines backup strategies, recovery procedures, and disaster reco
 
 ```bash
 # Metadata-only backup (fast, small)
-pg_dump -t pg_tview_meta -t pg_tview_helpers -t pg_tview_audit_log \
+pg_dump -t tviews.pg_tview_meta \
     -d your_db > tview_metadata_backup.sql
 
 # Full database backup
@@ -48,7 +48,7 @@ DB_NAME="${1:-postgres}"
 mkdir -p $BACKUP_DIR
 
 # Backup metadata
-pg_dump -t pg_tview_meta -t pg_tview_helpers -t pg_tview_audit_log \
+pg_dump -t tviews.pg_tview_meta \
     -d $DB_NAME > $BACKUP_DIR/tview_metadata_$TIMESTAMP.sql
 
 # Compress
@@ -125,7 +125,7 @@ cargo pgrx install --release
 
 # In PostgreSQL
 DROP EXTENSION pg_tviews CASCADE;
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION pg_tviews CASCADE;
 
 # Recreate TVIEWs from your schema scripts, or from a saved copy of
 # tviews.registry (here a table registry_copy with its schema, name, query, options)
@@ -163,7 +163,7 @@ sudo systemctl start postgresql
 
 # Verify TVIEWs
 SELECT COUNT(*) FROM pg_tview_meta;
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 
 # UNLOGGED TVIEWs (logged: false) are empty after a physical restore. The rebuild
 # launcher refills them when the server leaves recovery; otherwise:
@@ -184,11 +184,21 @@ pg_restore -d postgres full_backup.dump
 gunzip -c full_backup.dump.gz | pg_restore -d postgres
 
 # Verify TVIEWs
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 
 # Fill UNLOGGED TVIEWs (logged: false) once after a dump restore
 SELECT * FROM pg_tviews_rebuild_all();
 ```
+
+**What the restore does to the catalog.** `pg_dump` dumps `tviews.pg_tview_meta`; as
+each row is restored, a trigger rebinds its stored plan to the restored database:
+tables by their qualified names (their OIDs differ), columns by their names (a table
+that had dropped columns comes back without their holes, so its column numbers
+differ). A table or column the plan names that the restored database lacks fails the
+restore with 42P01 or 42703. The trigger never re-derives a plan: it runs while the
+data section loads, before `pg_dump` creates the triggers. `pg_tviews_check_health()`
+reports any column number that does not match its name (component `columns`);
+`SELECT * FROM tviews.pg_tviews_reregister_all()` re-derives every plan by hand.
 
 ## Emergency Procedures
 
@@ -215,14 +225,13 @@ END $$;
 
 -- 3. Clean metadata
 TRUNCATE pg_tview_meta;
-TRUNCATE pg_tview_helpers;
 TRUNCATE pg_tview_audit_log;
 
 -- 4. Recreate TVIEWs from application scripts
 -- (Run your TVIEW creation scripts)
 
 -- 5. Verify system health
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 ```
 
 ### Force TVIEW Recreation
@@ -285,7 +294,7 @@ createdb $DB_NAME
 
 # 2. Create sample TVIEWs
 psql -d $DB_NAME << 'EOF'
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION pg_tviews CASCADE;
 
 CREATE TABLE tb_test (pk_test SERIAL PRIMARY KEY, id UUID DEFAULT gen_random_uuid(), name TEXT);
 INSERT INTO tb_test (name) VALUES ('test1'), ('test2');
@@ -301,11 +310,11 @@ pg_dump -t pg_tview_meta -d $DB_NAME > $BACKUP_FILE
 psql -d $DB_NAME -c "DROP EXTENSION pg_tviews CASCADE;"
 
 # 5. Recover
-psql -d $DB_NAME -c "CREATE EXTENSION pg_tviews;"
+psql -d $DB_NAME -c "CREATE EXTENSION pg_tviews CASCADE;"
 psql -d $DB_NAME < $BACKUP_FILE
 
 # 6. Verify
-psql -d $DB_NAME -c "SELECT * FROM pg_tviews_health_check();"
+psql -d $DB_NAME -c "SELECT * FROM pg_tviews_check_health();"
 
 # 7. Cleanup
 dropdb $DB_NAME
@@ -324,7 +333,7 @@ DB_NAME="${1:-postgres}"
 ALERT_EMAIL="admin@yourcompany.com"
 
 # Run health check
-HEALTH_OUTPUT=$(psql -d $DB_NAME -t -c "SELECT * FROM pg_tviews_health_check();")
+HEALTH_OUTPUT=$(psql -d $DB_NAME -t -c "SELECT * FROM pg_tviews_check_health();")
 
 # Check for issues
 if echo "$HEALTH_OUTPUT" | grep -q "ERROR\|WARNING"; then

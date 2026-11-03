@@ -61,15 +61,16 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         crate::owner::require_owner(owned, &format!("tv_{entity_name}"))?;
     }
 
-    // Remove the TVIEW's triggers from its base tables. They are found by
-    // their function and the entity they carry, not through the backing view, which
-    // may already be gone when the drop follows a base table or helper view dropped
-    // with CASCADE.
-    crate::dependency::remove_entity_triggers(entity_name)?;
+    // The tables whose triggers serve it, from its stored plan, not through the
+    // backing view, which may already be gone when the drop follows a base table
+    // or helper view dropped with CASCADE.
+    let read_before = crate::catalog::readers::tables_of(entity_name)?;
 
     // Deregister first: the sql_drop event trigger the drops below fire then finds
     // no TVIEW of its own to clean up, and the drop is recorded once.
     drop_metadata(entity_name)?;
+    // Their triggers now serve the TVIEWs left.
+    crate::dependency::sync_after_drop(&read_before)?;
 
     // Drop the materialized table (schema-resolved via OID).
     // Honor the caller's CASCADE/RESTRICT behavior so an explicit
@@ -87,9 +88,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // Invalidate caches since TVIEW was dropped
     crate::cache::invalidate_all();
 
-    // Buffer and flush audit entry immediately (we're in SPI context)
-    crate::audit::log_drop(entity_name);
-    crate::audit::flush_audit_buffer()?;
+    crate::audit::log_drop(entity_name)?;
 
     Ok(true)
 }
@@ -128,10 +127,11 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
         drop_backing_view(entity)?;
     }
 
-    crate::dependency::remove_entity_triggers(entity)?;
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     drop_metadata(entity)?;
+    crate::dependency::sync_after_drop(&read_before)?;
     crate::cache::invalidate_all();
-    crate::audit::log_drop(entity);
+    crate::audit::log_drop(entity)?;
     if table_left == Some(true) {
         notice!(
             "pg_tviews: TVIEW {entity} deregistered; its table belongs to another role and \
@@ -204,7 +204,7 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
 /// When `cascade` is true the generated statement uses `CASCADE` so dependent
 /// objects are removed as well.
 fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
-    let qualified = crate::utils::spi_get_string(&format!(
+    let qualified = crate::utils::spi::get_string(&format!(
         "SELECT quote_ident(n.nspname::text) || '.' || quote_ident(c.relname::text) \
          FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
@@ -230,7 +230,7 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
 /// the registration is all that is left, and any role may remove it.
 fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys::Oid>> {
     let args = [meta.tview_oid, meta.view_oid].map(crate::utils::spi::oid);
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 "SELECT COALESCE((SELECT oid FROM pg_catalog.pg_class WHERE oid = $1), \

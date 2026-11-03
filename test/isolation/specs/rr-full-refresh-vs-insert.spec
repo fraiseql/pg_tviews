@@ -1,11 +1,9 @@
-# A REPEATABLE READ rename of a table the TVIEW can't map key by key (the
-# full_refresh policy), after a post was inserted and committed since its
-# snapshot. The insert's refresh wrote the post with the old name; the rename's
-# full refresh compares the TVIEW with its view under the transaction's
-# snapshot, where the post doesn't exist, and would leave it stale. As every
-# refresh under REPEATABLE READ, the full refresh is checked against the latest
-# snapshot: the rename fails with 40001. Under READ COMMITTED the full refresh
-# sees the post, and both rows show the new name.
+# A rename of a table the TVIEW can't map key by key (the full_refresh policy),
+# after a post was inserted and committed since the renaming transaction began.
+# At REPEATABLE READ the full refresh would compare the TVIEW with its view under
+# a snapshot where the post doesn't exist: the rename is refused with 0A000.
+# Under READ COMMITTED the full refresh sees the post, and both rows show the new
+# name.
 
 setup
 {

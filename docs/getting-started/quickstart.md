@@ -50,10 +50,11 @@ database's name):
 psql -d your_database -c 'ALTER DATABASE your_database SET search_path = "$user", public, tviews;'
 ```
 
-Then, connected to your database, create the extension:
+Then, connected to your database as a superuser, create the extension (without the
+preload it fails with `55000`):
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 -- The ALTER DATABASE above applies to new sessions; this one sets it now.
 SET search_path = "$user", public, tviews;
 ```
@@ -67,9 +68,17 @@ SELECT pg_tviews_version();
 
 ## 3. Create Your First TVIEW
 
-A small blog with users and posts. The tables follow FraiseQL's naming (`tb_*`,
-`pk_*`, `fk_*`, `id`), which fits pg_tviews but is not required: the only rule is
-that the definition outputs a `pk_<entity>` column, here `pk_post` for `tv_post`.
+A small blog with users and posts. The keys follow pg_tviews' contract
+([Keys](../reference/ddl.md#keys)):
+
+- `pk_<entity>`, an integer (`smallint`, `integer`, `bigint` or a domain over one), is
+  the row key: the definition outputs it, here `pk_post` for `tv_post`, and it is the
+  TVIEW table's primary key. Another type is refused (`42804`).
+- `id`, a `uuid`, is the public identifier, the one `pg_tviews_flush_and_report()` and
+  the change feed carry.
+- `fk_<entity>` holds the `pk_<entity>` of the row it references, and joins on it.
+
+Table names are free; `tb_*` is FraiseQL's convention.
 
 ### Create Base Tables
 
@@ -185,7 +194,7 @@ Nothing needs enabling: the triggers were installed when the TVIEW was created.
 To check them:
 
 ```sql
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 ```
 
 ## 6. Query It
@@ -244,7 +253,7 @@ If TVIEWs aren't updating:
 SELECT tgrelid::regclass, tgname FROM pg_trigger WHERE tgname LIKE 'trg\_tview%';
 
 -- Check for errors
-SELECT * FROM pg_tviews_health_check() WHERE status <> 'OK';
+SELECT * FROM pg_tviews_check_health() WHERE status <> 'OK';
 ```
 
 For more help, see the [troubleshooting guide](../operations/troubleshooting.md).

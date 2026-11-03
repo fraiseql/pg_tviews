@@ -14,7 +14,7 @@ pg_tviews automatically creates, on every new TVIEW:
 - a B-tree on `id` and on each UUID FK column
 - a **required** `(fk_<x>, pk_<entity>)` B-tree per integer FK column: cascade
   propagation looks parent rows up by it (don't drop these; add missing ones to
-  older TVIEWs with `pg_tviews_ensure_propagation_indexes()`)
+  older TVIEWs with `pg_tviews_ensure_propagation_indexes_all()`)
 
 None of them is on a column that refreshes rewrite, so refreshes stay HOT. There is
 **no** index on `data` unless the `data_gin_index` option is on. See
@@ -35,7 +35,7 @@ TVIEW, and never drops it.
 Created automatically (see above). Nothing to do unless the TVIEW predates them:
 
 ```sql
-SELECT * FROM pg_tviews_ensure_propagation_indexes();
+SELECT * FROM pg_tviews_ensure_propagation_indexes_all();
 ```
 
 ### 2. JSONB GIN Indexes

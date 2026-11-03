@@ -196,7 +196,7 @@ fn retype_drifted_columns(entity: &str, meta: &TviewMeta, qualified_tv: &str) ->
         crate::utils::column_types(meta.tview_oid)?
             .into_iter()
             .collect();
-    let pk = format!("pk_{entity}");
+    let pk = crate::lineage::plan::key_column(entity);
     let mut retyped = false;
     for (column, view_type) in crate::utils::column_types(meta.view_oid)? {
         if column == pk
@@ -351,7 +351,7 @@ fn compare_definition(
             "CREATE TEMP VIEW pg_tviews_candidate AS {definition}"
         ))?;
     }
-    let (same_view, same_columns) = Spi::connect(|client| {
+    let (same_view, same_columns) = crate::utils::spi::connect(|client| {
         client
             .select(
                 "WITH candidate AS (SELECT 'pg_temp.pg_tviews_candidate'::pg_catalog.regclass AS c) \
@@ -375,7 +375,7 @@ fn compare_definition(
     let base_tables = crate::utils::spi::oids(
         &format!(
             "{} SELECT DISTINCT r.relid FROM reads r WHERE r.relkind IN ('r', 'p')",
-            crate::catalog::reads::view_reads_cte(
+            crate::lineage::reads::view_reads_cte(
                 "SELECT $1::pg_catalog.regclass::pg_catalog.oid, \
                         $1::pg_catalog.regclass::pg_catalog.oid, 0"
             )
@@ -424,7 +424,7 @@ fn replace_in_place(
         .collect();
     let mut read_tables = crate::utils::spi::oids(
         &format!(
-            "SELECT DISTINCT r.relid FROM {}.pg_tview_reads r \
+            "SELECT DISTINCT r.relid FROM {}.reads r \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
              WHERE r.entity = ANY ($1)",
             crate::utils::ext_schema()
@@ -448,8 +448,9 @@ fn replace_in_place(
             "CREATE OR REPLACE VIEW {qualified_view} AS {definition}"
         ))
     })?;
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
-    crate::dependency::sync_entity_triggers(&reads, entity)?;
+    crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
     {
         // The rows are recomputed as the TVIEW's owner, as every refresh is.
         let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;

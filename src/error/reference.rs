@@ -30,7 +30,6 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::DepthExceeded { .. } => "DepthExceeded",
         TViewError::InvalidSelectStatement { .. } => "InvalidSelectStatement",
         TViewError::RequiredColumnMissing { .. } => "RequiredColumnMissing",
-        TViewError::JsonbDeltaMissing => "JsonbDeltaMissing",
         TViewError::RefreshLimit { .. } => "RefreshLimit",
         TViewError::WrongState { .. } => "WrongState",
         TViewError::PrepareRefused { .. } => "PrepareRefused",
@@ -88,7 +87,6 @@ fn examples() -> Vec<TViewError> {
             column_name: p("column"),
             context: p("context"),
         },
-        TViewError::JsonbDeltaMissing,
         TViewError::RefreshLimit {
             limit: Limit::Rows {
                 tview: p("table"),
@@ -126,27 +124,50 @@ fn examples() -> Vec<TViewError> {
 /// (source file, condition, when). A test checks every such site is listed.
 const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_TABLE,
+        "A restore loads a TVIEW's catalog row before a table its plan reads: restore the \
+         tables first.",
+    ),
+    (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_COLUMN,
+        "A restore loads a TVIEW's catalog row whose plan reads a column the restored table \
+         lacks.",
+    ),
+    (
+        "src/api/internal.rs",
+        PgSqlErrorCode::ERRCODE_DATA_CORRUPTED,
+        "A restored TVIEW's plan numbers a column it does not name, or has a path from a \
+         table it maps no write of: `pg_tviews_reregister(entity)` re-derives it.",
+    ),
+    (
         "src/concurrency/mod.rs",
-        PgSqlErrorCode::ERRCODE_T_R_SERIALIZATION_FAILURE,
-        "Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a \
-         concurrent transaction holds (`a concurrent transaction changes rows this TVIEW \
-         refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting \
-         could not make the snapshot see the other's change; or the latest snapshot shows \
-         what the transaction's missed (`a TVIEW row this transaction refreshed changed in a \
-         concurrent transaction`, `a concurrent transaction added rows this write must \
-         refresh`). Retry the transaction.",
+        PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+        "A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, \
+         or refreshes or rebuilds TVIEWs: writers run at `READ COMMITTED` (ADR 0207). Nothing \
+         was written. Reads of TVIEWs work at any level.",
     ),
     (
         "src/flush/xact.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "A transaction commits with refresh work still queued (a missing or disabled flush \
-         trigger): the commit fails.",
+         trigger), or commits implicitly (several statements in one query string, a `COMMIT` \
+         inside a procedure) after writes made while refresh was suspended: the commit \
+         fails. Call `pg_tviews_resume_triggers()` before committing.",
     ),
     (
         "src/revision.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "The library's catalog revision does not match the installed extension, or cannot be \
-         read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix).",
+         read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). Also: the \
+         library is not in `shared_preload_libraries`.",
+    ),
+    (
+        "src/api/removed.rs",
+        PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
+        "A catalog not yet updated calls a function this release removed: run \
+         `ALTER EXTENSION pg_tviews UPDATE`.",
     ),
     (
         "src/owner.rs",
@@ -254,7 +275,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 21, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 20, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

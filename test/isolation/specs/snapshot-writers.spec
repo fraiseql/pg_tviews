@@ -1,6 +1,7 @@
 # A REPEATABLE READ or SERIALIZABLE writer whose refresh would recompute a TVIEW
-# row from a snapshot older than another writer's committed change: it fails
-# with a serialization error instead of writing a stale document.
+# row from a snapshot older than another writer's committed change. Writers run
+# at READ COMMITTED: its first write to a table a TVIEW reads fails with 0A000,
+# before it writes, and the TVIEW stays equal to its view.
 
 setup
 {

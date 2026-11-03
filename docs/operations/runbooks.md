@@ -14,7 +14,7 @@ Examples use the entity `user` (`tb_user`, `v_user`, `tv_user`); substitute your
 ```sql
 -- 1. Health check: triggers, catalog revision, re-registration
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 
@@ -41,7 +41,7 @@ Expect a row trigger (`tviews.pg_tview_trigger_handler`), a statement trigger
 
 ```sql
 -- 4. Is refresh suspended in this transaction?
-SELECT tviews.pg_tviews_is_suspended();
+SELECT tviews.pg_tviews_show_suspended() IS NOT NULL;
 ```
 
 **Resolution**:
@@ -68,36 +68,30 @@ inside the writing statement, so its cost shows up there.
 **Diagnosis**:
 
 ```sql
--- 1. jsonb_delta installed?
-SELECT tviews.pg_tviews_check_jsonb_delta();
-```
-
-```sql
--- 2. Physical health, fan-out and missing indexes per TVIEW
+-- 1. Physical health, fan-out and missing indexes per TVIEW
 SELECT entity, hot_ratio, n_dead_tup, missing_propagation_indexes, fanout, warnings
 FROM tviews.pg_tviews_profile();
 ```
 
 ```sql
--- 3. Dependency chain
+-- 2. Dependency chain
 SELECT * FROM tviews.pg_tviews_show_cascade_path('post');
 ```
 
 ```sql
--- 4. Cost of recomputing one row
+-- 3. Cost of recomputing one row
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tviews.public__tv_user WHERE pk_user = 1;
 ```
 
 **Resolution**:
 
-1. Install jsonb_delta if missing: `CREATE EXTENSION jsonb_delta;`
-2. Create the indexes cascades need:
+1. Create the indexes cascades need:
    ```sql
-   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
-   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
+   SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all();
    ```
-3. Index the join and foreign-key columns the view uses in its base tables.
-4. Reduce fan-out or nesting depth in the view definitions.
+2. Index the join and foreign-key columns the view uses in its base tables.
+3. Reduce fan-out or nesting depth in the view definitions.
 
 See [Performance Monitoring](runbooks/01-health-monitoring/performance-monitoring.md).
 
@@ -106,7 +100,7 @@ See [Performance Monitoring](runbooks/01-health-monitoring/performance-monitorin
 ## Runbook 3: Out of Memory or Queue Limit During a Bulk Write
 
 **Symptom**: "out of memory", or
-`refresh queue backpressure: queue size (...) would exceed max_queue_size (...)`.
+`refresh queue backpressure: queue size (N) would exceed max_queue_size (M)`.
 
 **Diagnosis**:
 
@@ -145,19 +139,20 @@ catalog revision mismatch.
 ```sql
 SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
 SELECT tviews.pg_tviews_version(), tviews.pg_tviews_catalog_revision();
-SELECT component, severity, message FROM tviews.pg_tviews_health_check()
+SELECT component, severity, message FROM tviews.pg_tviews_check_health()
 WHERE component IN ('extension', 'catalog', 'reregister');
 ```
 
 **Resolution**:
 
-1. `ALTER EXTENSION pg_tviews UPDATE` runs in one transaction: a failure leaves the old
-   version in place. Fix the reported error and run it again.
-2. After a successful update:
-   ```sql
-   SELECT * FROM tviews.pg_tviews_reregister_all();
-   ```
-3. Databases created with 0.1.0 use `scripts/migrate-from-0.1.0.sql`.
+1. `ALTER EXTENSION pg_tviews UPDATE` runs in one transaction and re-derives every
+   TVIEW: a failure, such as a TVIEW that no longer analyses, leaves the old version in
+   place. Fix the reported error and run it again.
+2. `required extension "jsonb_delta" is not installed`: install jsonb_delta, then
+   update.
+3. A release updates only from the release before it. An older install, `0.1.0`
+   included, is dropped and its TVIEWs created again
+   ([Upgrading pg_tviews](upgrade.md#from-an-older-release)).
 4. Scripts: `docs/operations/upgrade/scripts/pre-upgrade-checks.sh` and
    `post-upgrade-validation.sql`. If the problem persists, open an issue with the full
    error, the PostgreSQL version and both pg_tviews versions.
@@ -172,18 +167,18 @@ WHERE component IN ('extension', 'catalog', 'reregister');
 
 ```sql
 SELECT status, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE component = 'triggers';
--- WARNING | 1 orphaned trigger found: trg_tview_row_post_on_app_tb_user on app.tb_user
+-- WARNING | 1 orphaned trigger found: trg_tview_row_on_app_tb_user on app.tb_user
 ```
 
 **Resolution**:
 
 ```sql
 -- An orphaned trigger: drop it
-DROP TRIGGER trg_tview_row_post_on_app_tb_user ON app.tb_user;
+DROP TRIGGER trg_tview_row_on_app_tb_user ON app.tb_user;
 
--- Missing triggers, or triggers without an entity: re-install them
+-- Missing triggers, or triggers of an older release (one per TVIEW): re-install them
 SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
 
@@ -235,7 +230,7 @@ ORDER BY query_start;
 
 ```sql
 -- Refresh counters of this session: run before and after one write and compare
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 A large increase in `view_recomputes` relative to `direct_patches_applied` means rows
@@ -262,7 +257,7 @@ SELECT tviews.pg_tviews_refresh_all();
 ### Rebuild TVIEWs emptied by a crash or promotion (UNLOGGED)
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status() WHERE needs_rebuild;
+SELECT * FROM tviews.pg_tviews_show_replication() WHERE needs_rebuild;
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 
@@ -277,7 +272,7 @@ See `runbooks/scripts/emergency-disable.sql` and
 #!/bin/bash
 # Exit non-zero when the health check reports a warning or an error.
 problems=$(psql -X -At -d "$DB_NAME" -c \
-  "SELECT component || ': ' || message FROM tviews.pg_tviews_health_check() WHERE severity <> 'info'")
+  "SELECT component || ': ' || message FROM tviews.pg_tviews_check_health() WHERE severity <> 'info'")
 if [ -n "$problems" ]; then
     echo "$problems"
     exit 1
@@ -285,8 +280,8 @@ fi
 ```
 
 What to alert on:
-- Any `pg_tviews_health_check()` row with severity `error` (critical) or `warning`
-- `needs_rebuild` in `pg_tviews_replication_status()` after a failover
+- Any `pg_tviews_check_health()` row with severity `error` (critical) or `warning`
+- `needs_rebuild` in `pg_tviews_show_replication()` after a failover
 - Writes failing with pg_tviews errors in the server log
 
 ## See Also

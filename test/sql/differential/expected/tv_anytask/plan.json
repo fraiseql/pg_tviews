@@ -1,0 +1,66 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_anytask",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "anytask",
+      "initial_attnum": "public.tb_task.pk_task",
+      "initial_col": "pk_task",
+      "root": true,
+      "source_columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "source_oid": "public.tb_task",
+      "source_table": "tb_task"
+    }
+  ],
+  "references": [],
+  "set_operation": true,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_task.pk_task",
+        "public.tb_task.id",
+        "public.tb_task.title"
+      ],
+      "column": "pk_task",
+      "columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_task.pk_task"
+      ],
+      "relid": "public.tb_task",
+      "table": "public.tb_task"
+    },
+    {
+      "attnums": [
+        "public.tb_task_archive.pk_task",
+        "public.tb_task_archive.id",
+        "public.tb_task_archive.title"
+      ],
+      "columns": [
+        "pk_task",
+        "id",
+        "title"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_task_archive.pk_task"
+      ],
+      "relid": "public.tb_task_archive",
+      "sql": "SELECT DISTINCT (OPERATOR(pg_catalog.-) d.{c:public.tb_task_archive.pk_task}) FROM pg_tviews_delta d",
+      "table": "public.tb_task_archive"
+    }
+  ],
+  "version": 3
+}

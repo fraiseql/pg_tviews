@@ -3,7 +3,7 @@
 -- The row trigger captures a direct patch only for an eligible single-row UPDATE
 -- (every changed column maps identity-style into the entity's own `data`, no
 -- FK/PK/projected-column change). Observed via the session-cumulative
--- `direct_patch_captured` counter in pg_tviews_queue_stats(). Patches are captured
+-- `direct_patch_captured` counter in pg_tviews_show_queue(). Patches are captured
 -- but NOT yet applied here — the recompute path still produces the data.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/direct_patch/regress_direct_patch_capture.sql
@@ -60,12 +60,12 @@ END $$;
 
 -- Delta-assertion helper over the session-cumulative capture counter.
 CREATE TEMP TABLE _dp(prev bigint);
-INSERT INTO _dp VALUES ((pg_tviews_queue_stats()->>'direct_patch_captured')::bigint);
+INSERT INTO _dp VALUES ((pg_tviews_show_queue()->>'direct_patch_captured')::bigint);
 
 CREATE FUNCTION _dp_assert(expected bigint, label text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE cur bigint; prv bigint;
 BEGIN
-  cur := (pg_tviews_queue_stats()->>'direct_patch_captured')::bigint;
+  cur := (pg_tviews_show_queue()->>'direct_patch_captured')::bigint;
   SELECT prev INTO prv FROM _dp;
   IF cur - prv <> expected THEN
     RAISE EXCEPTION '#56 capture FAIL [%]: expected delta %, got % (prev=%, cur=%)',

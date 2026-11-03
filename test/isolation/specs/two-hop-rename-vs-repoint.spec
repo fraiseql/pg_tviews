@@ -2,8 +2,8 @@
 # tb_post (#228), while another transaction moves a post to that user. Whichever
 # commits first, every comment ends with the current name of its post author: the
 # repoint recompute waits for the rename value lock on the user, and the
-# rename lookup through tb_post sees a repoint committed before it. At
-# REPEATABLE READ a repoint the rename snapshot missed fails it with 40001.
+# rename lookup through tb_post sees a repoint committed before it. A rename at
+# REPEATABLE READ is refused with 0A000.
 
 setup
 {

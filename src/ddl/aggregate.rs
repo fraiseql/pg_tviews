@@ -2,95 +2,85 @@
 //! `GROUP BY` groups of its source tables.
 //!
 //! The caller names, for each source table, the column whose value **is** the group
-//! key (`group_keys`). Each becomes a local path from that table straight to the
-//! entity, so the ordinary row trigger enqueues the affected groups (both the old and
-//! the new group when a row moves) and the ordinary pk refresh recomputes them from
-//! the backing view: a new group is inserted, an emptied one deleted.
+//! key (`group_keys`). The analysis finds them from the query tree (each table
+//! whose column equals `pk_<entity>`), and every declared key must be among them;
+//! it may find more (a table read in a subquery correlated on the key). Each is a
+//! local path
+//! from that table straight to the entity, so the ordinary row trigger enqueues the
+//! affected groups (both the old and the new group when a row moves) and the
+//! ordinary pk refresh recomputes them from the backing view: a new group is
+//! inserted, an emptied one deleted.
 
-use crate::catalog::plan::LocalPath;
 use crate::error::{TViewError, TViewResult};
+use crate::lineage::plan::LocalPath;
 use pgrx::pg_sys::Oid;
-use pgrx::prelude::*;
 use std::collections::BTreeMap;
 
 /// Source table name → the column whose value is the group key.
 pub type GroupKeys = BTreeMap<String, String>;
 
-/// One local path per group key: a change to a row of `table` refreshes the
-/// group named by that row's `column`.
+/// Check the declared group keys against the paths the analysis found (each
+/// table whose column equals the group key, from the query tree): every declared
+/// key must be one of them. The analysis may find more (a table read in a
+/// subquery correlated on the key): they are kept, each refreshing its groups.
 ///
 /// # Errors
-/// Returns an error if a named table is not a source of the view or lacks the column.
-pub fn local_paths(
+/// [`TViewError::InvalidInput`] naming a declared key the definition does not
+/// group by.
+pub fn check_group_keys(
     entity: &str,
     group_keys: &GroupKeys,
-    base_tables: &[Oid],
-    view_oid: Oid,
-) -> TViewResult<Vec<LocalPath>> {
-    let mut paths = Vec::with_capacity(group_keys.len());
-    for (table, column) in group_keys {
-        let oid =
-            source_table_oid(table, base_tables)?.ok_or_else(|| TViewError::InvalidInput {
-                parameter: "group_keys".to_string(),
-                reason: format!("'{table}' is not a table the definition reads"),
-            })?;
-        if !column_exists(oid, column)? {
-            return Err(TViewError::InvalidInput {
-                parameter: "group_keys".to_string(),
-                reason: format!("table '{table}' has no column '{column}'"),
-            });
-        }
-        paths.push(LocalPath {
-            source_oid: oid,
-            source_table: table.clone(),
-            entity_name: entity.to_string(),
-            initial_col: column.clone(),
-            source_columns: crate::ddl::create::view_source_columns(view_oid, oid),
-            root: false,
-            initial_attnum: None,
-        });
+    paths: &[LocalPath],
+) -> TViewResult<()> {
+    let found: Vec<(&str, &str)> = paths
+        .iter()
+        .map(|p| (p.source_table.as_str(), p.initial_col.as_str()))
+        .collect();
+    match group_keys
+        .iter()
+        .find(|(table, column)| !found.contains(&(table.as_str(), column.as_str())))
+    {
+        Some((table, column)) => Err(TViewError::InvalidInput {
+            parameter: "group_keys".to_string(),
+            reason: if let Some(path) = paths.iter().find(|p| &p.source_table == table)
+                && !column_exists(path.source_oid, column)?
+            {
+                format!("table '{table}' has no column '{column}'")
+            } else if found.iter().any(|(t, _)| t == table) {
+                format!(
+                    "tv_{entity} does not group by {table}.{column}: the definition's group \
+                     key comes from {}",
+                    list(&found)
+                )
+            } else {
+                format!(
+                    "'{table}' is not a table the definition reads its group key from: the \
+                     definition's group key comes from {}",
+                    list(&found)
+                )
+            },
+        }),
+        None => Ok(()),
     }
-    Ok(paths)
 }
 
-fn source_table_oid(table: &str, base_tables: &[Oid]) -> TViewResult<Option<Oid>> {
-    let args = [
-        crate::utils::spi::text(table),
-        crate::utils::spi::oid_array(base_tables.to_vec()),
-    ];
-    Spi::connect(|client| {
-        let mut rows = client.select(
-            "SELECT oid FROM pg_class WHERE relname = $1 AND oid = ANY($2)",
-            Some(1),
-            &args,
-        )?;
-        match rows.next() {
-            Some(row) => row.get::<Oid>(1),
-            None => Ok(None),
-        }
-    })
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Resolve group key table '{table}'"),
-        pg_error: e.to_string(),
-    })
+fn list(found: &[(&str, &str)]) -> String {
+    found
+        .iter()
+        .map(|(table, column)| format!("{table}.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn column_exists(table: Oid, column: &str) -> TViewResult<bool> {
-    let args = [
-        crate::utils::spi::oid(table),
-        crate::utils::spi::text(column),
-    ];
-    Spi::connect(|client| {
-        client
-            .select(
-                "SELECT EXISTS (SELECT 1 FROM pg_attribute \
-                 WHERE attrelid = $1 AND attname = $2 AND attnum > 0 AND NOT attisdropped)",
-                Some(1),
-                &args,
-            )?
-            .first()
-            .get_one::<bool>()
-    })
+    crate::utils::spi::one::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute \
+         WHERE attrelid = $1 AND attname = $2 AND attnum > 0 AND NOT attisdropped)",
+        &[
+            crate::utils::spi::oid(table),
+            crate::utils::spi::text(column),
+        ],
+    )
     .map(|b| b.unwrap_or(false))
     .map_err(|e| TViewError::CatalogError {
         operation: format!("Check group key column '{column}'"),

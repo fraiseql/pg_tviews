@@ -1,6 +1,7 @@
 # ADR 0211: One name for a TVIEW, one function per action, read contract v2
 
-- Status: Accepted
+- Status: Accepted; the naming rule applied to the whole surface in 0.1.0-beta.35 (read
+  contract 3, see [the rule applied](#2026-11-the-rule-applied))
 - Fixes: #211 (one TVIEW name resolver)
 - Amends: [ADR 0136](0136-tool-facing-surface.md) (the tool-facing surface)
 - Related: [ADR 0220](0220-settings.md) (options), #212 Q46 (identifier helpers)
@@ -129,3 +130,22 @@ Round-trip property, part of the contract:
   - the removed functions;
   - the removed registry columns.
 - confiture, fraisier and fraiseql are told in one issue each, with the list.
+
+### 2026-11: the rule applied
+
+The public surface of 0.1.0-beta.35 follows one rule:
+
+- functions are `pg_tviews_<verb>` (`pg_tviews_check_health`, `pg_tviews_show_queue`,
+  `pg_tviews_resolve`, …); relations in `tviews` are nouns (`tviews.reads`,
+  `tviews.references`, `tviews.registry`, `tviews.stats`);
+- a function acting on every TVIEW ends in `_all` and is an operator's: `EXECUTE` is
+  revoked from `PUBLIC` (`pg_tviews_refresh_all`, `pg_tviews_rebuild_all`,
+  `pg_tviews_reregister_all`, `pg_tviews_ensure_propagation_indexes_all`,
+  `pg_tviews_reset_stats_all`, and the internal `pg_tviews_invalidate_caches` and
+  `pg_tviews_audit_write`);
+- a function acting on, or showing, one TVIEW requires owning it or the extension.
+
+`pg_tviews_create` and `pg_tviews_create_or_replace` keep their names: they carry the
+`CREATE` and `CREATE OR REPLACE` semantics. The renames bump the read contract to
+version 3. Each old name and its replacement are listed in
+[Deprecations and removals](../DEPRECATION_WARNINGS.md#renamed-and-removed-in-010-beta35).

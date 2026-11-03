@@ -46,13 +46,13 @@ SELECT must((SELECT array_agg(pk_post ORDER BY pk_post) FROM tv_post) = '{1,2}',
             || (SELECT array_agg(pk_post ORDER BY pk_post) FROM tv_post)::text);
 SELECT assert_fresh('tv_post', 'pk_post', 'tv_post emptied, then written');
 SELECT must(NOT needs_rebuild, 'an emptied but trusted TVIEW reported as needing a rebuild')
-FROM pg_tviews_replication_status() WHERE entity = 'post';
+FROM pg_tviews_show_replication() WHERE entity = 'post';
 
 -- 2. A reset (both TVIEWs, as a crash empties every UNLOGGED table): the first
 --    write fills the TVIEW it refreshes and, first, the TVIEW it embeds.
 TRUNCATE tv_user, tv_post;
 DELETE FROM tviews.pg_tview_valid;
-SELECT must((SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_replication_status()
+SELECT must((SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_show_replication()
              WHERE needs_rebuild) = '{post,user}', 'reset TVIEWs not reported as needing a rebuild');
 \c
 SET client_min_messages TO WARNING;
@@ -62,7 +62,7 @@ SELECT must((SELECT count(*) FROM tv_user) = 2, 'tv_post was filled before tv_us
 SELECT assert_fresh('tv_user', 'pk_user', 'tv_user after a reset');
 SELECT assert_fresh('tv_post', 'pk_post', 'tv_post after a reset');
 SELECT must(NOT bool_or(needs_rebuild), 'a filled TVIEW still needs a rebuild')
-FROM pg_tviews_replication_status();
+FROM pg_tviews_show_replication();
 
 -- 3. pg_tviews_rebuild_all() fills a reset TVIEW once, and only a reset one.
 TRUNCATE tv_post;

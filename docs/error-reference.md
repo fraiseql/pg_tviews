@@ -24,10 +24,9 @@ Placeholders stand for the values each message carries.
 | `42939` | `reserved_name` | `IndexNameReserved` | index name &lt;index&gt; on TVIEW &lt;table&gt; is reserved for pg_tviews' own index | Give the index another name. pg_tviews creates its own indexes on a TVIEW (tviews.registry.managed_indexes lists them). |
 | `42501` | `insufficient_privilege` | `PermissionDenied` | &lt;reason&gt; |  |
 | `42P17` | `invalid_object_definition` | `DependencyCycle` | relations would read each other in a cycle: &lt;relation&gt;, &lt;relation&gt; |  |
-| `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads. |
+| `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Flatten the views the TVIEW reads. |
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |
 | `42703` | `undefined_column` | `RequiredColumnMissing` | Required column '&lt;column&gt;' missing in &lt;context&gt; |  |
-| `42883` | `undefined_function` | `JsonbDeltaMissing` | Required extension 'jsonb_delta' is not installed | CREATE EXTENSION jsonb_delta; |
 | `54000` | `program_limit_exceeded` | `RefreshLimit` | refreshing &lt;table&gt; &lt;how&gt; would write 10001 rows in one statement (max_refresh_rows = 10000) | Don't embed this entity in &lt;table&gt;, batch the change offline, or make it after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt once, at resume or commit. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
 | `25000` | `invalid_transaction_state` | `PrepareRefused` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
@@ -40,9 +39,13 @@ Placeholders stand for the values each message carries.
 
 | SQLSTATE | Condition | When |
 |---|---|---|
-| `40001` | `t_r_serialization_failure` | Under `REPEATABLE READ` (ADR 0207): a write or a refresh needs a value lock a concurrent transaction holds (`a concurrent transaction changes rows this TVIEW refresh reads`, `… refreshes TVIEW rows from rows this write changes`), since waiting could not make the snapshot see the other's change; or the latest snapshot shows what the transaction's missed (`a TVIEW row this transaction refreshed changed in a concurrent transaction`, `a concurrent transaction added rows this write must refresh`). Retry the transaction. |
-| `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger): the commit fails. |
-| `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). |
+| `42P01` | `undefined_table` | A restore loads a TVIEW's catalog row before a table its plan reads: restore the tables first. |
+| `42703` | `undefined_column` | A restore loads a TVIEW's catalog row whose plan reads a column the restored table lacks. |
+| `XX001` | `data_corrupted` | A restored TVIEW's plan numbers a column it does not name, or has a path from a table it maps no write of: `pg_tviews_reregister(entity)` re-derives it. |
+| `0A000` | `feature_not_supported` | A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, or refreshes or rebuilds TVIEWs: writers run at `READ COMMITTED` (ADR 0207). Nothing was written. Reads of TVIEWs work at any level. |
+| `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger), or commits implicitly (several statements in one query string, a `COMMIT` inside a procedure) after writes made while refresh was suspended: the commit fails. Call `pg_tviews_resume_triggers()` before committing. |
+| `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). Also: the library is not in `shared_preload_libraries`. |
+| `42883` | `undefined_function` | A catalog not yet updated calls a function this release removed: run `ALTER EXTENSION pg_tviews UPDATE`. |
 | `42501` | `insufficient_privilege` | The caller neither owns the TVIEW (or is a member of its owner) nor owns the extension. |
 | `0A000` | `feature_not_supported` | A `CREATE TABLE tv_* AS` form pg_tviews cannot make a TVIEW of: `SELECT … INTO`, `EXPLAIN`, `EXECUTE`, `WITH NO DATA`, a temporary table, a column list, `TABLESPACE`, `USING`, a storage parameter other than `fillfactor` and `toast_tuple_target`, a query with parameters. |
 | `42P07` | `duplicate_table` | `CREATE TABLE tv_* AS` names a TVIEW that already exists. |

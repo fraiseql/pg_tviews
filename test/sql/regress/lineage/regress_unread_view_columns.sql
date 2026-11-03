@@ -51,9 +51,9 @@ END $$;
 INSERT INTO tb_line (fk_order, sku) VALUES (2, 'd');
 SELECT check_fresh('an INSERT into tb_line (n_lines is read)');
 DO $$ BEGIN
-    IF (SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') <> 'OK' THEN
+    IF (SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'triggers') <> 'OK' THEN
         RAISE EXCEPTION '#166 FAIL: health check: %',
-            (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers');
+            (SELECT message FROM tviews.pg_tviews_check_health() WHERE component = 'triggers');
     END IF;
 END $$;
 DROP TABLE tv_order;

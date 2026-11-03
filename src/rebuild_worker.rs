@@ -142,22 +142,20 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
         // The worker runs as the bootstrap superuser with the database's own
         // settings: its owner's search_path must resolve nothing it runs. Each
         // TVIEW is rebuilt as its owner, under the same fixed path.
-        if let Err(e) =
-            Spi::run("SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)")
-        {
+        if let Err(e) = crate::utils::spi::run(
+            "SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)",
+            &[],
+        ) {
             error!("pg_tviews: could not set search_path in database \"{database}\": {e}");
         }
         // An SPI error here is not "not installed": it ends the worker, and the
         // first write to a reset TVIEW refills it.
-        let installed = Spi::get_one::<bool>(
+        // No row: the extension is not installed here.
+        let installed = crate::utils::spi::one::<bool>(
             "SELECT true FROM pg_catalog.pg_extension \
              WHERE extname OPERATOR(pg_catalog.=) 'pg_tviews'",
+            &[],
         )
-        .or_else(|e| match e {
-            // No row: the extension is not installed here.
-            pgrx::spi::Error::InvalidPosition => Ok(None),
-            e => Err(e),
-        })
         .unwrap_or_else(|e| {
             error!("pg_tviews: could not look up the extension in database \"{database}\": {e}")
         });
@@ -174,9 +172,7 @@ pub extern "C-unwind" fn pg_tviews_rebuild_worker_main(_arg: pg_sys::Datum) {
             crate::revision::Installed::Differs(revision) => {
                 Some(crate::revision::remedy(revision).to_string())
             }
-            crate::revision::Installed::Unversioned => {
-                Some("run scripts/migrate-from-0.1.0.sql from the pg_tviews release".to_string())
-            }
+            crate::revision::Installed::Unversioned => Some(crate::revision::RECREATE.to_string()),
             crate::revision::Installed::Unreadable(why) => {
                 error!(
                     "pg_tviews: could not read the catalog revision in database \"{database}\": {why}"

@@ -1,0 +1,62 @@
+Parsed test spec with 2 sessions
+
+starting permutation: p_begin p_delete p_prepare p_held c_delete p_commit c_delete c_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step p_begin: BEGIN;
+step p_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+step p_prepare: PREPARE TRANSACTION 'pg_tviews_value_locks';
+step p_held: 
+  SELECT count(*) > 0 AS prepared_holds_value_locks FROM pg_locks
+  WHERE locktype = 'advisory' AND objsubid = 21622 AND pid IS NULL
+    AND classid = 'tb_item'::regclass::oid;
+
+prepared_holds_value_locks
+--------------------------
+t                         
+(1 row)
+
+step c_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2;
+ERROR:  canceling statement due to lock timeout
+step p_commit: COMMIT PREPARED 'pg_tviews_value_locks';
+step c_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2;
+step c_check: 
+  SELECT t.pk_item, t.data->'place' AS place, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|place|fresh
+-------+-----+-----
+      1|    1|t    
+      2|    1|t    
+      3|    1|t    
+      4|    1|t    
+(4 rows)
+
+
+starting permutation: p_begin p_feed p_delete p_prepare c_delete c_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step p_begin: BEGIN;
+step p_feed: SET LOCAL pg_tviews.publish_changes = rows;
+step p_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
+step p_prepare: PREPARE TRANSACTION 'pg_tviews_value_locks';
+ERROR:  cannot PREPARE TRANSACTION: it changed TVIEW rows while pg_tviews.publish_changes is on, and a prepared transaction cannot publish them
+step c_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 2;
+step c_check: 
+  SELECT t.pk_item, t.data->'place' AS place, t.data = v.data AS fresh
+  FROM tv_item t FULL JOIN tviews.public__tv_item v USING (pk_item) ORDER BY 1;
+
+pk_item|place|fresh
+-------+-----+-----
+      1|    2|t    
+      2|    2|t    
+      3|    2|t    
+      4|    1|t    
+(4 rows)
+

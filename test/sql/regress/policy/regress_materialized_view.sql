@@ -50,8 +50,8 @@ SELECT tviews.pg_tviews_create_or_replace('tv_customer', :'definition',
                                           options => '{"uncascaded_policy": "full_refresh"}');
 SELECT must(NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'mv_order_count'::regclass),
             'a trigger on the matview (full_refresh)');
-SELECT must((SELECT status FROM tviews.pg_tviews_health_check() WHERE component = 'triggers') = 'OK',
-            'health check: ' || (SELECT message FROM tviews.pg_tviews_health_check() WHERE component = 'triggers'));
+SELECT must((SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'triggers') = 'OK',
+            'health check: ' || (SELECT message FROM tviews.pg_tviews_check_health() WHERE component = 'triggers'));
 
 INSERT INTO tb_order VALUES (10, 1, NULL), (11, 1, NULL);
 SELECT must((SELECT n_orders FROM tv_customer WHERE pk_customer = 1) = 0, 'refreshed before the REFRESH');

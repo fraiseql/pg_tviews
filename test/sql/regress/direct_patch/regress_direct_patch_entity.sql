@@ -43,13 +43,13 @@ INSERT INTO _c
 SELECT (s->>'direct_patches_applied')::bigint,
        (s->>'direct_patch_fallbacks')::bigint,
        (s->>'view_recomputes')::bigint
-FROM (SELECT pg_tviews_queue_stats() AS s) x;
+FROM (SELECT pg_tviews_show_queue() AS s) x;
 
 CREATE FUNCTION _c_assert(exp_applied bigint, exp_fb bigint, exp_rc bigint, label text)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE s jsonb; a bigint; f bigint; r bigint; pa bigint; pf bigint; pr bigint;
 BEGIN
-  s := pg_tviews_queue_stats();
+  s := pg_tviews_show_queue();
   a := (s->>'direct_patches_applied')::bigint;
   f := (s->>'direct_patch_fallbacks')::bigint;
   r := (s->>'view_recomputes')::bigint;
@@ -110,11 +110,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Distinct new value per row (different chains) under a small batch_size.
-SET pg_tviews.batch_size = 2;
+-- Distinct new value per row (different chains).
 UPDATE tb_user SET bio = 'v_' || pk_user::text WHERE pk_user IN (1, 2, 3);
-SELECT _c_assert(3, 0, 0, 'bulk distinct-value: 3 applied under batch_size=2');
-RESET pg_tviews.batch_size;
+SELECT _c_assert(3, 0, 0, 'bulk distinct-value: 3 applied');
 DO $$ BEGIN
   IF (SELECT data->>'bio' FROM tv_user WHERE pk_user=1) <> 'v_1'
      OR (SELECT data->>'bio' FROM tv_user WHERE pk_user=2) <> 'v_2'
@@ -161,9 +159,9 @@ END $$;
 DO $$
 DECLARE before_rc bigint; after_rc bigint;
 BEGIN
-  before_rc := (pg_tviews_queue_stats()->>'view_recomputes')::bigint;
+  before_rc := (pg_tviews_show_queue()->>'view_recomputes')::bigint;
   UPDATE tb_user SET bio = 'final' WHERE pk_user = 3;
-  after_rc := (pg_tviews_queue_stats()->>'view_recomputes')::bigint;
+  after_rc := (pg_tviews_show_queue()->>'view_recomputes')::bigint;
   IF after_rc <> before_rc THEN
     RAISE EXCEPTION '#56 FAIL: eligible direct-entity UPDATE triggered % view recompute(s)',
       after_rc - before_rc;

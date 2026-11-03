@@ -2,7 +2,6 @@
 //! query, or written into every row they reach as a fan-out patch.
 
 use super::Event;
-use super::capture::Statement;
 use super::render::{computed_columns, delta_sql, key_sql_type, row_pairing};
 use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
@@ -16,6 +15,15 @@ use crate::lineage::{DELTA, KeyMapping, MappingKind};
 use crate::queue::key::KeyValue;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
+
+thread_local! {
+    /// `(entity, relid)` → the rendered mapping query (`None`: a relation is gone).
+    static MAPPINGS: crate::cache::Memo<(String, u32), Option<String>> = crate::cache::Memo::new();
+    /// `(entity, relid)` → the rendered lookup of a fan-out through a table in
+    /// between (`None`: a relation is gone).
+    static FANOUT_VIAS: crate::cache::Memo<(String, u32), Option<String>> =
+        crate::cache::Memo::new();
+}
 
 /// The query that maps changed rows of `base_table`, read from a relation named
 /// `pg_tviews_delta`, to keys of `meta`'s TVIEW (ADR 0157), with the current names
@@ -64,7 +72,7 @@ pub(crate) fn read_set_queries(
     for set in &mapping.reads {
         let column = (set.attnum != 0)
             .then(|| {
-                Spi::get_one_with_args::<String>(
+                crate::utils::spi::one::<String>(
                     "SELECT attname::pg_catalog.text FROM pg_catalog.pg_attribute \
                      WHERE attrelid = $1 AND attnum = $2",
                     &[
@@ -135,33 +143,57 @@ fn route(
     })
 }
 
-/// Map the rows a statement changed in `table_oid` to `entity`'s keys and enqueue
-/// them.
-pub(super) fn map_statement(
+/// A TVIEW a statement's rows reach: its entity, catalog row and route.
+type Routed<'a> = (&'a str, std::rc::Rc<TviewMeta>, Route);
+
+/// Map the rows a statement changed in `table_oid` to the keys of each TVIEW of
+/// `entities` (the table's delta readers, in order) and enqueue them. Every
+/// TVIEW's route comes first (it notes the write's links), then one pass takes
+/// the value locks of all of them (ADR 0207, #277), then each is looked up.
+///
+/// # Errors
+/// The entity whose mapping failed, with the error.
+pub(super) fn map_statement<'a>(
+    trigger: &PgTrigger<'_>,
+    entities: &[&'a str],
+    table_oid: Oid,
+    event: Event,
+) -> Result<(), (&'a str, TViewError)> {
+    let mut routed: Vec<Routed<'a>> = Vec::with_capacity(entities.len());
+    for &entity in entities {
+        let meta = TviewMeta::load_reaching(entity, table_oid)
+            .and_then(|meta| {
+                meta.ok_or_else(|| TViewError::TviewNotFound {
+                    name: entity.to_string(),
+                })
+            })
+            .map_err(|e| (entity, e))?;
+        let Some(mapping) = meta.key_mapping(table_oid, None) else {
+            refresh_all(entity, "its mapping of a written table is unknown");
+            continue;
+        };
+        let route = route(trigger, &meta, mapping, table_oid, event).map_err(|e| (entity, e))?;
+        routed.push((entity, meta, route));
+    }
+    // Refreshes of the TVIEW rows these rows feed meet this write on the
+    // values (ADR 0207): locked before any query finds rows by them.
+    capture_pass(trigger, &routed, table_oid)?;
+    for (entity, meta, route) in &routed {
+        apply(trigger, entity, meta, route, table_oid, event).map_err(|e| (*entity, e))?;
+    }
+    Ok(())
+}
+
+/// Enqueue the keys of `meta`'s TVIEW the statement's rows reach by `route`, its
+/// value locks taken.
+fn apply(
     trigger: &PgTrigger<'_>,
     entity: &str,
+    meta: &TviewMeta,
+    route: &Route,
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<()> {
-    let statement = Statement::of(trigger, table_oid);
-    // A pass of the statement covered this TVIEW: its locks are held and its
-    // route known.
-    let (meta, route, locked) =
-        if let Some((meta, route)) = statement.and_then(|s| s.recorded(entity)) {
-            (meta, route, true)
-        } else {
-            let meta = TviewMeta::load_reaching(entity, table_oid)?.ok_or_else(|| {
-                TViewError::TviewNotFound {
-                    name: entity.to_string(),
-                }
-            })?;
-            let Some(mapping) = meta.key_mapping(table_oid, None) else {
-                refresh_all(entity, "its mapping of a written table is unknown");
-                return Ok(());
-            };
-            let route = route(trigger, &meta, mapping, table_oid, event)?;
-            (meta, route, false)
-        };
     let Some(mapping) = meta.key_mapping(table_oid, None) else {
         refresh_all(entity, "its mapping of a written table is unknown");
         return Ok(());
@@ -179,24 +211,12 @@ pub(super) fn map_statement(
                 entity,
                 &KeyType::Int,
                 &format!("SELECT 1::pg_catalog.int8 FROM {table} LIMIT 1"),
-                true,
             )?;
             if !changed.is_empty() {
-                crate::queue::enqueue_refresh_all(entity);
+                crate::concurrency::enqueue_refresh_all(entity);
             }
         }
         Route::Mapped { delta } => {
-            // Refreshes of the TVIEW rows these rows feed meet this write on the
-            // values (ADR 0207): locked before any query finds rows by them.
-            if !locked {
-                statement_locks(
-                    trigger,
-                    statement,
-                    (entity, &meta, &delta),
-                    table_oid,
-                    event,
-                )?;
-            }
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
                 && fan_out(trigger, entity, table_oid, mapping)?
@@ -211,7 +231,7 @@ pub(super) fn map_statement(
             // transaction linked to these values is found. Rows the first
             // lookup missed have their read set locked by the flush, as every
             // row it computes.
-            let keys = lookup(trigger, entity, &meta.key_type, &delta, &keys_sql, true)?;
+            let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
             if !keys.is_empty() {
                 crate::queue::enqueue_refresh_bulk(entity, keys);
             }
@@ -221,15 +241,13 @@ pub(super) fn map_statement(
 }
 
 /// The keys of `entity`'s rows that the changed rows (`delta`) reach through
-/// the mapping query `keys_sql`, read in a new snapshot as the TVIEW's owner;
-/// under REPEATABLE READ checked against the latest snapshot (`crosscheck`).
+/// the mapping query `keys_sql`, read in a new snapshot as the TVIEW's owner.
 fn lookup(
     trigger: &PgTrigger<'_>,
     entity: &str,
     key_type: &KeyType,
     delta: &str,
     keys_sql: &str,
-    crosscheck: bool,
 ) -> TViewResult<Vec<KeyValue>> {
     run_with_transition_tables(
         trigger,
@@ -240,68 +258,31 @@ fn lookup(
              SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
             key_sql_type(key_type)
         ),
-        crosscheck,
     )
 }
 
-/// The value locks of the capture of the statement by `first`, a TVIEW and the
-/// delta of its mapped rows: taken by the statement's first delta trigger on
-/// the table, for every TVIEW whose trigger fires for it, or for `first` alone.
-fn statement_locks(
+/// One pass of the value locks of the TVIEWs `routed` maps through a query, for
+/// the statement's changed rows: each one's writer locks and, once the
+/// transaction changed a link, the read set of the rows its lookup finds now,
+/// unlocked. Taken in one sorted pass, so that two statements writing the same
+/// values never wait on each other in crossed orders (#277).
+///
+/// # Errors
+/// The entity whose locks could not be read, with the error.
+fn capture_pass<'a>(
     trigger: &PgTrigger<'_>,
-    statement: Option<Statement>,
-    first: (&str, &TviewMeta, &str),
+    routed: &[Routed<'a>],
     table_oid: Oid,
-    event: Event,
-) -> TViewResult<()> {
-    let entity = first.0;
-    // The first trigger of the statement takes the pass for itself and for the
-    // triggers after it; one no pass covered (a COPY) takes its own.
-    let later: Vec<String> = statement
-        .filter(|s| !s.has_record())
-        .and_then(|_| super::capture::firing_entities(trigger))
-        .map(|all| {
-            let at = all.iter().position(|e| e == entity).unwrap_or(0);
-            all[at..].iter().filter(|e| *e != entity).cloned().collect()
+) -> Result<(), (&'a str, TViewError)> {
+    let mapped: Vec<(&'a str, &TviewMeta, &str)> = routed
+        .iter()
+        .filter_map(|(entity, meta, route)| match route {
+            Route::Mapped { delta } => Some((*entity, &**meta, delta.as_str())),
+            _ => None,
         })
-        .unwrap_or_default();
-    let covered = capture_pass(trigger, first, &later, table_oid, event)?;
-    if let Some(statement) = statement {
-        statement.record(covered);
-    }
-    Ok(())
-}
-
-/// One pass of the value locks of `first` and the TVIEWs `later` for the
-/// statement's changed rows: each one's writer locks and, once the transaction
-/// changed a link, the read set of the rows its lookup finds now, unlocked.
-/// Returns how the statement's rows reach each TVIEW of `later`, for its own
-/// trigger.
-fn capture_pass(
-    trigger: &PgTrigger<'_>,
-    first: (&str, &TviewMeta, &str),
-    later: &[String],
-    table_oid: Oid,
-    event: Event,
-) -> TViewResult<std::collections::HashMap<String, super::capture::Routed>> {
-    // Every write's links first: they decide whether the read sets are locked.
-    let mut covered = std::collections::HashMap::new();
-    for entity in later {
-        let Some(meta) = TviewMeta::load_reaching(entity, table_oid)? else {
-            continue;
-        };
-        let Some(mapping) = meta.key_mapping(table_oid, None) else {
-            continue;
-        };
-        let route = route(trigger, &meta, mapping, table_oid, event)?;
-        covered.insert(entity.clone(), (meta, route));
-    }
-    // In the order the triggers fire.
-    let mut mapped = vec![first];
-    for entity in later {
-        if let Some((meta, Route::Mapped { delta })) = covered.get(entity) {
-            mapped.push((entity.as_str(), &**meta, delta.as_str()));
-        }
+        .collect();
+    if mapped.is_empty() {
+        return Ok(());
     }
     let links = crate::concurrency::links_changed();
     let mut pass = Pass::default();
@@ -309,22 +290,25 @@ fn capture_pass(
         let Some(mapping) = meta.key_mapping(table_oid, None) else {
             continue;
         };
-        crate::concurrency::changed_rows(mapping, &mut pass, |column| {
-            with_transition_tables(trigger, entity, |client, table| {
-                texts(client, Some(table), &changed_values(delta, column), &[])
-            })
-        })?;
-        if !links {
-            continue;
-        }
-        let Some(keys_sql) = rendered(entity, mapping)? else {
-            continue;
+        let mut locks = || -> TViewResult<()> {
+            crate::concurrency::changed_rows(mapping, &mut pass, |column| {
+                with_transition_tables(trigger, entity, |client, table| {
+                    texts(client, Some(table), &changed_values(delta, column), &[])
+                })
+            })?;
+            if !links {
+                return Ok(());
+            }
+            let Some(keys_sql) = rendered(entity, mapping)? else {
+                return Ok(());
+            };
+            let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql)?;
+            super::capture::add_read_set(meta, &keys, &mut pass)
         };
-        let keys = lookup(trigger, entity, &meta.key_type, delta, &keys_sql, false)?;
-        super::capture::add_read_set(meta, &keys, &mut pass)?;
+        locks().map_err(|e| (entity, e))?;
     }
     crate::concurrency::take(&pass);
-    Ok(covered)
+    Ok(())
 }
 
 /// Write an UPDATE into every TVIEW row it reaches instead of recomputing them,
@@ -340,28 +324,25 @@ fn fan_out(
     let (Some(fanout), Some(key_col)) = (&mapping.fanout, &mapping.key_col) else {
         return Ok(false);
     };
-    if !crate::config::direct_patch_enabled() || !crate::jsonb_delta::check_jsonb_delta_available()
-    {
+    if !crate::config::direct_patch_enabled() {
         return Ok(false);
     }
     let Some((same_row, columns)) = row_pairing(table_oid, &mapping.attnums)? else {
         return Ok(false);
     };
-    // Both images of each updated row; an image without its pair moved its key.
+    // Both images of each updated row. An image without its pair is a row whose
+    // primary key changed: the children of its old key no longer join it, which
+    // no patch of its new key writes (#288), so the rows are mapped instead.
     let sql = format!(
-        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n), \
-                (SELECT pg_catalog.count(*) FROM {OLD_TABLE}) = (SELECT pg_catalog.count(*) FROM {NEW_TABLE}) \
-         FROM {OLD_TABLE} o JOIN {NEW_TABLE} n ON {same_row}"
+        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n) \
+         FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
     );
     let pairs = with_transition_tables(trigger, entity, |client, table| {
         let mut pairs = Vec::new();
         for row in crate::utils::spi::kept_update_over(client, table, &sql, &[])? {
-            if row.get::<bool>(3)? != Some(true) {
-                return Ok(None);
-            }
-            if let (Some(old), Some(new)) = (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?)
-            {
-                pairs.push((old.0, new.0));
+            match (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?) {
+                (Some(old), Some(new)) => pairs.push((old.0, new.0)),
+                _ => return Ok(None),
             }
         }
         Ok(Some(pairs))
@@ -424,14 +405,12 @@ type FanoutFields = (i64, serde_json::Map<String, serde_json::Value>);
 /// each key reaches through the table in between (`fanout.via`): a key reaching
 /// none writes nothing. The lookup reads as the TVIEW's owner, as every refresh
 /// read does, so the writer needs no privilege on the table in between and its
-/// policies hide none of the rows. Under REPEATABLE READ the lookup is checked
-/// against the latest snapshot, as the patch's own lookup is. `None` when a
-/// relation the lookup reads is gone, a value it reaches is no integer, or the
-/// rows in between can't be locked one by one: the rows are then mapped and
-/// recomputed.
+/// policies hide none of the rows. `None` when a relation the lookup reads is
+/// gone, a value it reaches is no integer, or the rows in between can't be
+/// locked one by one: the rows are then mapped and recomputed.
 ///
 /// # Errors
-/// Returns an error if the lookup fails; a missed row raises 40001.
+/// Returns an error if the lookup fails.
 fn reached_through(
     entity: &str,
     mapping: &KeyMapping,
@@ -466,7 +445,6 @@ fn reached_through(
     let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
         return Ok(None);
     };
-    crate::concurrency::crosscheck::discovered_by(&sql, &args, plan, &found)?;
     let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
         patches.iter().map(|(key, fields)| (*key, fields)).collect();
     let mut reached = Vec::with_capacity(found.len());
@@ -489,11 +467,10 @@ fn reached_through(
 /// exclusively, so it waits for this write, or this lookup waits for it. No row
 /// of the table is locked, so the owner needs no more than SELECT on it.
 ///
-/// Under READ COMMITTED the lookup runs again after its locks, in a new
-/// snapshot, until it reaches no row it hasn't locked: it then drops a row a
-/// re-point moved away, whether it waited for the re-point or the re-point
-/// committed between the lookup and the lock. Under REPEATABLE READ a lock
-/// held elsewhere raises 40001, and the snapshot can't change.
+/// The lookup runs again after its locks, in a new snapshot, until it reaches
+/// no row it hasn't locked: it then drops a row a re-point moved away, whether
+/// it waited for the re-point or the re-point committed between the lookup and
+/// the lock.
 ///
 /// `None` past `pg_tviews.lock_escalation_threshold` rows: a lock on the whole
 /// table would wait for every writer of it, among them one moving a row to
@@ -526,9 +503,6 @@ fn locked_lookup(
             &new,
         ) {
             return Ok(None);
-        }
-        if crate::concurrency::crosscheck::enabled() {
-            return Ok(Some(found));
         }
         locked.extend(new);
     }
@@ -578,32 +552,32 @@ pub(super) fn refresh_all(entity: &str, why: &str) {
              SELECT tviews.pg_tviews_reregister('{entity}') re-derives it"
         ),
     );
-    crate::queue::enqueue_refresh_all(entity);
+    crate::concurrency::enqueue_refresh_all(entity);
 }
 
 /// The mapping query of `mapping`, with the current names of what it reads
 /// (cached until one of them changes).
 pub(super) fn rendered(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);
-    if let Some(sql) = crate::cache::MAPPINGS.with(|m| m.get(&key)) {
+    if let Some(sql) = MAPPINGS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let sql = render_watched(mapping.sql.as_deref().unwrap_or_default())?;
-    crate::cache::MAPPINGS.with(|m| m.insert(key, sql.clone()));
+    MAPPINGS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 
 /// The lookup through the table in between of `mapping`'s fan-out
-/// ([`crate::catalog::plan::FanoutPatch::via`]), with the current names of what
+/// ([`crate::lineage::plan::FanoutPatch::via`]), with the current names of what
 /// it reads (cached until one of them changes).
 fn rendered_via(entity: &str, mapping: &KeyMapping) -> TViewResult<Option<String>> {
     let key = (entity.to_string(), mapping.relid);
-    if let Some(sql) = crate::cache::FANOUT_VIAS.with(|m| m.get(&key)) {
+    if let Some(sql) = FANOUT_VIAS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let template = mapping.fanout.as_ref().and_then(|f| f.via.as_deref());
     let sql = render_watched(template.unwrap_or_default())?;
-    crate::cache::FANOUT_VIAS.with(|m| m.insert(key, sql.clone()));
+    FANOUT_VIAS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 

@@ -232,9 +232,9 @@ SELECT tviews.pg_tviews_create('tv_invoice_line_adjustment_with_a_deliberately_l
        = b.fk_invoice_line_adjustment_with_a_deliberately_long_name_a $$);
 DO $$ BEGIN
     -- tv_..._a: row, flush, TRUNCATE; tv_..._b maps it through a query: three delta
-    -- triggers, flush, TRUNCATE. All eight names stay distinct within 63 bytes.
-    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 8 THEN
-        RAISE EXCEPTION '#136 FAIL: expected 3 + 5 triggers on the shared table, got %',
+    -- triggers. One set: the union, six names, distinct within 63 bytes.
+    IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 6 THEN
+        RAISE EXCEPTION '#136 FAIL: expected 6 triggers on the shared table, got %',
             app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a');
     END IF;
 END $$;
@@ -248,7 +248,8 @@ END $$;
 SELECT tviews.pg_tviews_drop('invoice_line_adjustment_with_a_deliberately_long_name_b');
 DO $$ BEGIN
     IF app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a') <> 3 THEN
-        RAISE EXCEPTION '#136 FAIL: dropping one long-named TVIEW should leave the other''s three triggers';
+        RAISE EXCEPTION '#136 FAIL: dropping one long-named TVIEW should leave the other''s three triggers: %',
+            app.tviews_triggers_on('app.tb_invoice_line_adjustment_with_a_deliberately_long_name_a');
     END IF;
 END $$;
 
@@ -292,9 +293,9 @@ SELECT tviews.pg_tviews_create('tv_flush_y', $$
     FROM app.tb_flush_y f JOIN app.tb_y y ON y.pk_y = f.fk_y $$);
 DO $$ BEGIN
     -- tv_y: row, flush, TRUNCATE; tv_flush_y maps tb_y through a query: three delta
-    -- triggers, flush, TRUNCATE.
-    IF app.tviews_triggers_on('app.tb_y') <> 8 THEN
-        RAISE EXCEPTION '#136 FAIL: tv_y and tv_flush_y should have 3 + 5 triggers on tb_y, got %',
+    -- triggers. One set, the union: six.
+    IF app.tviews_triggers_on('app.tb_y') <> 6 THEN
+        RAISE EXCEPTION '#136 FAIL: tv_y and tv_flush_y should share 6 triggers on tb_y, got %',
             app.tviews_triggers_on('app.tb_y');
     END IF;
 END $$;

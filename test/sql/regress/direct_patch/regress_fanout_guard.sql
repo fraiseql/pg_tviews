@@ -54,7 +54,7 @@ SELECT must((SELECT count(*) FROM tv_item WHERE data #>> '{category,name}' = 'tw
 -- 2. The guard still leaves alone what it should, and counts as before: a write
 --    that moves two items into a category and renames it in one statement
 --    patches the category's ten children and recomputes the two moved ones.
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 WITH moved AS (UPDATE tb_item SET fk_cat = 7 WHERE pk_item IN (14, 24) RETURNING 1)
 UPDATE tb_cat SET name = 'seven' WHERE pk_cat = 7;
 SELECT must((view_recomputes, patch_applied, noop_skipped) = (2, 10, 0),
@@ -81,7 +81,7 @@ BEGIN
     PERFORM tviews.pg_tviews_create('tv_maybe', format($q$
         SELECT i.pk_item AS pk_maybe, i.id, i.fk_cat, %s AS data
         FROM tb_item i LEFT JOIN tb_cat c ON c.pk_cat = i.fk_cat $q$, def));
-    PERFORM tviews.pg_tviews_stats_reset();
+    PERFORM tviews.pg_tviews_reset_stats_all();
 END $$;
 CREATE FUNCTION recomputed(shape text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE st record;

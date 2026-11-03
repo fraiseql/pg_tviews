@@ -21,11 +21,13 @@ are the primary's to maintain. The refill happens where writes happen, once
 recovery ends.
 
 **Logical replication subscribers.** A TVIEW table is published like any table:
-subscribe to it to read the TVIEW elsewhere. A subscriber that defines its own TVIEWs
-over replicated *base* tables gets no refresh from replication: the apply worker runs
-with `session_replication_role = replica`, and pg_tviews' triggers fire only on the
-origin's writes. Replicate the TVIEW tables themselves, or refresh the subscriber's
-TVIEWs (`tviews.pg_tviews_refresh()`) once it has caught up.
+subscribe to it to read the TVIEW elsewhere. A TVIEW over a table a subscription
+writes is refused at create (`0A000`): the apply worker runs with
+`session_replication_role = replica` and fires row triggers only, never the statement
+triggers that apply a write's refresh, so such a TVIEW could not be kept fresh. A
+table subscribed after its TVIEW was created is reported by
+`pg_tviews_check_health()` (component `triggers`). Create the TVIEW on the publisher
+and publish its table.
 
 ## Choosing LOGGED or UNLOGGED
 
@@ -62,7 +64,7 @@ whichever way it is switched: a LOGGED table is never checked again.
 ## Checking what a standby can serve
 
 ```sql
-SELECT * FROM pg_tviews_replication_status();
+SELECT * FROM pg_tviews_show_replication();
 --  entity | persistence | replica_readable | is_empty | needs_rebuild
 
 SELECT entity, options->'logged' AS logged FROM tviews.registry;
@@ -71,7 +73,7 @@ SELECT entity, options->'logged' AS logged FROM tviews.registry;
 Both are read-only and work on a standby. There, `is_empty` is NULL for UNLOGGED
 TVIEWs (their table cannot be read) and `needs_rebuild` is NULL for all of them.
 A client that routes reads to replicas (FraiseQL's `read_replica_urls`) can call
-`pg_tviews_replication_status()` once at startup and keep every type backed by a
+`pg_tviews_show_replication()` once at startup and keep every type backed by a
 `replica_readable = false` TVIEW on the primary.
 
 ## Refilling after promotion, a crash or a restore
@@ -123,9 +125,8 @@ pg_tviews.auto_rebuild_databases = '*'              # the default: every databas
 ### Without the launcher
 
 A reset UNLOGGED TVIEW is filled on the first write that touches it, after the
-TVIEWs it reads. Concurrent first writers wait for the one that fills it (under
-`REPEATABLE READ` they fail with `40001` instead, and can be retried). Until then,
-readers see an empty table.
+TVIEWs it reads. Concurrent first writers wait for the one that fills it. Until
+then, readers see an empty table.
 
 A transaction that filled one cannot be prepared: `PREPARE TRANSACTION` fails with
 `25000`, because its claim would make every writer of the TVIEW wait for

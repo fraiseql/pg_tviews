@@ -1,12 +1,15 @@
--- Regression test: a backing view's privileges follow its TVIEW's table.
+-- Regression test: a backing view is its TVIEW owner's alone.
 --
--- A backing view lives in tviews (#181). A role that read it through
--- GRANT SELECT ON ALL TABLES IN SCHEMA <app> when it was <app>.v_<entity> lost it:
--- fraisier's deploy probe (SELECT EXISTS (… FROM <backing view>), the view taken
--- from tviews.registry) was denied. Whoever can SELECT from tv_<entity> can now
--- SELECT from its backing view: the SELECT grants are copied when the view is
--- created or rebuilt, and again after every GRANT or REVOKE on a table; ALTER
--- TABLE tv_* OWNER TO gives the view the new owner. Only SELECT is copied.
+-- A backing view (tviews.<schema>__tv_<entity>) runs the TVIEW's SELECT over the
+-- base tables with its owner's privileges. A reader granted it would read every
+-- row the definition yields, whatever policy restricts tv_<entity>: a reader that
+-- row-level security denied every row of tv_post read them all through the view.
+-- So no role but the owner holds a privilege on a backing view: no grant is
+-- copied from the table, and one made on the view is revoked after every GRANT,
+-- REVOKE, ALTER TABLE … OWNER TO and REASSIGN OWNED, and when the view is created
+-- or rebuilt. ALTER TABLE tv_* OWNER TO gives the view the new owner. The deploy
+-- probe that read backing views ("a TVIEW empty while its view has rows") is the
+-- health check's `contents` component, which runs as each TVIEW's owner.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_backing_view_privileges.sql
 --
@@ -38,24 +41,26 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'backing view privileges FAIL: %', what; END IF; END $$;
 
--- fraisier's find_empty_tviews, as role r: 'ok', or 'denied' with what was refused.
-CREATE FUNCTION probe(r text, tv text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-    tview text;
-    view text;
-    has_rows boolean;
-    view_has_rows boolean;
+-- The rows role r reads from relation rel, or -1 when it is denied.
+CREATE FUNCTION rows_as(r text, rel text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
 BEGIN
-    SELECT format('%I.%I', g.schema, g.name), g.view::text INTO tview, view
-    FROM tviews.registry g WHERE g.name = tv;
     EXECUTE format('SET LOCAL ROLE %I', r);
-    EXECUTE format('SELECT EXISTS (SELECT 1 FROM %s), EXISTS (SELECT 1 FROM %s)', tview, view)
-        INTO has_rows, view_has_rows;
+    EXECUTE format('SELECT count(*) FROM %s', rel) INTO n;
     RESET ROLE;
-    RETURN 'ok';
+    RETURN n;
 EXCEPTION WHEN insufficient_privilege THEN
-    RETURN 'denied';
+    RETURN -1;
 END $$;
+
+-- Whether any role but the view's owner holds a privilege on tv's backing view.
+CREATE FUNCTION view_granted(tv text) RETURNS boolean LANGUAGE sql AS $$
+    SELECT EXISTS (SELECT 1 FROM tviews.registry g JOIN pg_class v ON v.oid = g.view,
+                   aclexplode(v.relacl) a
+                   WHERE g.name = tv AND a.grantee <> v.relowner) $$;
+
+CREATE FUNCTION backing(tv text) RETURNS text LANGUAGE sql AS $$
+    SELECT view::text FROM tviews.registry WHERE name = tv $$;
 
 CREATE SCHEMA app AUTHORIZATION regress_bvp_owner;
 SET ROLE regress_bvp_owner;
@@ -63,67 +68,57 @@ CREATE TABLE app.tb_post (pk_post bigint PRIMARY KEY, id uuid NOT NULL DEFAULT g
 INSERT INTO app.tb_post (pk_post, title) VALUES (1, 'a'), (2, 'b');
 SELECT tviews.pg_tviews_create_or_replace('app.tv_post', $$
     SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM app.tb_post $$);
-
--- SELECT on the base table only: neither the TVIEW nor its view is readable.
 GRANT USAGE ON SCHEMA app TO regress_bvp_reader;
-GRANT SELECT ON app.tb_post TO regress_bvp_reader;
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'denied', 'SELECT on tb_post alone reads the TVIEW');
 
--- SELECT ON ALL TABLES IN SCHEMA: the backing view is readable too (fraisier's case).
-GRANT SELECT ON ALL TABLES IN SCHEMA app TO regress_bvp_reader;
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after GRANT ON ALL TABLES IN SCHEMA');
-
--- A REVOKE takes it away from both.
-REVOKE SELECT ON ALL TABLES IN SCHEMA app FROM regress_bvp_reader;
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'denied', 'readable after REVOKE ON ALL TABLES');
-
--- A GRANT on the TVIEW's table alone.
+-- Row-level security on the TVIEW's table holds: the backing view does not
+-- hand the rows back.
 GRANT SELECT ON app.tv_post TO regress_bvp_reader;
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after GRANT SELECT ON tv_post');
+ALTER TABLE app.tv_post ENABLE ROW LEVEL SECURITY;
+CREATE POLICY nothing ON app.tv_post FOR SELECT TO regress_bvp_reader USING (false);
+SELECT must(rows_as('regress_bvp_reader', 'app.tv_post') = 0, 'the policy did not hide tv_post''s rows');
+SELECT must(rows_as('regress_bvp_reader', backing('tv_post')) = -1,
+            'the backing view handed back the rows the policy hides');
+DROP POLICY nothing ON app.tv_post;
+ALTER TABLE app.tv_post DISABLE ROW LEVEL SECURITY;
 
--- A rebuild, then a replacement in place, keep it.
+-- No grant on the table reaches the view: by name, in schema, to PUBLIC.
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO regress_bvp_reader;
+GRANT INSERT, UPDATE, DELETE, TRUNCATE ON app.tv_post TO regress_bvp_reader;
+GRANT USAGE ON SCHEMA app TO PUBLIC;
+GRANT SELECT ON app.tv_post TO PUBLIC;
+SELECT must(rows_as('regress_bvp_reader', 'app.tv_post') = 2, 'the reader cannot read tv_post');
+SELECT must(NOT view_granted('tv_post'), 'a grant on the table reached the backing view');
+SELECT must(rows_as('regress_bvp_other', backing('tv_post')) = -1, 'PUBLIC reads the backing view');
+
+-- Nor does a rebuild, a replacement in place, or a TVIEW created under default
+-- privileges.
 SELECT must(tviews.pg_tviews_create_or_replace('app.tv_post', $$
     SELECT pk_post, id, title, jsonb_build_object('title', title) AS data FROM app.tb_post $$) = 'rebuilt',
             'the rebuild');
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after a rebuild');
+SELECT must(NOT view_granted('tv_post'), 'a rebuild granted the backing view');
 SELECT must(tviews.pg_tviews_create_or_replace('app.tv_post', $$
     SELECT pk_post, id, title, jsonb_build_object('title', upper(title)) AS data FROM app.tb_post $$) = 'replaced',
             'the replacement in place');
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after a replacement in place');
-
--- Only SELECT: what else the table grants is not copied to the view.
-GRANT INSERT, UPDATE, DELETE, TRUNCATE ON app.tv_post TO regress_bvp_reader;
-SELECT must(NOT has_table_privilege('regress_bvp_reader', g.view, 'INSERT, UPDATE, DELETE, TRUNCATE'),
-            'a privilege other than SELECT reached the backing view')
-FROM tviews.registry g WHERE g.name = 'tv_post';
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON app.tv_post FROM regress_bvp_reader;
-
--- PUBLIC, granted and revoked.
-SELECT must(probe('regress_bvp_other', 'tv_post') = 'denied', 'regress_bvp_other reads before any grant');
-GRANT USAGE ON SCHEMA app TO PUBLIC;
-GRANT SELECT ON app.tv_post TO PUBLIC;
-SELECT must(probe('regress_bvp_other', 'tv_post') = 'ok', 'denied after GRANT TO PUBLIC');
-REVOKE SELECT ON app.tv_post FROM PUBLIC;
-SELECT must(probe('regress_bvp_other', 'tv_post') = 'denied', 'readable after REVOKE FROM PUBLIC');
-
--- A TVIEW created under default privileges gets the view readable at once.
+SELECT must(NOT view_granted('tv_post'), 'a replacement in place granted the backing view');
 ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO regress_bvp_other;
 CREATE TABLE app.tb_note (pk_note bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
 INSERT INTO app.tb_note (pk_note, body) VALUES (1, 'n');
 SELECT tviews.pg_tviews_create_or_replace('app.tv_note', $$
     SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM app.tb_note $$);
-SELECT must(probe('regress_bvp_other', 'tv_note') = 'ok', 'denied under default privileges');
+SELECT must(rows_as('regress_bvp_other', 'app.tv_note') = 1, 'default privileges did not reach tv_note');
+SELECT must(NOT view_granted('tv_note'), 'default privileges granted the backing view');
 ALTER DEFAULT PRIVILEGES IN SCHEMA app REVOKE SELECT ON TABLES FROM regress_bvp_other;
+REVOKE SELECT ON app.tv_post FROM PUBLIC;
 RESET ROLE;
 
--- ALTER TABLE … OWNER TO: the view changes owner with its table, keeps the grants,
--- and the TVIEW keeps following its base table.
+-- ALTER TABLE … OWNER TO: the view changes owner with its table, stays the
+-- owner's, and the TVIEW keeps following its base table.
 GRANT CREATE, USAGE ON SCHEMA app TO regress_bvp_owner2;
 GRANT SELECT ON app.tb_post TO regress_bvp_owner2;
 ALTER TABLE app.tv_post OWNER TO regress_bvp_owner2;
 SELECT must(v.relowner = 'regress_bvp_owner2'::regrole, 'the view is owned by ' || v.relowner::regrole::text)
 FROM tviews.registry g JOIN pg_class v ON v.oid = g.view WHERE g.name = 'tv_post';
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after OWNER TO');
+SELECT must(NOT view_granted('tv_post'), 'OWNER TO granted the backing view');
 UPDATE app.tb_post SET title = 'a2' WHERE pk_post = 1;
 SELECT assert_fresh('app.tv_post', 'pk_post', 'a write after OWNER TO');
 
@@ -137,16 +132,30 @@ SELECT must(v.relowner = 'regress_bvp_owner'::regrole,
 FROM tviews.registry g JOIN pg_class v ON v.oid = g.view WHERE g.name = 'tv_post';
 SELECT must(NOT has_schema_privilege('regress_bvp_owner', 'tviews', 'CREATE'),
             'the new owner kept CREATE on tviews');
-SELECT must(probe('regress_bvp_reader', 'tv_post') = 'ok', 'denied after OWNER TO by the owner');
 
--- A grant on the view itself does not outlive the next sync.
+-- A grant made on the view itself does not outlive the next sync.
 GRANT SELECT ON ALL TABLES IN SCHEMA tviews TO regress_bvp_other;
-SELECT must(NOT has_table_privilege('regress_bvp_other', g.view, 'SELECT'),
-            'a grant on the backing view alone survived the sync')
-FROM tviews.registry g WHERE g.name = 'tv_post';
+SELECT must(NOT view_granted('tv_post'), 'a grant on the backing view survived the sync');
+
+-- The probe a reader can no longer run: health's `contents` component names a
+-- TVIEW whose table is empty while its definition yields rows.
+SELECT must(status = 'OK', 'contents on a populated TVIEW: ' || message)
+FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+SET session_replication_role = replica;
+DELETE FROM app.tv_note;
+RESET session_replication_role;
+SELECT must(status = 'WARNING' AND message LIKE '%app.tv_note%' AND message NOT LIKE '%tv_post%',
+            'contents on an emptied TVIEW: ' || message)
+FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+SELECT must(count(*) = 1, 'one contents row') FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+-- What a definition yields is its owner's to know: a role that is not a member of
+-- the owner is not told about tv_note.
+SET ROLE regress_bvp_reader;
+SELECT must(status = 'OK', 'a non-owner learned of an emptied TVIEW: ' || message)
+FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
+RESET ROLE;
 
 DROP SCHEMA app CASCADE;
-REVOKE ALL ON ALL TABLES IN SCHEMA tviews FROM regress_bvp_other;
 DROP EXTENSION pg_tviews CASCADE;
 DROP OWNED BY regress_bvp_owner, regress_bvp_owner2, regress_bvp_reader, regress_bvp_other;
 DROP ROLE regress_bvp_reader;

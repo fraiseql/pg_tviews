@@ -7,7 +7,7 @@
 -- such a TVIEW only lazily, on the first write that touched it.
 --
 -- Correct behaviour: clients can tell which TVIEWs a standby can serve
--- (pg_tviews_replication_status, tviews.registry.options->'logged'), deploy
+-- (pg_tviews_show_replication, tviews.registry.options->'logged'), deploy
 -- tooling can rebuild every emptied TVIEW at once (pg_tviews_rebuild_all), and a
 -- TVIEW can be switched to LOGGED (ALTER TABLE … SET LOGGED, or the option). TRUNCATE plus deleting the
 -- rows of tviews.pg_tview_valid stands in for the init-fork reset here (it
@@ -65,12 +65,12 @@ DO $$ BEGIN
   END IF;
   IF (SELECT array_agg(entity || ':' || persistence || ':' || replica_readable
                        || ':' || is_empty || ':' || needs_rebuild ORDER BY entity)
-      FROM pg_tviews_replication_status())
+      FROM pg_tviews_show_replication())
      IS DISTINCT FROM ARRAY['post:unlogged:false:false:false',
                             'tag:logged:true:false:false',
                             'user:unlogged:false:false:false'] THEN
     RAISE EXCEPTION '#75 FAIL: replication_status %',
-      (SELECT array_agg(s ORDER BY s.entity) FROM pg_tviews_replication_status() s);
+      (SELECT array_agg(s ORDER BY s.entity) FROM pg_tviews_show_replication() s);
   END IF;
 END $$;
 
@@ -81,10 +81,10 @@ TRUNCATE tv_user, tv_post;
 DELETE FROM tviews.pg_tview_valid;
 
 DO $$ BEGIN
-  IF (SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_replication_status()
+  IF (SELECT array_agg(entity ORDER BY entity) FROM pg_tviews_show_replication()
       WHERE needs_rebuild) IS DISTINCT FROM ARRAY['post', 'user'] THEN
     RAISE EXCEPTION '#75 FAIL: needs_rebuild after reset %',
-      (SELECT array_agg(s ORDER BY s.entity) FROM pg_tviews_replication_status() s);
+      (SELECT array_agg(s ORDER BY s.entity) FROM pg_tviews_show_replication() s);
   END IF;
 END $$;
 
@@ -122,14 +122,14 @@ END $$;
 -- ========================================================================
 ALTER TABLE tv_user SET LOGGED;
 DO $$ BEGIN
-  IF NOT (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user')
+  IF NOT (SELECT replica_readable FROM pg_tviews_show_replication() WHERE entity = 'user')
      OR (SELECT count(*) FROM tv_user) <> 2 THEN
     RAISE EXCEPTION '#75 FAIL: SET LOGGED';
   END IF;
 END $$;
 ALTER TABLE tv_user SET UNLOGGED;
 DO $$ BEGIN
-  IF (SELECT replica_readable FROM pg_tviews_replication_status() WHERE entity = 'user') THEN
+  IF (SELECT replica_readable FROM pg_tviews_show_replication() WHERE entity = 'user') THEN
     RAISE EXCEPTION '#75 FAIL: SET UNLOGGED';
   END IF;
 END $$;

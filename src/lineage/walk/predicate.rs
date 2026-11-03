@@ -133,8 +133,9 @@ impl Walker<'_> {
             else {
                 return None;
             };
-            (cstr(pg_sys::get_attname(*relid, (*var).varattno, true)) == format!("pk_{entity}"))
-                .then(|| entity.clone())
+            (cstr(pg_sys::get_attname(*relid, (*var).varattno, true))
+                == crate::lineage::plan::key_column(entity))
+            .then(|| entity.clone())
         }
     }
 

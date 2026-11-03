@@ -61,7 +61,7 @@ END $$;
 CREATE FUNCTION rename_author_queued(new_name TEXT) RETURNS BIGINT LANGUAGE plpgsql AS $$
 BEGIN
     UPDATE tb_author SET name = new_name WHERE pk_author = 1;
-    RETURN (pg_tviews_queue_stats()->>'queue_size')::bigint;
+    RETURN (pg_tviews_show_queue()->>'queue_size')::bigint;
 END $$;
 SELECT flush_trigger(false);
 
@@ -116,7 +116,7 @@ DO $$ BEGIN
   IF (SELECT data->>'title' FROM tv_post WHERE pk_post = 1) IS DISTINCT FROM 'p2' THEN
     RAISE EXCEPTION '#59 FAIL: DML in a prepared transaction did not reach tv_post';
   END IF;
-  IF (pg_tviews_queue_stats()->>'queue_size')::int <> 0 THEN
+  IF (pg_tviews_show_queue()->>'queue_size')::int <> 0 THEN
     RAISE EXCEPTION '#59 FAIL: queue not empty after the prepared transactions';
   END IF;
 END $$;

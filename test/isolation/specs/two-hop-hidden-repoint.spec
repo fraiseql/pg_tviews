@@ -4,7 +4,7 @@
 # through the orders runs as the TVIEW's owner, so it reaches the hidden orders
 # and waits for the re-point; nothing it read may reach the writer. The hidden
 # orders and lines carry marker values, and the writer's error, its detail,
-# hint and context are checked for them: a lock timeout, a 40001 under
+# hint and context are checked for them: a lock timeout, the 0A000 refusal at
 # REPEATABLE READ, and, waiting, a write that ends with every line fresh.
 
 setup

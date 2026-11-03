@@ -128,3 +128,20 @@ setting, never a user one.
     did).
 - Writes cost a little more on a LOGGED TVIEW (WAL). A TVIEW whose rows can be recomputed and
   needs the speed declares `logged: false`.
+
+## Amendment (0.1.0-beta.35): five settings
+
+What a user decides stays a setting; what nobody decides per database becomes a constant
+of the module it bounds, named by its error.
+
+- User settings: `publish_changes`, `max_refresh_rows`, `audit_enabled`,
+  `lock_escalation_threshold` (minimum 0: `-1`, never escalate, could exhaust the shared
+  lock table), all superuser-set, and `auto_rebuild_databases` (postmaster).
+- Hidden, superuser-only: the diagnostic switches `graph_cache_enabled`,
+  `table_cache_enabled`, `direct_patch_enabled` (the differential tests run every mode),
+  and `max_queue_size`, kept so the queue-full error can be tested end to end.
+- Constants: a flush applies at most 1,000 entity batches (only a loop of user triggers
+  reaches it), backing views nest at most 64 views, a refresh statement takes 1,000 keys,
+  a memo holds 10,000 entries, the report keeps 10,000 rows.
+- The `pg_tviews.` prefix is reserved: setting a removed name fails.
+- `test_skip_ctas_intercept` exists only in test builds (cargo feature `test-hooks`).

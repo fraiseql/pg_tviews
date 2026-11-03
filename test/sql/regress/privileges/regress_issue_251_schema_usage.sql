@@ -2,7 +2,7 @@
 -- cannot reach.
 --
 -- A write loads the catalog rows of every TVIEW, and their collections were
--- matched through `tviews.pg_tview_references`, which resolved each referenced
+-- matched through `tviews.references`, which resolved each referenced
 -- table by name (`to_regclass`). A schema-qualified name lookup checks USAGE on
 -- the schema, so a writer without USAGE on the schema of a TVIEW with a
 -- reference got "permission denied for schema" and its write rolled back.
@@ -53,7 +53,7 @@ FROM regress_251_b.tb_gamma g;
 -- The reference is still published, for a role that can see it.
 DO $$
 BEGIN
-    IF (SELECT count(*) FROM tviews.pg_tview_references
+    IF (SELECT count(*) FROM tviews.references
         WHERE entity = 'gamma' AND parent = 'beta' AND chosen) <> 1 THEN
         RAISE EXCEPTION 'tv_gamma.fk_beta is not published as a reference to beta';
     END IF;

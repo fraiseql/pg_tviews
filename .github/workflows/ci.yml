@@ -21,6 +21,7 @@ jobs:
   test:
     name: test (pg${{ matrix.pg }}${{ matrix.preload && format(', {0}', matrix.preload) || '' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       # Supported PostgreSQL versions: every one runs every suite. One more pg18
@@ -80,8 +81,10 @@ jobs:
           cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
 
       - name: Build and install pg_tviews
+        # test-hooks: the hidden switch regress_missed_interception needs; release
+        # packages are built without it.
         run: |
-          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
+          cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR} test-hooks" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
       - name: Build and install jsonb_delta (real extension, 0.3.0)
@@ -121,21 +124,42 @@ jobs:
           psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
             || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
 
-      # These scripts create a throwaway database per test and exit non-zero on
+      # The script creates a throwaway database per test and exits non-zero on
       # any failure. With jsonb_delta present, the regression suite skips nothing.
       - name: Regression suite (test/sql/regress/)
         if: ${{ !cancelled() }}
         run: REGRESS_NO_SKIP=1 ./test/run_regression_tests.sh
 
-      - name: Integration suite (test/sql/[0-9]*.sql)
-        if: ${{ !cancelled() }}
-        run: ./test/run_integration_tests.sh
-
       # Every TVIEW shape equals its backing view after each of a few hundred
-      # seeded random writes.
+      # seeded random writes. The pg18 job runs every mode (test/lib/modes.sh): the
+      # patch path and the caches off as well.
       - name: Differential suite (test/sql/differential/run.sh)
         if: ${{ !cancelled() }}
-        run: ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+        run: |
+          source test/lib/modes.sh
+          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
+          ./test/sql/differential/run.sh 60 "1 2 3 4 5"
+
+      # Generated shapes: seeded random schemas and TVIEW definitions (joins,
+      # embedded TVIEWs, aggregates, arrays, UNION, CTE, DISTINCT ON), each equal
+      # to its view after every random write and mutation; the nightly run draws more.
+      - name: Generated shapes (test/sql/differential/gen/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: |
+          source test/lib/modes.sh
+          MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 5 "1" 40
+
+      # What the oracle cannot see: each shape's stored plan and triggers, and the
+      # feed of a fixed script, against test/sql/differential/expected/.
+      - name: Golden files (test/sql/differential/golden.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: ./test/sql/differential/golden.sh
+
+      # The walker read through the plan registration would store, one case per
+      # query shape, against test/sql/plans/expected/.
+      - name: Plan snapshots (test/sql/plans/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: ./test/sql/plans/run.sh
 
       # Random transactions from 8 clients at every isolation level: every TVIEW
       # equals its view in every committed snapshot; single-row writes of values
@@ -144,6 +168,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+          source test/lib/modes.sh
+          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
           ./test/concurrency/fuzz/run.sh 60 "1 2 3" 8 mixed
           ./test/concurrency/fuzz/run.sh 30 "1" 8 values
 
@@ -152,22 +178,29 @@ jobs:
         if: ${{ !cancelled() }}
         run: PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" ./test/isolation/run.sh
 
+      # Two-phase commit through pgbouncer in transaction pooling mode.
+      - name: pgbouncer suite (test/pgbouncer/run.sh)
+        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        run: |
+          sudo apt-get install -y pgbouncer
+          sudo systemctl stop pgbouncer 2>/dev/null || true
+          PGBOUNCER=/usr/sbin/pgbouncer ./test/pgbouncer/run.sh
+
       # The SQL of the user docs, run as written on a fresh database.
       - name: Documentation SQL (test/docs/run_doc_sql.sh)
         if: ${{ !cancelled() }}
         run: |
           ./test/docs/run_doc_sql.sh docs/getting-started/quickstart.md docs/concurrency.md \
-            docs/reference/*.md docs/user-guides/*.md
+            docs/reference/*.md docs/user-guides/*.md docs/operations/security.md
 
-      # A throwaway cluster without shared_preload_libraries: CREATE EXTENSION,
-      # pg_tviews_create_or_replace() and refresh work where the library is loaded
-      # lazily (#134).
+      # A throwaway cluster restarted without shared_preload_libraries: CREATE
+      # EXTENSION and every use of an installed catalog are refused (55000).
       - name: No-preload suite (test/no_preload/run.sh)
         if: ${{ !cancelled() }}
         run: PGBIN="/usr/lib/postgresql/${PG_MAJOR}/bin" ./test/no_preload/run.sh
 
       # A throwaway preloaded cluster with a tiny NOTIFY queue: a listener idle in a
-      # transaction fills it, writes commit unpublished, pg_tviews_feed_gaps() counts
+      # transaction fills it, writes commit unpublished, pg_tviews_count_feed_gaps() counts
       # them for every session (#247).
       - name: Feed gaps (test/feed_gaps/run.sh)
         if: ${{ !cancelled() }}

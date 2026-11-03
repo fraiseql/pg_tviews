@@ -51,23 +51,23 @@ fn was_truncate_mapped(entity: &str, relation: pg_sys::Oid) -> bool {
         })
 }
 
-/// The entity a `pg_tviews` trigger serves: its argument. A trigger without one
-/// (an older release installed them; the upgrade drops them) fails the write.
-pub fn trigger_entity(trigger: &PgTrigger<'_>) -> String {
-    trigger
-        .extra_args()
-        .ok()
-        .and_then(|args| args.into_iter().next())
-        .unwrap_or_else(|| {
-            let name = trigger.name().unwrap_or("?");
-            crate::TViewError::TriggerMisused {
-                reason: format!(
-                    "pg_tviews: trigger {name} names no TVIEW; run \
-                     SELECT * FROM tviews.pg_tviews_reregister_all() and drop it"
-                ),
-            }
-            .raise()
-        })
+/// Raise `TriggerMisused` when `trigger` carries an argument: an older release
+/// installed one trigger per TVIEW, naming it. Each would serve every TVIEW of
+/// the table again, beside the table's own set; `pg_tviews_reregister_all()`
+/// replaces them.
+pub fn require_table_trigger(trigger: &PgTrigger<'_>) {
+    // SAFETY: the TriggerData of a trigger call and its Trigger.
+    let nargs = unsafe { (*trigger.trigger_data().tg_trigger).tgnargs };
+    if nargs != 0 {
+        let name = trigger.name().unwrap_or("?");
+        crate::TViewError::TriggerMisused {
+            reason: format!(
+                "pg_tviews: trigger {name} was installed by an older release, one per TVIEW; \
+                 run SELECT * FROM tviews.pg_tviews_reregister_all() to replace it"
+            ),
+        }
+        .raise()
+    }
 }
 
 /// Raise `TriggerMisused` unless `trigger` fires per row (`row`) or per
@@ -95,7 +95,8 @@ pub(super) fn suspended() -> bool {
 }
 
 /// Statement-level trigger over the transition tables of a `mapped` or
-/// `all_keys` table.
+/// `all_keys` table: one per event and table, mapping the statement's rows for
+/// every TVIEW the table's delta triggers serve.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_delta_trigger<'a>(
@@ -103,11 +104,24 @@ fn pg_tview_delta_trigger<'a>(
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     require_level(trigger, false);
-    let entity = trigger_entity(trigger);
+    require_table_trigger(trigger);
+    let table_oid = match trigger.relation() {
+        Ok(rel) => rel.oid(),
+        Err(e) => crate::TViewError::TriggerMisused {
+            reason: format!("pg_tviews: delta trigger without a relation: {e}"),
+        }
+        .raise(),
+    };
+    let readers = crate::catalog::table_readers(table_oid)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
+    let entities: Vec<&str> = readers.delta().collect();
     if suspended() {
         crate::concurrency::note_link_change();
-        crate::suspend::record_change(&entity);
+        for entity in &entities {
+            crate::suspend::record_change(entity);
+        }
         return Ok(None);
     }
     let event = match trigger.op() {
@@ -116,14 +130,7 @@ fn pg_tview_delta_trigger<'a>(
         Ok(PgTriggerOperation::Delete) => Event::Delete,
         _ => return Ok(None),
     };
-    let table_oid = match trigger.relation() {
-        Ok(rel) => rel.oid(),
-        Err(e) => crate::TViewError::TriggerMisused {
-            reason: format!("pg_tviews: delta trigger without a relation: {e}"),
-        }
-        .raise(),
-    };
-    if let Err(e) = map_statement(trigger, &entity, table_oid, event) {
+    if let Err((entity, e)) = map_statement(trigger, &entities, table_oid, event) {
         e.raise_in(&format!(
             "pg_tviews: could not map the changed rows to tv_{entity} keys"
         ));
@@ -151,9 +158,10 @@ fn first_truncate_refresh(entity: &str) -> bool {
         })
 }
 
-/// `TRUNCATE` of a base table: refresh the whole TVIEW now (no flush trigger
-/// follows a `TRUNCATE`). `TRUNCATE` of a partitioned table fires this on each
-/// truncated partition too, after all of them are empty: the first one refreshes.
+/// `TRUNCATE` of a base table: refresh every TVIEW over it in whole now (no
+/// flush trigger follows a `TRUNCATE`). `TRUNCATE` of a partitioned table fires
+/// this on each truncated partition too, after all of them are empty: the first
+/// one refreshes each TVIEW.
 #[pg_trigger]
 #[allow(clippy::unnecessary_wraps)] // Reason: pgrx #[pg_trigger] requires a Result return type
 fn pg_tview_truncate_trigger<'a>(
@@ -161,31 +169,44 @@ fn pg_tview_truncate_trigger<'a>(
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, spi::Error> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
-    let entity = trigger_entity(trigger);
+    crate::concurrency::require_read_committed();
+    require_table_trigger(trigger);
     crate::concurrency::note_link_change();
+    let relation = match trigger.relation() {
+        Ok(rel) => rel.oid(),
+        Err(e) => crate::TViewError::TriggerMisused {
+            reason: format!("pg_tviews: truncate trigger without a relation: {e}"),
+        }
+        .raise(),
+    };
+    let readers = crate::catalog::partition_root(relation)
+        .and_then(crate::catalog::table_readers)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plans"));
     if suspended() {
-        crate::suspend::record_change(&entity);
+        for entity in readers.truncate() {
+            crate::suspend::record_change(entity);
+        }
         return Ok(None);
     }
-    // A truncated partition whose rows were mapped to keys before the statement:
-    // those keys are refreshed after it, not the whole TVIEW.
-    if let Ok(relation) = trigger.relation()
-        && was_truncate_mapped(&entity, relation.oid())
-    {
-        return Ok(None);
+    let mut refreshed = Vec::new();
+    for entity in readers.truncate() {
+        // A truncated partition whose rows were mapped to keys before the
+        // statement: those keys are refreshed after it, not the whole TVIEW.
+        if was_truncate_mapped(entity, relation) || !first_truncate_refresh(entity) {
+            continue;
+        }
+        crate::concurrency::enqueue_refresh_all(entity);
+        refreshed.push(format!("tv_{entity}"));
     }
-    if !first_truncate_refresh(&entity) {
-        return Ok(None);
-    }
-    crate::queue::enqueue_refresh_all(&entity);
-    // A TRUNCATE run inside a writing statement (by one of its triggers) leaves
-    // the flush to that statement, as its other nested statements do.
-    if crate::executor::inside_writing_statement() {
+    // A TRUNCATE run inside a statement (by a function it calls, or by one of its
+    // triggers) leaves the flush to that statement, as other nested statements do.
+    if refreshed.is_empty() || crate::executor::defers_flush() {
         return Ok(None);
     }
     if let Err(e) = crate::flush::flush_refresh_queue() {
         e.raise_in(&format!(
-            "pg_tviews: could not refresh tv_{entity} after TRUNCATE"
+            "pg_tviews: could not refresh {} after TRUNCATE",
+            refreshed.join(", ")
         ));
     }
     Ok(None)

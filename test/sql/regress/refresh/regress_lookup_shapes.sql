@@ -30,7 +30,7 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'lookup shapes FAIL: %', what; END IF; END $$;
 CREATE FUNCTION stat(name text) RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (tviews.pg_tviews_queue_stats()->>name)::bigint $$;
+    $$ SELECT (tviews.pg_tviews_show_queue()->>name)::bigint $$;
 
 -- 200 categories of 2 items. tv_item copies its category's name (a fan-out
 -- patch by fk_cat), tv_card embeds tv_cat (parent discovery by fk_cat), and

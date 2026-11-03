@@ -30,10 +30,9 @@ step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
        1
 (1 row)
 
-step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4'); <waiting ...>
+step b_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'p4');
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step a_commit: COMMIT;
-step b_insert: <... completed>
-ERROR:  could not serialize access due to concurrent update
 step b_commit: COMMIT;
 step b_check: 
   SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh

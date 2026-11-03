@@ -38,9 +38,9 @@ orders_seen
 (1 row)
 
 step w_rename: SELECT * FROM rename_customer('amy');
-state|message                                                                                   |names_hidden
------+------------------------------------------------------------------------------------------+------------
-40001|could not serialize access: a concurrent transaction changes rows this TVIEW refresh reads|f           
+state|message                                                                                         |names_hidden
+-----+------------------------------------------------------------------------------------------------+------------
+0A000|pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs|f           
 (1 row)
 
 step w_commit: COMMIT;

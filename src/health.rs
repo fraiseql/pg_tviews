@@ -1,8 +1,6 @@
 //! Health checks, diagnostics, and performance monitoring.
 
-use pgrx::prelude::*;
-
-/// One row of `pg_tviews_health_check()`: status, component, message, severity.
+/// One row of `pg_tviews_check_health()`: status, component, message, severity.
 type Check = (String, String, String, String);
 
 fn ok(component: &str, message: impl Into<String>) -> Check {
@@ -31,18 +29,14 @@ fn error(component: &str, message: impl Into<String>) -> Check {
 ///
 /// Returns a comprehensive health status including:
 /// - Extension version
-/// - `jsonb_delta` availability
 /// - Catalog revision and metadata consistency
 /// - Orphaned and missing triggers
 /// - TVIEW count
 pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
-    let mut results = vec![
-        ok(
-            "extension",
-            format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
-        ),
-        jsonb_delta_check(),
-    ];
+    let mut results = vec![ok(
+        "extension",
+        format!("pg_tviews version {}", env!("CARGO_PKG_VERSION")),
+    )];
     let (catalog, unversioned) = catalog_check();
     results.push(catalog);
     // A 0.1.0 catalog has none of the tables the other checks read.
@@ -50,6 +44,9 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
         results.extend([
             metadata_check(),
             plan_check(),
+            columns_check(),
+            seq_scan_check(),
+            contents_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -58,39 +55,10 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
     results
 }
 
-/// The count `sql` returns, or the error row of `component` saying it could
-/// not be read.
-fn count_of(component: &str, sql: &str) -> Result<i64, Check> {
-    Spi::get_one::<i64>(sql)
-        .map(Option::unwrap_or_default)
-        .map_err(|e| error(component, format!("could not be checked: {e}")))
-}
-
 /// The catalog's counts ([`crate::catalog::row::counts`]), or the failed check.
 fn registered(component: &str) -> Result<(i64, i64, i64), Check> {
     crate::catalog::row::counts()
         .map_err(|e| error(component, format!("could not be checked: {e}")))
-}
-
-fn jsonb_delta_check() -> Check {
-    let installed = match count_of(
-        "jsonb_delta",
-        "SELECT COUNT(*) FROM pg_extension WHERE extname = 'jsonb_delta'",
-    ) {
-        Ok(n) => n > 0,
-        Err(check) => return check,
-    };
-    if installed {
-        ok(
-            "jsonb_delta",
-            "jsonb_delta extension available (optimized mode)",
-        )
-    } else {
-        warning(
-            "jsonb_delta",
-            "jsonb_delta not installed (falling back to standard JSONB)",
-        )
-    }
 }
 
 /// Whether this library matches the installed SQL, and whether the
@@ -122,7 +90,10 @@ fn catalog_check() -> (Check, bool) {
         crate::revision::Installed::Unversioned => (
             error(
                 "catalog",
-                "the installed extension is a 0.1.0 catalog: run scripts/migrate-from-0.1.0.sql",
+                format!(
+                    "the installed extension is a 0.1.0 catalog: {}",
+                    crate::revision::RECREATE
+                ),
             ),
             true,
         ),
@@ -173,6 +144,150 @@ fn plan_check() -> Check {
     }
 }
 
+/// Every column a stored plan numbers still has that number: a restore or a
+/// catalog edited by hand that left a stale number makes writes read another
+/// column, or fail.
+fn columns_check() -> Check {
+    match crate::catalog::row::stale_column_numbers() {
+        Ok(None) => ok("columns", "Every column a plan numbers has its number"),
+        Ok(Some(stale)) => error(
+            "columns",
+            format!(
+                "stale column numbers, writes to these tables read other columns: {stale}; \
+                 run SELECT tviews.pg_tviews_reregister(entity) for each"
+            ),
+        ),
+        Err(e) => error("columns", format!("could not be checked: {e}")),
+    }
+}
+
+/// Mapping queries that scan a large table: the advice registration printed,
+/// re-evaluated with today's indexes and statistics (an index dropped later).
+/// Each is planned as its TVIEW's owner, as the trigger runs it.
+fn seq_scan_check() -> Check {
+    let mut found = Vec::new();
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
+    };
+    for meta in &metas {
+        let Ok(_owner) = crate::owner::AsOwner::of_entity(&meta.entity_name) else {
+            continue;
+        };
+        for mapping in &meta.plan.tables {
+            let Some(template) = mapping
+                .sql
+                .as_deref()
+                .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
+            else {
+                continue;
+            };
+            match crate::lineage::large_seq_scans(&mapping.table, template) {
+                Ok(scans) => found.extend(scans.into_iter().map(|(relation, rows)| {
+                    format!(
+                        "tv_{} (writes to {} scan {relation}, about {rows} rows)",
+                        meta.entity_name, mapping.table
+                    )
+                })),
+                Err(e) => {
+                    return error(
+                        "seq_scans",
+                        format!(
+                            "the mapping of {} in tv_{}: {e}",
+                            mapping.table, meta.entity_name
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    if found.is_empty() {
+        ok("seq_scans", "No mapping query scans a large table")
+    } else {
+        warning(
+            "seq_scans",
+            format!(
+                "writes map to keys with a sequential scan: {}; an index on the columns each \
+                 joins on makes them cheaper (SELECT * FROM \
+                 tviews.pg_tviews_ensure_propagation_indexes(tview) creates the propagation ones)",
+                sample(&found)
+            ),
+        )
+    }
+}
+
+/// TVIEWs whose table is empty while their definition yields rows (a restore
+/// that left the data out, a table emptied by hand). Each is read as its owner,
+/// who alone may read its backing view; a populated table is not read further.
+/// Only the TVIEWs of owners the caller has the privileges of are read: what the
+/// definition yields is the owner's to know. An UNLOGGED TVIEW, empty after a
+/// crash by design, is left out, and nothing is read on a standby in recovery.
+fn contents_check() -> Check {
+    // SAFETY: reads shared memory state.
+    if unsafe { pgrx::pg_sys::RecoveryInProgress() } {
+        return ok("contents", "Not checked during recovery");
+    }
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("contents", format!("could not be checked: {e}")),
+    };
+    let mut empty = Vec::new();
+    for meta in &metas {
+        match empty_with_rows(meta) {
+            Ok(Some(name)) => empty.push(name),
+            Ok(None) => {}
+            Err(e) => {
+                return error(
+                    "contents",
+                    format!("tv_{} could not be checked: {e}", meta.entity_name),
+                );
+            }
+        }
+    }
+    if empty.is_empty() {
+        ok(
+            "contents",
+            "Every TVIEW checked holds the rows its definition yields",
+        )
+    } else {
+        warning(
+            "contents",
+            format!(
+                "empty while their definition yields rows: {}; refill each with \
+                 SELECT tviews.pg_tviews_refresh(tview)",
+                sample(&empty)
+            ),
+        )
+    }
+}
+
+/// The TVIEW's qualified name when its table is empty and its backing view is
+/// not, read as its owner; `None` too for a TVIEW not checked ([`contents_check`]).
+fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
+    // SAFETY: a syscache lookup by OID.
+    if unsafe { pgrx::pg_sys::get_rel_persistence(meta.tview_oid) }
+        == pgrx::pg_sys::RELPERSISTENCE_UNLOGGED.cast_signed()
+    {
+        return Ok(None);
+    }
+    let callers = crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
+         WHERE c.oid = $1",
+        &[crate::utils::spi::oid(meta.tview_oid)],
+    )?;
+    if callers != Some(true) {
+        return Ok(None);
+    }
+    let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
+    let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+    let has_rows = |relation: &str| {
+        crate::utils::spi::one::<bool>(&format!("SELECT EXISTS (SELECT 1 FROM {relation})"), &[])
+            .map(|exists| exists.unwrap_or(false))
+    };
+    Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
+}
+
 /// TVIEWs registered before a release that changed what registration derives.
 fn reregister_check() -> Check {
     let stale = match registered("reregister") {
@@ -193,15 +308,15 @@ fn reregister_check() -> Check {
     }
 }
 
-/// `pg_tviews`' triggers against the tables the TVIEWs read.
 /// `pg_tviews`' triggers against the plans: a missing or disabled one leaves a
-/// TVIEW stale (an error); an orphaned or untagged one does no harm (a warning).
+/// TVIEW stale, one an older release installed per TVIEW fails the writes to its
+/// table (errors); an orphaned one does no harm (a warning).
 fn trigger_check() -> Check {
     match crate::dependency::triggers::trigger_problems() {
         Ok(p)
             if p.orphaned.is_empty()
                 && p.missing.is_empty()
-                && p.untagged.is_empty()
+                && p.per_tview.is_empty()
                 && p.disabled.is_empty() =>
         {
             ok("triggers", "All triggers properly linked")
@@ -220,8 +335,8 @@ fn trigger_check() -> Check {
                 ),
                 (&p.orphaned, "orphaned trigger", "found"),
                 (
-                    &p.untagged,
-                    "trigger without an entity",
+                    &p.per_tview,
+                    "trigger of an older release",
                     "(run pg_tviews_reregister_all())",
                 ),
             ]
@@ -231,7 +346,7 @@ fn trigger_check() -> Check {
                 format!("{} {action}: {}", count(list.len(), what), sample(list))
             })
             .collect();
-            if p.disabled.is_empty() && p.missing.is_empty() {
+            if p.disabled.is_empty() && p.missing.is_empty() && p.per_tview.is_empty() {
                 warning("triggers", parts.join("; "))
             } else {
                 error("triggers", parts.join("; "))
@@ -248,10 +363,10 @@ fn count_check() -> Check {
     }
 }
 
-/// Get current queue statistics
-/// Returns metrics about the current transaction's refresh operations
+/// The session's refresh counters, and the keys queued in the transaction
+/// (`queued`).
 pub(crate) fn queue_stats() -> serde_json::Value {
-    let stats = crate::metrics::metrics_api::get_queue_stats();
+    let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
     let json_value = serde_json::json!({
         "queue_size": stats.queue_size,
@@ -279,18 +394,15 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "plans_prepared": stats.plans_prepared,
         "per_execution_plans": stats.per_execution_plans,
         "propagation_pruned": stats.propagation_pruned,
-        "feed_gaps": crate::stats::feed_gaps().ok()
+        "queued": queued(),
     });
 
     json_value
 }
 
-/// Debug function: View current queue contents
-/// Returns the entities and PKs currently in the refresh queue
-pub(crate) fn debug_queue() -> serde_json::Value {
-    let contents = crate::metrics::metrics_api::get_queue_contents();
-
-    let json_contents: Vec<serde_json::Value> = contents
+/// The keys queued in the transaction, as `{entity, pk}`.
+fn queued() -> Vec<serde_json::Value> {
+    crate::queue::get_queue_contents()
         .into_iter()
         .map(|key| {
             serde_json::json!({
@@ -301,9 +413,7 @@ pub(crate) fn debug_queue() -> serde_json::Value {
                 }
             })
         })
-        .collect();
-
-    serde_json::json!(json_contents)
+        .collect()
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.

@@ -17,7 +17,7 @@
 [![Security Audit](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/security-audit.yml)
 [![Documentation](https://github.com/fraiseql/pg_tviews/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/fraiseql/pg_tviews/actions/workflows/docs.yml)
 
-*Core infrastructure for FraiseQL's GraphQL Cascade — automatic incremental refresh of JSONB read models with 5,000-12,000× performance gains.*
+*Core infrastructure for FraiseQL's GraphQL Cascade: incremental refresh of JSONB read models, inside the writing transaction.*
 
 By Lionel Hamayon • Part of the FraiseQL framework
 
@@ -43,14 +43,14 @@ By Lionel Hamayon • Part of the FraiseQL framework
 
 ### **Server Stack (PostgreSQL + Python/Rust)**
 
-| Tool | Purpose | Status | Performance Gain |
-|------|---------|--------|------------------|
-| **[pg_tviews](https://github.com/fraiseql/pg_tviews)** | Incremental materialized views | **Beta** ⭐ | **100-500× faster** |
-| **[jsonb_delta](https://github.com/evoludigit/jsonb_delta)** | JSONB surgical updates | Stable | **2-7× faster** |
-| **[pgGit](https://github.com/evoludigit/pgGit)** | Database per branch or agent, attributed DDL history | In development (v2) | Not a schema source of truth; promotes into confiture |
-| **[confiture](https://github.com/fraiseql/confiture)** | PostgreSQL migrations | Stable | **300-600× faster** |
-| **[fraiseql](https://fraiseql.dev)** | GraphQL framework | Stable | **7-10× faster** |
-| **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Planned | Auto-dependency resolution |
+| Tool | Purpose | Status |
+|------|---------|--------|
+| **[pg_tviews](https://github.com/fraiseql/pg_tviews)** | Incremental materialized views | Beta |
+| **[jsonb_delta](https://github.com/evoludigit/jsonb_delta)** | JSONB patch functions (required by pg_tviews) | Stable |
+| **[pgGit](https://github.com/evoludigit/pgGit)** | Database per branch or agent, attributed DDL history (not a schema source of truth; promotes into confiture) | In development (v2) |
+| **[confiture](https://github.com/fraiseql/confiture)** | PostgreSQL migrations | Stable |
+| **[fraiseql](https://fraiseql.dev)** | GraphQL framework | Stable |
+| **[fraiseql-data](https://github.com/fraiseql/fraiseql-seed)** | Seed data generation | Planned |
 
 ### **Client Libraries (TypeScript/JavaScript)**
 
@@ -60,15 +60,14 @@ By Lionel Hamayon • Part of the FraiseQL framework
 
 **How pg_tviews fits:**
 - **fraiseql** uses pg_tviews for GraphQL read models (tv_* tables)
-- **jsonb_delta** optimizes JSONB updates (1.5-3× faster)
+- **jsonb_delta** patches the stored documents in place (required)
 - **confiture** manages TVIEW schema evolution
 - **graphql-cascade** (client-side) invalidates browser caches when mutations trigger refreshes
 
 **Stack it up:**
 ```bash
 # Install extensions
-CREATE EXTENSION pg_tviews;
-CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB
+CREATE EXTENSION pg_tviews CASCADE;  -- installs jsonb_delta, which it requires
 
 # Create incremental view
 CREATE TABLE tv_post AS SELECT ...;
@@ -124,37 +123,40 @@ INSERT INTO tb_post(title, fk_user) VALUES ('New Post', 123);
 COMMIT;  -- tv_post automatically updated with ONLY the affected row!
 ```
 
-**Result**: Millisecond updates, no full scans, always up-to-date, zero manual intervention.
+**Result**: each write refreshes only the TVIEW rows it reaches, in the same transaction, with nothing to schedule.
 
-### 🚀 Performance Optimization
+### jsonb_delta
 
-For **1.5-3× faster JSONB updates**, install the optional `jsonb_delta` extension:
+pg_tviews requires the `jsonb_delta` extension (`requires` in its control file):
 
 ```sql
-CREATE EXTENSION jsonb_delta;  -- Optional: 1.5-3× faster JSONB updates
-CREATE EXTENSION pg_tviews;
+CREATE EXTENSION jsonb_delta;
+CREATE EXTENSION pg_tviews;     -- or CREATE EXTENSION pg_tviews CASCADE
 ```
 
-Without `jsonb_delta`, pg_tviews uses standard PostgreSQL JSONB operations (still fast, just not optimized).
-`CREATE EXTENSION pg_tviews` says so once, with a WARNING; after that each backend notes it
-once in the server log, and `pg_tviews_health_check()` reports it. Writes send no message.
+It does the nested merges of the patches (a child's document into the documents
+embedding it), measured faster than core JSONB per call on a 23 KB document (5.02 µs
+against 6.37 µs). Writing one value into many rows keeps core `jsonb_set`, measured
+faster there (23 KB: 4.14 µs against 4.81 µs; 490 B: 0.48 µs against 1.15 µs). See
+[installation](docs/getting-started/installation.md#jsonb_delta).
 
 ---
 
-## 🔑 Identifiers
+## 🔑 Keys
 
-A TVIEW's definition outputs `pk_<entity>` (the first such column names the
-entity; with `DISTINCT ON`, its key names the rows), and usually `id` and `data`.
-Nothing else is a naming rule: base tables, join columns and the column holding an
-embedded TVIEW's key may have any names, because pg_tviews reads the definition's
-query tree, not its spelling.
+A TVIEW's keys are a contract ([DDL reference](docs/reference/ddl.md#keys)):
 
-FraiseQL's trinity identifiers fit this naturally:
+- `pk_<entity>` (`smallint`, `integer`, `bigint` or a domain over one) is the row key
+  and the TVIEW table's primary key; the first `pk_*` column names the entity. Another
+  type is refused (`42804`).
+- `id` (`uuid`) is the public identifier, the one `pg_tviews_flush_and_report()` and
+  the change feed carry.
+- `fk_<entity>` holds the `pk_<entity>` of the row it references, and joins on it.
 
-- `id` (UUID): public identifier for GraphQL/REST APIs
-- `pk_<entity>` (integer): the row key, for joins and refreshes
-- `identifier` (text): optional unique slug
-- `{parent}_id` (UUID): optional UUID of a parent, for filtering
+A `DISTINCT ON` TVIEW is keyed on its `DISTINCT ON` key instead. Base tables and join
+columns may have any names: pg_tviews reads the definition's query tree, not its
+spelling. FraiseQL adds `identifier` (a text slug) and `<parent>_id` (a parent's uuid,
+for filtering), which are ordinary columns.
 
 Example:
 ```sql
@@ -189,16 +191,16 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔍 Smart Dependency Detection**: Automatically analyzes SQL to find source tables and relationships
 - **🎯 Surgical Updates**: Updates only affected rows—never full table scans
 - **🔄 Transactional Consistency**: Refresh happens atomically within your transaction
-- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit (`READ COMMITTED`), or one fails with a retryable `40001` (`REPEATABLE READ`, `SERIALIZABLE`). See [Concurrency](docs/concurrency.md)
+- **🤝 Correct Under Concurrency**: Concurrent writers to related rows wait for each other on the join values they share, so every TVIEW row equals its view once they commit; writers run at `READ COMMITTED` (other levels are refused with `0A000`). See [Concurrency](docs/concurrency.md)
 - **📊 Cascade Propagation**: Automatically handles multi-level view dependencies
 
-### High Performance
+### Write path
 
-- **⚡ 100-500× Faster Triggers**: Statement-level triggers for bulk operations
-- **💾 Query Plan Caching**: 10× faster with cached prepared statements
-- **📦 Bulk Optimization**: N rows with just 2 queries instead of N queries
-- **🎨 Smart Patching**: 2× performance boost with optional jsonb_delta integration
-- **🚀 UNLOGGED Tables, opt-in**: faster writes, refilled automatically after a crash
+- **📦 One refresh per statement**: a statement's changed rows are mapped to TVIEW keys
+  together, and each reached row is refreshed once, when the statement ends
+- **🎨 Patches**: a write that only changes values copied into `data` patches the
+  documents in place instead of recomputing them
+- **🚀 UNLOGGED Tables, opt-in**: no WAL for refreshes, refilled automatically after a crash
 
 ### Production-Ready
 
@@ -223,30 +225,29 @@ JOIN tb_user u ON p.fk_user = u.pk_user;
 - **🔧 JSONB Optimized**: Built for modern JSONB-heavy applications
 - **📊 Array Support**: Full INSERT/DELETE handling for array columns
 - **🐛 Excellent Debugging**: Rich error messages, debug functions, health checks
-- **⏸️ Bulk Operations**: Suspend/resume triggers for safe bulk data loading (Issue #44)
+- **⏸️ Bulk Operations**: Suspend/resume triggers for safe bulk data loading
 
 ---
 
 ## 📊 Performance
 
-### Real-World Benchmarks
+Single-row `UPDATE` on a product catalogue TVIEW, median ms, against `REFRESH
+MATERIALIZED VIEW` of the same view ([results](docs/benchmarks/results.md), measured
+on 0.1.0 with PostgreSQL 18.4):
 
-| Operation | Traditional MV | pg_tviews | Improvement |
-|-----------|----------------|-----------|-------------|
-| Single row update | 2,500ms | 1.2ms | 2,083× |
-| Medium cascade (50 rows) | 7,550ms | 3.72ms | 2,028× |
-| Bulk operation (1K rows) | 180,000ms | 100ms | 1,800× |
+| Products / reviews | pg_tviews | full refresh |
+|---|---|---|
+| 1K / 5K | 1.77 | 15.0 |
+| 10K / 50K | 1.87 | 167.9 |
+| 100K / 500K | 1.97 | 1,523.5 |
 
-### Scaling Characteristics
-
-- **Linear scaling** with data size for incremental updates
-- **Sub-linear scaling** for cascading updates (graph caching)
-- **Constant time** for cache hits (90%+ hit rate in production)
-- **O(1) queue operations** with HashSet-based deduplication
+A refresh costs what the write reaches, not the size of the TVIEW. The FraiseQL-shaped
+write benchmarks are in [write path](docs/benchmarks/write-path.md), reads in
+[read path](docs/benchmarks/read-path.md).
 
 ---
 
-## ⚡ Direct-patch fast path (Issue #56)
+## Patches instead of recomputes
 
 For an eligible `UPDATE`, pg_tviews builds a JSONB patch **at trigger time from
 `NEW`** and applies it straight to `tv_<entity>.data` with
@@ -265,7 +266,6 @@ optimization and its `data` output is byte-identical to a recompute.
 The fast path engages only when **every** condition holds (otherwise recompute):
 
 - the change is a row-level `UPDATE` (INSERT/DELETE change membership);
-- `jsonb_delta` is installed and `pg_tviews.direct_patch_enabled = on`;
 - the entity is not `DISTINCT ON` and not a `UNION`;
 - every changed column maps identity-style to a top-level `data` key
   (`jsonb_build_object('bio', bio)` — no expression, cast, or other relation);
@@ -276,7 +276,7 @@ The fast path engages only when **every** condition holds (otherwise recompute):
 - for a parent, its dependency on the child is `nested_object` with a path
   (array/scalar/UUID-fk parents recompute).
 
-### Copied parent columns (Issues #120, #224)
+### Copied parent columns
 
 A tview that copies a column of a joined parent table into its `data`, at the top
 level or in nested objects as FraiseQL writes them
@@ -286,7 +286,7 @@ p.fk_user`), is written by **one statement** when that column changes:
 recomputing every post of that user. Same rules as above, plus: the tview reads the
 parent through one join on its own base table, projects that `fk_*` column, reads
 the parent table only once, and uses the column nowhere else in its definition.
-Arrays of embedded rows and embeds two joins away recompute (#228). On the FraiseQL-shaped
+Arrays of embedded rows and embeds two joins away recompute. On the FraiseQL-shaped
 [write benchmark](docs/benchmarks/write-path.md) an author's bio change costs ~0.15 ms
 over the plain UPDATE.
 
@@ -304,15 +304,8 @@ FROM tviews.stats;
 ```
 
 An eligible update leaves `view_recomputes` unchanged and bumps `patch_applied` —
-proof it skipped the view. `pg_tviews_queue_stats()` shows the same counters for the
+proof it skipped the view. `pg_tviews_show_queue()` shows the same counters for the
 calling session only.
-
-### Upgrade note
-
-The column→key map is extracted **when a TVIEW is registered**. TVIEWs registered by
-an older release keep working on the recompute path until
-`SELECT * FROM tviews.pg_tviews_reregister_all()` re-derives their metadata in place
-(see [Upgrading](#upgrading)).
 
 ---
 
@@ -325,7 +318,7 @@ standby. A TVIEW whose rows can be recomputed and that needs the write speed dec
 ```sql
 SELECT pg_tviews_create_or_replace('tv_post', $$ SELECT … $$, '{"logged": false}');
 CREATE UNLOGGED TABLE tv_tag AS SELECT …;                 -- the same, as DDL
-SELECT * FROM pg_tviews_replication_status();             -- what a standby can serve
+SELECT * FROM pg_tviews_show_replication();             -- what a standby can serve
 ```
 
 `ALTER TABLE tv_post SET LOGGED` switches one back, like the `logged` option.
@@ -345,34 +338,33 @@ After a restore, call `SELECT * FROM pg_tviews_rebuild_all();`. See
 ### Configuration
 
 A TVIEW is its definition and its options ([DDL reference](docs/reference/ddl.md)):
-no setting changes what it is. The settings tune limits and sessions:
+no setting changes what it is. There are five settings:
 
 | GUC | Type | Default | Who sets it | Purpose |
 |-----|------|---------|-------------|---------|
-| `pg_tviews.max_propagation_depth` | int | 100 | superuser | Max cascade iterations before aborting |
-| `pg_tviews.max_dependency_depth` | int | 10 | superuser | Max `pg_depend` traversal depth |
-| `pg_tviews.max_queue_size` | int | 1000000 | superuser | Refresh-queue backpressure limit |
 | `pg_tviews.publish_changes` | enum | off | superuser | Publish changed TVIEW rows at commit on `tviews_changes`: `off`, `types`, `rows` ([change feed](docs/user-guides/change-feed.md)) |
 | `pg_tviews.max_refresh_rows` | int | 0 | superuser | TVIEW rows one statement's refresh may write; 0 = no limit ([ADR 0233](docs/adr/0233-fanout-cost-and-guard.md)) |
-| `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (0 = always the relation, -1 = never; see [Concurrency](docs/concurrency.md)) |
+| `pg_tviews.lock_escalation_threshold` | int | 64 | superuser | Value locks a transaction takes on one relation before it locks the relation instead (minimum 0 = always the relation; see [Concurrency](docs/concurrency.md)) |
 | `pg_tviews.audit_enabled` | bool | off | superuser | Audit logging (opt-in) |
-| `pg_tviews.batch_size` | int | 1000 | any role | Max PKs per bulk-refresh statement (chunking) |
-| `pg_tviews.cache_size` | int | 10000 | any role | Max entries per in-memory metadata cache |
-| `pg_tviews.report_max_tracked` | int | 10000 | any role | Changed rows journaled per transaction for `pg_tviews_flush_and_report()` (0 = off) |
 | `pg_tviews.auto_rebuild_databases` | string | `*` | `postgresql.conf` (restart) | Databases whose reset UNLOGGED TVIEWs are refilled after a crash restart or a promotion: `*` every one, a list only those, empty none |
 
 The superuser-only diagnostics `pg_tviews.graph_cache_enabled`,
 `pg_tviews.table_cache_enabled` and `pg_tviews.direct_patch_enabled` (all on) are
-hidden from `SHOW ALL`; results are the same either way. Diagnostics are `DEBUG1`
-messages: `SET client_min_messages = debug1` shows them.
+hidden from `SHOW ALL`; results are the same either way. So is
+`pg_tviews.max_queue_size`, the refresh keys a transaction may queue (1,000,000): a
+memory bound, raised only for a bulk change that queues more, which is better made
+after `pg_tviews_suspend_triggers()`. Diagnostics are `DEBUG1` messages:
+`SET client_min_messages = debug1` shows them.
 
-```sql
-SET pg_tviews.batch_size = 5000;            -- larger bulk-refresh chunks
-SET pg_tviews.cache_size = 50000;           -- bigger per-session caches
-```
+Other limits are fixed, and named by their errors: a flush applies at most 1,000
+entity batches (only a loop reaches it: a trigger on a TVIEW table writing back what
+the refresh reads), a definition nests at most 32 query levels and 64 views, bulk refreshes run in batches
+of 1,000 keys, each in-memory memo keeps 10,000 entries per backend, and
+`pg_tviews_flush_and_report()` keeps 10,000 changed rows per transaction. The
+`pg_tviews.` prefix is reserved: setting any other name under it fails.
 
-> GUCs require `shared_preload_libraries = 'pg_tviews'` (already needed for the
-> extension) so they are registered at backend start.
+> The settings require `shared_preload_libraries = 'pg_tviews'`, which the extension
+> needs anyway.
 
 ### What a definition needs
 
@@ -380,7 +372,8 @@ A TVIEW's definition is one `SELECT` that outputs `pk_<entity>` and reads at lea
 one table. Every table it reads either maps its writes to the TVIEW's keys or
 follows the TVIEW's `uncascaded_policy`: under the default, `error`, a definition
 reading a table whose writes cannot be traced is refused at creation, with the
-reason and how to declare a full refresh instead.
+reason and how to declare a full refresh instead. [Supported
+shapes](docs/reference/shapes.md) lists each shape and what pg_tviews does with it.
 
 ### Safety Guarantees
 
@@ -413,9 +406,18 @@ cd pg_tviews
 cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
                                # --no-default-features --features pg16 (or pg17)
 
-# Enable in your database
-psql -d your_database -c "CREATE EXTENSION pg_tviews;"
+# Preload the library, then restart PostgreSQL
+#   postgresql.conf: shared_preload_libraries = 'pg_tviews'
+
+# Enable in your database (as a superuser)
+psql -d your_database -c "CREATE EXTENSION pg_tviews CASCADE;"
 ```
+
+Preloading is the only supported mode. Without it `CREATE EXTENSION pg_tviews` fails
+with `55000` (`pg_tviews is not in shared_preload_libraries`), and so does every
+function and catalog write of an installed extension whose preload was removed.
+`CREATE EXTENSION` needs a superuser: the script creates event triggers and C
+functions.
 
 #### The `tviews` schema
 
@@ -471,30 +473,29 @@ code with create-only semantics. See
 
 Tools read `tviews.registry` (one row per TVIEW: schema, name, entity, normalized
 query, every option, base tables, `needs_reregister`, backing view), `tviews.stats`
-(refresh counters per TVIEW) and check `tviews.contract_version()` (2). All three follow the
+(refresh counters per TVIEW) and check `tviews.contract_version()` (3). All three follow the
 stability rules in
 [docs/reference/read-contract.md](docs/reference/read-contract.md);
 `tviews.pg_tview_meta` and the other `pg_tview_*` tables are internal.
 
 #### Upgrading
 
-Each release has its own extension version (`SELECT extversion FROM pg_extension
-WHERE extname = 'pg_tviews'`) and ships upgrade scripts:
+A release updates from the release before it, with one script:
 
-1. Install the new package and restart PostgreSQL (the library is preloaded).
-2. In each database: `ALTER EXTENSION pg_tviews UPDATE;`
-3. When the release notes say so, or `tviews.pg_tviews_health_check()` reports TVIEWs
-   to re-register: `SELECT * FROM tviews.pg_tviews_reregister_all();` It re-derives
-   each TVIEW's metadata and triggers from its definition, without touching its rows.
+1. Pause the writers, install the new package and restart PostgreSQL (the library is
+   preloaded).
+2. In each database: `ALTER EXTENSION pg_tviews UPDATE;` It re-derives every TVIEW's
+   plan and triggers from its definition, without touching its rows; a TVIEW that no
+   longer analyses fails the whole update and nothing is changed. jsonb_delta must be
+   installed.
 
 Between steps 1 and 2, writes to the TVIEWs' base tables fail with
 `pg_tviews library catalog revision … does not match the installed extension`: they
-are never served by a mismatched library.
+are never served by a mismatched library. Reads keep working.
 
-Installs of `0.1.0` (every release up to 0.1.0-beta.19) cannot be updated in place.
-After step 1, run [`scripts/migrate-from-0.1.0.sql`](scripts/migrate-from-0.1.0.sql) in
-each database instead: it moves the extension to `tviews` and re-registers every
-TVIEW, keeping their rows (not the audit log).
+An install of an older release, `0.1.0` installs included, is not updated: drop the
+extension and create the TVIEWs again; the base tables keep their rows. Both
+procedures: [docs/operations/upgrade.md](docs/operations/upgrade.md).
 
 ### Your First TVIEW
 
@@ -556,7 +557,7 @@ SELECT data FROM tv_post;
 
 ```sql
 -- Monitor system health
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 
 -- Size, HOT ratio and missing indexes of each TVIEW
 SELECT * FROM pg_tviews_profile();
@@ -567,7 +568,7 @@ SELECT * FROM tviews.stats;
 
 ---
 
-## ⏸️ Bulk Operations (Issue #44)
+## ⏸️ Bulk Operations
 
 For bulk INSERT/UPDATE/DELETE operations (e.g., seed data loading, ETL imports) on tables with TVIEWs, use the suspend/resume API to prevent trigger-based refresh during the operation:
 
@@ -596,9 +597,9 @@ embeds it) is rebuilt once, in dependency order.
 ### Ending the Transaction Without Resuming
 
 An explicit `COMMIT` catches up the same way when the transaction is still
-suspended. An implicit commit (an autocommit statement, a `DO` block) cannot: it
-logs a WARNING naming the stale TVIEWs, to be fixed with `pg_tviews_refresh(tview)`
-or `pg_tviews_refresh_all()`.
+suspended. An implicit commit (several statements sent as one query string, a
+`COMMIT` inside a procedure) cannot: while writes are suspended it fails with `55000`
+and the transaction rolls back, so resume before it commits.
 
 ### API Reference
 
@@ -606,8 +607,7 @@ or `pg_tviews_refresh_all()`.
 - `pg_tviews_resume_triggers()` - Resume; rebuilds the TVIEWs that changed and those that embed them
 - `pg_tviews_refresh(tview)` - Rebuild one TVIEW and every TVIEW that embeds it, in dependency order
 - `pg_tviews_refresh_all()` - Rebuild every TVIEW in dependency order
-- `pg_tviews_is_suspended()` - Check current suspension state
-- `pg_tviews_suspended_entities()` - List entities that changed during suspension
+- `pg_tviews_show_suspended()` - The TVIEWs changed while suspended; NULL when not suspended
 
 ### Nested Suspension
 
@@ -634,73 +634,37 @@ COMMIT;
 
 ## 🏗️ Architecture
 
-### High-Level Design
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     User Application                            │
-└────────────────────┬────────────────────────────────────────────┘
-                     │ INSERT/UPDATE/DELETE
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL Core                              │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
-│  │  tb_* Tables │────▶│   Triggers   │────▶│ Refresh Queue│    │
-│  │  (command)   │     │  (per-row or │     │ (thread-local)│   │
-│  └──────────────┘     │  statement)  │     └──────┬────────┘    │
-│                       └──────────────┘            │             │
-│                       ┌──────────────┐            │             │
-│                       │  ProcessUtil │            │             │
-│                       │  Hook (DDL)  │            │             │
-│                       └──────────────┘            │             │
-│                                                   │             │
-│                       ┌───────────────────────────▼──────────┐  │
-│                       │    Transaction Callback Handler      │  │
-│                       │  (PRE_COMMIT, COMMIT, ABORT, 2PC)    │  │
-│                       └──────────┬────────────────────────────┘  │
-│                                  │                               │
-│                                  ▼                               │
-│               ┌──────────────────────────────────────────┐      │
-│               │      pg_tviews Refresh Engine            │      │
-│               │                                           │      │
-│               │  ┌─────────────────────────────────────┐ │      │
-│               │  │  Dependency Graph Resolution        │ │      │
-│               │  │  (Topological Sort, Cycle Detect)   │ │      │
-│               │  └───────────┬──────────────────────────┘ │      │
-│               │              │                            │      │
-│               │              ▼                            │      │
-│               │  ┌─────────────────────────────────────┐ │      │
-│               │  │   Bulk Refresh Processor            │ │      │
-│               │  │   (2 queries for N rows)            │ │      │
-│               │  └───────────┬──────────────────────────┘ │      │
-│               │              │                            │      │
-│               │              ▼                            │      │
-│               │  ┌─────────────────────────────────────┐ │      │
-│               │  │  Cache Layer (Graph, Table, Plan)   │ │      │
-│               │  └───────────┬──────────────────────────┘ │      │
-│               │              │                            │      │
-│               │              ▼                            │      │
-│               │  ┌─────────────────────────────────────┐ │      │
-│               │  │    Metrics & Monitoring              │ │      │
-│               │  └─────────────────────────────────────┘ │      │
-│               └──────────────────────────────────────────┘      │
-│                                  │                               │
-│                                  ▼                               │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐    │
-│  │  TVIEW Tables│◀────│  Backing     │◀────│   Metadata   │    │
-│  │  (tv_*)      │     │  Views (v_*) │     │  (pg_tview_*)│    │
-│  └──────────────┘     └──────────────┘     └──────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+INSERT / UPDATE / DELETE on a base table
+        │
+        ▼
+row trigger, or statement triggers with transition tables
+        │  the TVIEW keys the changed rows reach, queued
+        ▼
+flush trigger at the end of the statement
+(also the ProcessUtility hook before COMMIT and PREPARE TRANSACTION)
+        │
+        ▼
+flush, TVIEW by TVIEW in dependency order:
+  patch the documents in place, or recompute the rows through the backing view;
+  queue the rows of TVIEWs that embed what changed
+        │
+        ▼
+tv_* rows written in the writing transaction
+(the change feed is published at commit when pg_tviews.publish_changes is on)
 ```
 
 ### Key Components
 
-1. **Trigger System**: Captures changes at source tables, enqueues refresh operations
-2. **Transaction Queue**: Thread-local HashSet for deduplication and ACID guarantees
-3. **Dependency Graph**: Resolves refresh order, detects cycles, enables cascading
-4. **Refresh Engine**: Executes surgical updates with bulk optimization
-5. **Cache Layer**: Three-tier caching (graph, table OIDs, query plans)
-6. **Monitoring**: Real-time metrics, health checks, performance analytics
+1. **Lineage**: reads each definition's query tree at create time and stores, per base
+   table, how a changed row maps to TVIEW keys (`tviews.registry.cascade_kinds`)
+2. **Triggers**: queue those keys, and flush at the end of each statement
+   ([firing order](docs/reference/ddl.md#firing-order))
+3. **Flush**: refreshes the queued keys in dependency order, with value locks so
+   concurrent writers agree ([Concurrency](docs/concurrency.md))
+4. **Backing views**: each definition stored as a view in `tviews`, which recomputes
+   a row
+5. **Monitoring**: `pg_tviews_check_health()`, `tviews.stats`, `pg_tviews_profile()`
 
 ---
 
@@ -721,6 +685,7 @@ COMMIT;
 ### Reference
 - **[API Reference](docs/reference/api.md)** - Complete function reference
 - **[DDL Reference](docs/reference/ddl.md)** - CREATE/DROP TABLE syntax
+- **[Supported Shapes](docs/reference/shapes.md)** - Each definition shape, maintained or refused, with its tests
 - **[Syntax Comparison](docs/getting-started/syntax-comparison.md)** - TVIEW creation methods
 - **[Error Reference](docs/error-reference.md)** - Error types and solutions
 - **[Configuration](#configuration)** - GUC settings
@@ -766,7 +731,7 @@ COMMIT;
 
 ### Not Recommended For:
 
-❌ **Write-Heavy Tables** - If you have >1000 writes/sec per table
+❌ **Write-Heavy Tables** - Every write pays for the TVIEW rows it reaches, in its own transaction
 ❌ **Simple Queries** - If a regular index works fine
 ❌ **Append-Only Logs** - No need for incremental refresh
 

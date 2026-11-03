@@ -1,0 +1,83 @@
+{
+  "direct": [
+    [
+      "title",
+      "title"
+    ]
+  ],
+  "embeds": [],
+  "key": {
+    "column": "pk_post",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "post",
+      "initial_attnum": "public.tb_post.pk_post",
+      "initial_col": "pk_post",
+      "root": true,
+      "source_columns": [
+        "pk_post",
+        "id",
+        "fk_user",
+        "title"
+      ],
+      "source_oid": "public.tb_post",
+      "source_table": "tb_post"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_post.pk_post",
+        "public.tb_post.id",
+        "public.tb_post.fk_user",
+        "public.tb_post.title"
+      ],
+      "column": "pk_post",
+      "columns": [
+        "pk_post",
+        "id",
+        "fk_user",
+        "title"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_post.pk_post",
+        "public.tb_post.fk_user"
+      ],
+      "relid": "public.tb_post",
+      "table": "public.tb_post"
+    },
+    {
+      "attnums": [
+        "public.tb_user.pk_user",
+        "public.tb_user.name"
+      ],
+      "columns": [
+        "pk_user",
+        "name"
+      ],
+      "hop": [
+        "pk_user",
+        "fk_user"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_user.pk_user"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_user.pk_user",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_post.fk_user} FROM {r:public.tb_post} o1 WHERE o1.{c:public.tb_post.pk_post} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_user",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_post.pk_post} FROM pg_tviews_delta d, {r:public.tb_post} o1 WHERE (d.{c:public.tb_user.pk_user} OPERATOR(pg_catalog.=) o1.{c:public.tb_post.fk_user})",
+      "table": "public.tb_user"
+    }
+  ],
+  "version": 3
+}

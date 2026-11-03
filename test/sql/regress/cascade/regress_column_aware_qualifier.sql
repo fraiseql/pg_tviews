@@ -60,7 +60,7 @@ SELECT pg_tviews_create('tv_post', $TVIEW$
 $TVIEW$);
 
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 
 -- Baseline.
 DO $$ BEGIN

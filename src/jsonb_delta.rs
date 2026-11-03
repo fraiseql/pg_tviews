@@ -1,35 +1,20 @@
-//! Whether the `jsonb_delta` extension is installed, and in which schema: the
-//! smart patches call its functions.
+//! The schema of the `jsonb_delta` extension, which `pg_tviews` requires
+//! (`requires` in its control file): the patches call its functions qualified
+//! with it, so they do not depend on the session's `search_path`.
 
-/// [`crate::utils::log_once`] key of "`jsonb_delta` is not installed".
-pub const JSONB_DELTA_MISSING: &str = "jsonb_delta_missing";
-
-/// Check if `jsonb_delta` extension is available at runtime (cached)
-/// Returns true if extension is installed, false otherwise
-///
-/// This function caches the result after the first check to avoid
-/// repeated queries to `pg_extension` on every cascade operation.
-#[must_use]
-pub fn check_jsonb_delta_available() -> bool {
-    jsonb_delta_schema().is_some()
+thread_local! {
+    /// The quoted schema of `jsonb_delta`.
+    static JSONB_DELTA_SCHEMA: crate::cache::Memo<(), String> = crate::cache::Memo::new();
 }
 
-/// Quoted schema of the `jsonb_delta` extension, for a patch about to be applied.
+/// Quoted schema of the `jsonb_delta` extension, read once per backend.
 ///
 /// # Errors
-/// [`crate::TViewError::JsonbDeltaMissing`] when it is not installed (dropped
-/// since the patch was captured): an unqualified or `public` fallback would call
-/// whatever function of that name a role with CREATE there planted.
-pub fn require_jsonb_delta_schema() -> crate::TViewResult<String> {
-    jsonb_delta_schema().ok_or(crate::TViewError::JsonbDeltaMissing)
-}
-
-/// Quoted schema of the `jsonb_delta` extension (cached), `None` when it is not
-/// installed. Patch calls are qualified with it so they do not depend on the
-/// session's `search_path`.
-pub fn jsonb_delta_schema() -> Option<String> {
-    if let Some(schema) = crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.get(&())) {
-        return schema;
+/// A [`crate::TViewError::CatalogError`] when it cannot be read, or when the
+/// extension is missing (it cannot be dropped while `pg_tviews` is installed).
+pub fn schema() -> crate::TViewResult<String> {
+    if let Some(schema) = JSONB_DELTA_SCHEMA.with(|m| m.get(&())) {
+        return Ok(schema);
     }
     let schema = crate::utils::spi::catalog_one::<String>(
         "SELECT pg_catalog.quote_ident(n.nspname) \
@@ -37,9 +22,11 @@ pub fn jsonb_delta_schema() -> Option<String> {
          JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
          WHERE e.extname = 'jsonb_delta'",
         &[],
-    )
-    .ok()
-    .flatten();
-    crate::cache::JSONB_DELTA_SCHEMA.with(|m| m.insert((), schema.clone()));
-    schema
+    )?
+    .ok_or_else(|| crate::TViewError::CatalogError {
+        operation: "Find the jsonb_delta extension".to_string(),
+        pg_error: "it is not installed, and pg_tviews requires it".to_string(),
+    })?;
+    JSONB_DELTA_SCHEMA.with(|m| m.insert((), schema.clone()));
+    Ok(schema)
 }

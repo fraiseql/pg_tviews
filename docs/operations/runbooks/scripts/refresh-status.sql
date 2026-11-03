@@ -16,7 +16,7 @@ FROM tviews.registry r, pg_catalog.jsonb_each_text(r.cascade_kinds) k
 ORDER BY r.schema, r.name, k.key;
 
 \echo ''
-\echo '2. TVIEWs to re-register after an upgrade (SELECT * FROM tviews.pg_tviews_reregister_all())'
+\echo '2. TVIEWs marked needs_reregister (SELECT * FROM tviews.pg_tviews_reregister_all())'
 SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''
@@ -39,5 +39,5 @@ ORDER BY r.schema, r.name
 
 \echo ''
 \echo '4. Is refresh suspended in this transaction?'
-SELECT tviews.pg_tviews_is_suspended() AS suspended,
-       tviews.pg_tviews_suspended_entities() AS changed_while_suspended;
+SELECT tviews.pg_tviews_show_suspended() IS NOT NULL AS suspended,
+       tviews.pg_tviews_show_suspended() AS changed_while_suspended;

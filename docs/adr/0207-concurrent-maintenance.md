@@ -1,7 +1,8 @@
 # ADR 0207: Concurrent maintenance with value locks
 
 - Status: Accepted (implemented in 0.1.0-beta.27; amended in 0.1.0-beta.34, #263, and
-  0.1.0-beta.35, #277)
+  0.1.0-beta.35, #277; writers at READ COMMITTED only since 0.1.0-beta.35). The Decision
+  describes the protocol as it is; [History](#history) records what changed and why.
 - Fixes: #207 (concurrent writes leave TVIEW rows stale), #214 (concurrent first writes
   into a reset UNLOGGED TVIEW)
 - Builds on: [ADR 0157](0157-cascade-key-mapping.md) (mapping queries),
@@ -39,9 +40,6 @@ COMMITTED in both orders a waiting protocol can run:
 | `full-refresh-vs-new-parent` | a post inserted while a table under `full_refresh` changes |
 | `rr-new-parent-vs-write` | REPEATABLE READ: stale in every order, even when the rename committed before the insert ran |
 
-SERIALIZABLE is already correct: SSI raises 40001 at the second commit
-(`serializable-new-parent-vs-write`).
-
 Under load (pgbench, 16 clients, 80% post inserts / 20% user renames), 10–15 TVIEW rows were
 stale after every 20-second run.
 
@@ -77,55 +75,124 @@ key-range locks; pg_ivm takes relation locks.
 A lock names a **join value**: `(relation, column, value)`. Locks live in PostgreSQL's lock
 manager and are held to the end of the transaction.
 
-### The protocol
+### Writers run at READ COMMITTED
 
-- A **writer** takes an exclusive value lock on the join values of the rows it changed, old and
-  new images, before any query that finds TVIEW rows by those values.
-- A **refresh** takes shared value locks on every join value its rows read, before it computes
-  them. The computation runs in a later statement, so under READ COMMITTED it sees whatever it
-  waited for.
-- A refresh locks the read set of **every** row it recomputes, not only new or re-pointed rows.
-  This is simple, and correct for links changed at any depth (a user moved to another
-  organisation re-links that user's posts).
-- A write that refreshes a whole TVIEW (a `full_refresh` table, `TRUNCATE`, a partition
-  attached or detached, a materialized view refreshed, a suspension caught up) takes an
-  exclusive lock on the TVIEW itself. Every refresh takes a weak intent lock on it, so the two
-  conflict.
+A transaction at REPEATABLE READ or SERIALIZABLE that writes to a table a TVIEW reads (its
+row, delta or truncate trigger fires), flushes refresh work, or refreshes or rebuilds TVIEWs
+is refused with 0A000 before it writes. Its snapshot cannot see what it would wait for on
+these locks, so it could only be failed after the fact. Reads are not concerned. Every
+statement below runs at READ COMMITTED, where a statement run after a wait sees what it
+waited for.
 
-The read set comes from the plan (ADR 0203): for each `mapped` table, a query from the TVIEW's
-keys to the values of the columns its mapping query joins on, the same columns the writer
-locks. For an embedded TVIEW, the value is the parent's lookup column, read from the backing
-view before computing.
+### What is locked
+
+- A **writer** takes exclusive value locks on the join values of the rows it changed, old and
+  new images, on every read-set column of the table (the columns some TVIEW's mapping joins
+  on), before the query that finds the TVIEW rows by those values runs for the last time
+  (see [the capture](#the-capture-one-sorted-pass)).
+- A write to a TVIEW's rows that other TVIEWs embed takes exclusive value locks on those
+  rows' keys before it looks up the parents. This also serializes two transactions changing
+  the same child row's links.
+- A **refresh** takes shared value locks on the join values its rows read (their read set)
+  and on the keys of the embedded rows they read, before it computes them, **only in a
+  transaction that changed a link**: inserted or deleted a row of a table a TVIEW reads, or
+  updated a column of one that some TVIEW's rows are linked by. TRUNCATE, partitions
+  attached, detached or dropped, full refreshes and suspended writes count as link changes;
+  `ROLLBACK TO SAVEPOINT` forgets a link changed after the savepoint, as the lock manager
+  releases its locks. A transaction that changed no link computes rows linked by committed
+  rows only: a writer of a value they read finds them by its own query, and the row locks
+  order the two refreshes.
+- Every refresh takes a weak **intent lock** on the TVIEW. A write that refreshes a whole
+  TVIEW (a `full_refresh` table, `TRUNCATE`, a partition attached or detached, a
+  materialized view refreshed, a suspension caught up) takes an exclusive lock on it, and
+  locks every relation it reads whole.
+
+The read set comes from the plan (ADR 0203): for each `mapped` table, a query from the
+TVIEW's keys to the values of the columns its mapping query joins on, the same columns the
+writer locks. For an embedded TVIEW, the value is the parent's lookup column.
+
+**Link columns** come from the definition (per table, in the plan): a column read in a join
+or filter condition, a GROUP BY (not the definition's own, grouped by its identity), a
+DISTINCT, a window's PARTITION BY or ORDER BY, the ORDER BY of a level under LIMIT/OFFSET,
+an aggregate's FILTER, a function in FROM, a subquery compared in one of those, and the key.
+A read the walk cannot follow to columns (a set operation that removes duplicates, an
+aggregate compared above its level, a whole-row reference) makes every column a link.
+
+### The capture: one sorted pass
+
+The lookup that finds the rows a write reaches runs at capture, in the statement-level delta
+trigger, because it reads the transition tables; it must run after the writer's locks, or it
+misses a row a concurrent transaction is creating. The capture takes the locks of both sides
+together:
+
+1. **Look up without locks.** For each TVIEW whose delta trigger fires for the statement,
+   find the rows the changed rows reach (`K0`). When the transaction changed a link, also
+   read what those rows read: their read sets and embedded keys.
+2. **One sorted pass.** Take the writer's exclusive locks on the changed rows' values and,
+   after a link change, the refresh's shared locks on the read set of `K0`, all at once,
+   ordered by relation, then by space, relation locks (intent, escalated) before value
+   locks, then by hash. An exclusive lock covers a shared request on the same value.
+   Escalation is decided per relation, space and side over the whole pass, so an escalated
+   lock takes its relation's place in the order. A writer's intent and a refresh's
+   escalated lock on one relation are one `ShareRowExclusiveLock`. Transactions that each
+   take one such pass can't wait for each other in a cycle.
+3. **Look up again**, in a new snapshot, after the pass: this is the lookup the refresh
+   uses. A row found now but not in step 1 was created or re-pointed by a transaction that
+   committed in between, or written by this transaction's own triggers; the flush locks its
+   read set, as for every row it computes, before computing it.
+
+**Several TVIEWs on one table.** Each TVIEW has its own delta trigger, and they fire one
+after the other. The first delta trigger of a statement takes steps 1 and 2 for every
+pg_tviews delta trigger that fires for the same table and event, in the order PostgreSQL
+fires them; the later ones find their locks held and run step 3. A statement is named by its
+executor frame and its transition tables; a trigger that finds no pass recorded for it (a
+`COPY`, which runs no executor) takes its own pass. The partitioned-table paths (a row
+trigger per changed row, rows entering with a partition) take the same pass, one TVIEW at a
+time.
+
+The flush reads the read set of the rows it computes again, after the capture read it.
+Checking instead what the compute itself read, against the locks taken before it, was
+rejected (#281): a row re-linked by a transaction that committed while the capture's pass
+waited is then found only after the refresh holds the row's lock, and a writer holding the
+new value needs that row: a deadlock where the flush now waits.
 
 ### Rows being created
 
-A refresh that creates a TVIEW row (its key has no row yet) can race another
-refresh creating the same row with no join value between them: a child that
-carries the key in its own row (a comment naming post 9, with no foreign key)
-written while post 9 is inserted, or two first rows of one group of an aggregate
-TVIEW. A refresh therefore also locks, exclusively, each key it is about to
-create, in the TVIEW's *key space*: a hash space and a relation lock of its own
+A refresh that creates a TVIEW row (its key has no row yet) can race another refresh creating
+the same row with no join value between them: a child that carries the key in its own row (a
+comment naming post 9, with no foreign key) written while post 9 is inserted, or two first
+rows of one group of an aggregate TVIEW. A refresh therefore locks, exclusively, each key it
+is about to create, in the TVIEW's *key space*: a hash space and a relation lock of its own
 (`field3` 1 on the relation tag), so that escalating these locks only stops other
-transactions creating rows of that TVIEW. Existing rows keep their row locks
-(`SELECT … FOR UPDATE`). Specs: `local-child-vs-new-parent`,
-`aggregate-new-group-vs-write`.
+transactions creating rows of that TVIEW.
 
-The key lock only stops other creations of the row. A row another transaction
-created and committed after the refresh looked for it, and that a third one may
-since have locked through the row itself, is locked after the key lock, in a new
-statement, before the refresh computes: the order is row locks of the rows found,
-then key locks, then row locks of the rows created in between (amended in
-0.1.0-beta.34; `new-row-vs-row-lock`). Before, the refresh's upsert waited for
-that row inside `ON CONFLICT DO UPDATE` and wrote what it computed before the
-wait.
+The order is: row locks on the rows found (`SELECT … FOR UPDATE`, in key order), then key
+locks on the missing keys, then row locks on the rows of those keys another transaction
+created and committed in between, in a new statement, before the refresh computes. A row is
+only ever created by a refresh that holds its key lock: the refresh checks the rows its
+upsert inserted against the key locks it holds, and a row created without its lock is an
+internal error. Specs: `local-child-vs-new-parent`, `aggregate-new-group-vs-write`,
+`new-row-vs-row-lock`.
 
-A row is only ever created by a refresh that holds its key lock: the refresh
-checks the rows its upsert inserted against the key locks it holds. Under
-REPEATABLE READ and SERIALIZABLE a row the snapshot still shows may have been
-deleted since by a committed transaction; the refresh took no key lock for it, and
-its upsert would create it anew. It fails with 40001 instead (`rr-recreated-row`,
-#273). Under READ COMMITTED the rows found are locked, so a row created without
-its key lock is an internal error.
+### Patches
+
+- **One refresh of an entity per flush, its rows locked in key order.** The rows a flush's
+  own writes queue through another TVIEW's triggers join the flush after each entity, and a
+  refresh that patches some rows and recomputes others locks them all in key order first.
+- **A patch derived for a parent holds only while the parent still embeds the child.**
+  Before patching, the refresh locks the rows in key order (the latest committed version)
+  and recomputes a parent whose lookup column no longer holds the child's key.
+- **A two-hop fan-out patch locks the rows in between.** The lookup takes a shared value
+  lock on each row in between it reached (by the column the patched rows join on, a read set
+  every write of such a row locks exclusively), whether or not the transaction changed a
+  link, then reads again in a new snapshot until it reaches no row it hasn't locked. Past
+  `pg_tviews.lock_escalation_threshold` rows it locks nothing and the rows are mapped and
+  recomputed, which reads the link itself. The order is fixed: the writer's exclusive locks,
+  the lookup, the shared locks on what it reached; a shared lock taken before the lookup
+  deadlocks with a row being moved to the renamed value (`two-hop-rename-vs-move-in`). The
+  lookup reads as the TVIEW's owner and locks no row, so the writer needs no privilege on the
+  table in between and its policies hide nothing (#268); no value it reads reaches the
+  writer's errors (`two-hop-hidden-repoint`).
 
 ### Lock tags and modes
 
@@ -156,40 +223,45 @@ conflict, two shared ones don't; an escalated `ShareLock` conflicts with writers
 ### Escalation
 
 One lock per value exhausts the shared lock table at the default `max_locks_per_transaction`
-(20,000 values gave `out of shared memory`). Past `pg_tviews.lock_escalation_threshold` values on
-one relation (default 64, per transaction and per side), a transaction locks the relation
-instead. Values already held stay held.
-
-### Isolation levels
-
-- **READ COMMITTED** waits.
-- **REPEATABLE READ** never waits: the transaction snapshot is fixed, so waiting can't make a
-  computation see the other side's change. A lock that isn't granted at once raises 40001. Every
-  refresh and every discovery is then cross-checked against the latest snapshot, as
-  PostgreSQL's foreign-key checks are: a difference raises 40001.
-- **SERIALIZABLE** takes no value locks: SSI already detects the anomaly.
-
-Deadlocks between value locks taken in different statements are possible, as with row locks;
-PostgreSQL reports them with 40P01. Both 40001 and 40P01 are retryable.
+(20,000 values gave `out of shared memory`). Past `pg_tviews.lock_escalation_threshold` values
+on one relation (default 64, per transaction, space and side), a transaction locks the
+relation instead. Values already held stay held.
 
 ### Fresh snapshots
 
 The queries that find TVIEW rows (mapping queries, the embed lookup) and that compute them run
-as read-write SPI statements: under READ COMMITTED each takes a new snapshot, so one run after a
-lock wait sees what it waited for. A read-only SPI statement reuses the snapshot of the statement
-that fired the trigger, taken before the wait.
+as read-write SPI statements: each takes a new snapshot, so one run after a lock wait sees
+what it waited for. A read-only SPI statement reuses the snapshot of the statement that fired
+the trigger, taken before the wait.
+
+### What can still deadlock
+
+Transactions that each take one pass per statement don't wait for each other in a cycle. A
+deadlock remains possible, reported by PostgreSQL with 40P01, which is retryable:
+
+- **Multi-statement transactions.** A transaction's earlier statements' locks are held when a
+  later one takes its pass, as with row locks (`value-lock-deadlock`).
+- **Rows found by the second lookup only.** Their read set is locked at the flush, after the
+  pass, so a row created and committed between the two lookups can bring in a value another
+  transaction holds exclusively (`created-row-vs-lock-pass`).
+- **The flush.** It locks the read set of the rows it computes again: values that changed
+  since the capture, and rows queued by the flush itself (the parents of an embedded TVIEW).
 
 ## Consequences
 
-- A write can now wait for a concurrent transaction writing related rows: an insert of a post
+- A write can wait for a concurrent transaction writing related rows: an insert of a post
   waits for an open rename of its author, and the reverse. Deadlocks between such writes are
   reported with 40P01.
-- REPEATABLE READ transactions can fail with 40001 where they used to write stale rows.
-- Each refresh runs one more statement, the read sets of all its mapped tables and embeds
-  together, from a generic plan kept for the backend, and takes one lock per distinct join
-  value up to the escalation threshold.
-- The plan gains, per `mapped` table, its read sets (`reads`: the joined column and the
-  read-set query); `pg_tviews_read_set_queries()` shows them.
+- Writers at REPEATABLE READ or SERIALIZABLE are refused (0A000); fraiseql's mutations run at
+  READ COMMITTED and keep rules spanning rows with constraints and `SELECT … FOR UPDATE`.
+- After a link change the capture runs the lookup twice and the read-set query once more,
+  per TVIEW (about 1.4 ms per such statement on the benchmark's schema,
+  `test/concurrency/run.sh embed`); lookups by up to 128 keys, read sets among them, are
+  planned once per backend (#281). A write that changes no link takes its writer locks in one
+  pass. A schema can avoid the fan-out of a link change by composing a parent's aggregate at
+  read time ([embed or compose](../user-guides/embed-or-compose.md#a-parents-aggregate-on-its-children)).
+- The plan carries, per `mapped` table, its read sets (`reads`: the joined column and the
+  read-set query) and its link columns; `pg_tviews_read_set_queries()` shows the read sets.
 
 ## Results
 
@@ -208,203 +280,47 @@ at the median (about 0.05 ms). A 10-minute mixed run (inserts, renames of users 
 organisations two hops away, users moving between organisations, a rename of every user every
 30 s) ends with no stale row.
 
-## Amendment: shared locks only after a link changed (0.1.0-beta.34, #263)
+## History
 
-The protocol above deadlocked two single-row writes that changed no relationship. Two
-users each edit their own `bio`; each commented on the other's post, so each write's
-refresh of `tv_post` reads both users. Within one autocommit statement, the trigger took
-the exclusive lock on its own user and the flush then a shared lock on the other one:
-the two statements waited for each other (velocitybench: 846 deadlocks, writes from 589
-to about 8 per second between 0.1.0-beta.11 and 0.1.0-beta.33). "Deadlocks between
-value locks taken in different statements" above was wrong: one statement is enough.
+**0.1.0-beta.27 (2026-10-10, #207, #214): the first protocol.** A refresh locked the read set
+of every row it recomputed, before computing it; the writer locked its values before any
+query found TVIEW rows by them, one read-set column after another, in the delta trigger.
+REPEATABLE READ never waited: a lock not granted at once raised 40001, and every refresh and
+discovery was cross-checked against the latest snapshot, as PostgreSQL's foreign-key checks
+are. SERIALIZABLE took no value locks, on the ground that SSI detects the anomaly.
 
-The shared locks protect a refresh whose rows are linked to a value by a row only its
-own transaction can see: a post it inserted, a comment it re-pointed, a user it moved to
-another organisation. A transaction that changed no link computes rows linked by
-committed rows only; a writer of a value they read finds them by its own query, and the
-row locks order the two refreshes, the second computing after the first commits.
+**0.1.0-beta.34 (#263): shared locks only after a link changed.** The first protocol
+deadlocked two single-row writes that changed no relationship (two users each editing their
+own `bio`, each having commented on the other's post: the trigger took the exclusive lock on
+its own user and the flush a shared lock on the other one; velocitybench saw 846 deadlocks,
+writes falling from 589 to about 8 per second). "Deadlocks between value locks taken in
+different statements" was wrong: one statement was enough. The refresh's shared locks became
+conditional on a link change, link columns entered the plan (version 3), the writer's locks on
+embedded keys were described, and one refresh per entity per flush locked its rows in key
+order. The concurrent fuzzer then found, stale on beta.33 too: SERIALIZABLE needed the locks
+and checks of REPEATABLE READ (SSI orders serializable transactions among themselves only;
+`serializable-vs-read-committed`); a patch derived for a parent had to re-check that the
+parent still embeds the child (`embed-patch-vs-repoint`); a full refresh under REPEATABLE
+READ had to be cross-checked too (`rr-full-refresh-vs-insert`); and a two-hop fan-out patch
+had to lock the rows in between (`two-hop-patch-vs-repoint`, `two-hop-rename-vs-move-in`,
+`two-hop-hidden-repoint`, #268). Rows created between a refresh's lookup and its key lock
+were then row-locked too (`new-row-vs-row-lock`, #272), and a REPEATABLE READ refresh that
+would recreate a row deleted after its snapshot failed with 40001 (`rr-recreated-row`, #273).
 
-- **A refresh takes its shared value locks (read sets and embedded keys) only in a
-  transaction that changed a link**: inserted or deleted a row of a table a TVIEW reads,
-  or updated a column of one that some TVIEW's rows are linked by. TRUNCATE, partitions
-  attached, detached or dropped, full refreshes and suspended writes count as link
-  changes. The intent lock, the writer's exclusive locks and the key locks of rows
-  being created are unchanged. `ROLLBACK TO SAVEPOINT` forgets a link changed after the
-  savepoint, as the lock manager releases its locks.
-- **The link columns come from the definition** (plan version 3, per table): a column
-  read in a join or filter condition, a GROUP BY (not the definition's own, grouped by
-  its identity), a DISTINCT, a window's PARTITION BY or ORDER BY, the ORDER BY of a
-  level under LIMIT/OFFSET, an aggregate's FILTER, a function in FROM, a subquery
-  compared in one of those, and the key. A read the walk cannot follow to columns (a
-  set operation that removes duplicates, an aggregate compared above its level, a
-  whole-row reference) makes every column a link; a plan of an earlier version reads
-  the same way until the update re-derives it.
-- **The writer's exclusive locks on embedded keys** (taken before the parents of a
-  refreshed child are looked up) were not described above; they also serialize two
-  transactions changing the same child row's links, which the shared locks no longer do
-  for value-only writers.
-- **One refresh of an entity per flush, its rows locked in key order.** The rows a
-  flush's own writes queue through another TVIEW's triggers join the flush after each
-  entity, not after the last one, and a refresh that patches some rows and recomputes
-  others locks them all in key order first, at every isolation level. Before, the same `tv_post` rows could be
-  locked in two statements in a different order in each transaction.
+**0.1.0-beta.35 (#277): one sorted pass at capture.** One statement could still deadlock when
+it changed a link: two transactions soft-deleting items of one group in two places each held
+their own place exclusively, then one waited for the group and the other, at flush, for a
+shared lock on the first one's place (`embed-count-soft-deletes`; 40P01 on about half of the
+link changes at 16 clients on beta.33 and beta.34). Moving the writer's locks to the flush,
+sorted with the refresh's, made four specs stale (the lookup must run after the writer's
+locks), so the capture takes both sides' locks in one sorted pass between two lookups. #275
+(ordering key locks across a flush) was superseded.
 
-Found by the concurrent differential fuzzer (`test/concurrency/fuzz/`), both stale on
-0.1.0-beta.33 too:
+**0.1.0-beta.35 (2026-11 architecture wave, decision D1): writers at READ COMMITTED.** The
+REPEATABLE READ and SERIALIZABLE handling (fail fast on a lock, cross-check every refresh,
+discovery and reconcile against the latest snapshot, about a fifth of such a writer's time)
+served no workload pg_tviews is built for: fraiseql's mutations run at READ COMMITTED. Such
+writers are now refused with 0A000 before they write; the fail-fast policy, the cross-check
+(`concurrency/crosscheck.rs`) and their 40001 are gone. The REPEATABLE READ and SERIALIZABLE
+specs were rewritten to expect the refusal.
 
-- **SERIALIZABLE takes the locks and checks of REPEATABLE READ.** "SERIALIZABLE takes
-  no value locks: SSI already detects the anomaly" above holds only when every
-  concurrent writer is serializable: SSI orders serializable transactions among
-  themselves, and a READ COMMITTED rename is invisible to it. A post inserted under
-  SERIALIZABLE while its author was renamed under READ COMMITTED stayed stale in both
-  orders (`serializable-vs-read-committed`). SERIALIZABLE now fails fast on a value
-  lock and cross-checks against the latest snapshot, as REPEATABLE READ does.
-- **A patch derived for a parent holds only while the parent still embeds the child.**
-  A rename patched into the posts embedding the user found post 10 under its
-  snapshot, waited for a concurrent re-point's row lock, then wrote the old user's
-  name into a post that embedded another user (`embed-patch-vs-repoint`). Before
-  patching, the refresh locks the rows in key order (the latest committed version
-  under READ COMMITTED) and recomputes a parent whose lookup column no longer holds
-  the child's key.
-
-- **A full refresh is cross-checked too.** Under REPEATABLE READ the reconcile of a
-  `full_refresh` table compared the TVIEW with its view under the transaction's
-  snapshot: a post inserted and committed since then, written with the old name by its
-  own refresh, was invisible to it and stayed stale (`rr-full-refresh-vs-insert`). The
-  whole view is now compared with the latest snapshot after the reconcile, as a keyed
-  refresh's rows are; a difference raises 40001.
-
-- **A two-hop fan-out patch locks the rows in between.** A rename written into the
-  lines of the renamed customer's orders found order 10 under its snapshot, waited for
-  a concurrent re-point of that order, then wrote the old customer's name into lines
-  that now show another one (`two-hop-patch-vs-repoint`): the link lives in `tb_order`,
-  which the patch's own condition cannot re-check. The lookup now takes a shared value
-  lock on each order it reached, by the column the lines join on (`pk_order`, a read
-  set of `tb_order`, which every write of an order locks exclusively, old and new
-  images), whether or not the transaction changed a link. Then, under READ COMMITTED,
-  it reads again in a new snapshot until it reaches no order it hasn't locked: an order
-  re-pointed while it waited, or between its read and its lock, is dropped. Under
-  REPEATABLE READ a lock held elsewhere raises 40001. Past
-  `pg_tviews.lock_escalation_threshold` orders it doesn't lock the table instead, which
-  would wait for every writer of `tb_order`: the lines are mapped and recomputed, which
-  reads the link itself and needs no lock in between.
-
-  The order is fixed: the writer's exclusive locks, then the lookup, then the shared
-  locks on what it reached. A shared lock taken before the lookup (on the customer's
-  orders as a whole) waits for an order being moved to the renamed customer, which
-  waits for the rename's customer to recompute its line: a deadlock in one statement
-  each (`two-hop-rename-vs-move-in`), and so would an escalated lock. The lookup reads as the TVIEW's owner and locks
-  no row: a `FOR SHARE` took UPDATE on the table in between, which its writer, and
-  often its owner, lacks, and as the writer it missed the rows its policies hide
-  (#268). No value it reads reaches the writer's errors, notices or results
-  (`two-hop-hidden-repoint`).
-
-Specs: `crossed-value-writes` (one statement each, gated between the triggers and the
-flush), `crossed-value-writes-after-rollback`; the eight specs of the table above pass
-unchanged, and `value-lock-deadlock` (two transactions that insert posts, so change
-links, then rename crosswise) still deadlocks.
-
-## Amendment: one sorted pass at capture (0.1.0-beta.35, #277)
-
-The amendment above still let one statement deadlock when it changed a link. The
-writer took its exclusive locks in the delta trigger, one read-set column after
-another, and the refresh took its shared locks at flush. An application schema
-with an embed fan-out showed it: every item's row shows the counts of current
-items in its place and its group, so soft-deleting an item changes a link and
-rewrites the items of its place and its group. Two transactions soft-deleting
-items of one group in two places each held their own place exclusively. One then
-waited for the group, the other at flush for a shared lock on the first one's
-place (`embed-count-soft-deletes`; 40P01 on 0.1.0-beta.33 and 0.1.0-beta.34,
-about half of the link changes at 16 clients).
-
-Moving the writer's exclusive locks to the flush, sorted with the refresh's, is
-not enough. The lookup that finds the rows a write reaches runs at capture,
-because it reads the transition tables, and it must run after the writer's
-locks. Run before them, it misses a row a concurrent transaction is creating.
-That transaction computed the row from the old value, and the writer never
-refreshes it. Four specs went stale that way (`join-parent-vs-write`,
-`repoint-vs-write`, `multihop-vs-write`, `phantom-child-vs-parent`).
-
-The capture now takes the locks of both sides together:
-
-1. **Look up without locks.** For each TVIEW whose delta trigger fires for the
-   statement, find the rows the changed rows reach (`K0`). When the transaction
-   changed a link, also read what those rows read: their read sets and embedded
-   keys, as a refresh would lock them.
-2. **One sorted pass.** Take the writer's exclusive locks on the changed rows'
-   values and, after a link change, the refresh's shared locks on the read set of
-   `K0`, all at once. They are ordered by relation, then by space, relation
-   locks (intent, escalated) before value locks, then by hash. An exclusive lock
-   covers a shared request on the same value. Escalation is decided per
-   relation, space and side over the whole pass, so an escalated lock takes its
-   relation's place in the order. A writer's intent and a refresh's escalated
-   lock on one relation are one `ShareRowExclusiveLock`. Taken as
-   `RowExclusiveLock` and then `ShareLock`, two writers past the threshold would
-   each hold the first and wait for the other's: the report's second form of the
-   deadlock, on the relation lock. Transactions that each take one such pass
-   can't wait for each other in a cycle.
-3. **Look up again.** In a new snapshot, after the pass: this is the lookup the
-   refresh uses, and it runs after the writer's locks, as before. A row found
-   now but not in step 1 was created or re-pointed by a transaction that
-   committed in between, or written by this transaction's own triggers. The
-   flush locks its read set, as it does for every row it computes, before
-   computing it. Locking it here as well would only take those locks earlier:
-   no spec's outcome depends on it. Under REPEATABLE READ both lookups read the
-   transaction's snapshot. A row committed after it fails the lookup's check
-   against the latest snapshot with 40001 (`rr-created-row-vs-lock-pass`).
-
-**Several TVIEWs on one table.** Each TVIEW has its own delta trigger. They fire one
-after the other, so separate passes, even in a fixed order, could wait for each
-other in a cycle. Example: an item TVIEW reading places, and a group TVIEW
-reading places through groups. Each transaction would hold its own place from the
-first pass and wait in the second. The first delta trigger of a statement
-therefore takes step 1 and step 2 for every pg_tviews delta trigger that fires
-for the same table and event, in the order PostgreSQL fires them. The later
-triggers find their locks held and run only step 3. A statement is named
-by its executor frame and its transition tables. A trigger that finds no pass
-recorded for it (a `COPY`, which runs no executor) takes its own pass.
-
-**What can still deadlock.**
-- **Rows found by the second lookup only.** Their read set is locked at the
-  flush, after the pass, so a row created and committed between the two lookups
-  can bring in a value another transaction holds exclusively. That transaction,
-  in a later statement, waits for this one (`created-row-vs-lock-pass`).
-- **Multi-statement transactions.** A transaction's earlier statements' locks are
-  held when a later one takes its pass, as with row locks.
-- **The flush.** It locks the read set of the rows it computes again: values that
-  changed since the capture, and rows queued by the flush itself (the parents
-  of an embedded TVIEW).
-
-40P01 stays retryable.
-
-**Costs.** After a link change the capture runs the lookup twice and the read-set
-query once more, per TVIEW: about 1.4 ms per such statement on the benchmark's
-schema (`test/concurrency/run.sh embed`). A write that changes no link takes the
-same locks as before, in one pass instead of one per read-set column. Lookups by
-up to 128 keys, read sets among them, are planned once per backend (#281), which
-removes most of that extra on a nine-table read set; and a schema can avoid the fan-out
-itself by composing a parent's aggregate at read time
-([embed or compose](../user-guides/embed-or-compose.md#a-parents-aggregate-on-its-children)).
-
-The flush still reads the read set of the rows it computes, after the capture read it:
-checking instead what the compute itself read, against the locks taken before it, was
-considered and rejected (#281). It is sound against stale rows, but a row re-linked by
-a transaction that committed while the capture's pass waited is then found only after
-the refresh holds the row's lock, and a writer holding the new value needs that row:
-a deadlock where today's flush waits. After plans are kept, what it would save is under
-a tenth of such a write.
-
-The partitioned-table paths (a row trigger per changed row, rows entering with a
-partition) take the same pass, one TVIEW at a time.
-
-Specs: `embed-count-soft-deletes` (also past the escalation threshold),
-`two-tviews-one-table` (a gate between the two delta triggers),
-`created-row-vs-lock-pass` and its REPEATABLE READ twin, and `lock-pass-order`.
-In `lock-pass-order`, a third transaction makes a pass wait part-way, which shows
-the order (shared and exclusive locks by hash, relation locks first) and the single
-relation lock. The four specs above stay fresh.
-
-**Relation to #275.** #275 orders key locks across a flush; this orders value
-locks at the boundary between writer and refresh. Neither depends on the other.
-This change lands first, on its own, for 0.1.0-beta.35, because it fixes the
-reported deadlock and #275 does not.

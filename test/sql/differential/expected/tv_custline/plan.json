@@ -1,0 +1,105 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_custline",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "custline",
+      "initial_attnum": "public.tb_customer.pk_customer",
+      "initial_col": "pk_customer",
+      "root": true,
+      "source_columns": [
+        "pk_customer",
+        "id"
+      ],
+      "source_oid": "public.tb_customer",
+      "source_table": "tb_customer"
+    },
+    {
+      "entity_name": "custline",
+      "initial_attnum": "public.tb_order.fk_customer",
+      "initial_col": "fk_customer",
+      "root": false,
+      "source_columns": [
+        "pk_order",
+        "fk_customer",
+        "ref",
+        "status"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.id"
+      ],
+      "column": "pk_customer",
+      "columns": [
+        "pk_customer",
+        "id"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "relid": "public.tb_customer",
+      "table": "public.tb_customer"
+    },
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.fk_customer",
+        "public.tb_order.ref",
+        "public.tb_order.status"
+      ],
+      "column": "fk_customer",
+      "columns": [
+        "pk_order",
+        "fk_customer",
+        "ref",
+        "status"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.pk_order",
+        "public.tb_order.fk_customer",
+        "public.tb_order.status"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tb_line.pk_line",
+        "public.tb_line.fk_order",
+        "public.tb_line.qty"
+      ],
+      "columns": [
+        "pk_line",
+        "fk_order",
+        "qty"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_line.fk_order"
+      ],
+      "reads": [
+        {
+          "attnum": "<whole row>"
+        }
+      ],
+      "relid": "public.tb_line",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_order.fk_customer} FROM pg_tviews_delta d, {r:public.tb_order} o1 WHERE (d.{c:public.tb_line.fk_order} OPERATOR(pg_catalog.=) o1.{c:public.tb_order.pk_order})",
+      "table": "public.tb_line"
+    }
+  ],
+  "version": 3
+}

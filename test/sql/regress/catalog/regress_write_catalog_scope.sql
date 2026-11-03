@@ -3,7 +3,7 @@
 --
 -- The write path needs every TVIEW's plan (the cascade paths starting at the
 -- written table, the dependency graph), but not every TVIEW's whole catalog row:
--- the row's collections are a subquery per TVIEW over tviews.pg_tview_references,
+-- the row's collections are a subquery per TVIEW over tviews.references,
 -- the class of SQL that made every write depend on privileges on unrelated
 -- schemas (#251). The global read is the entity and the plan; the full row is
 -- loaded by entity. Measured as scans of pg_tview_meta in the writing

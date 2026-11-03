@@ -164,7 +164,7 @@ BEGIN
         RAISE EXCEPTION 'matrix setup: % TVIEWs in ph, want 10',
             (SELECT count(*) FROM tviews.registry WHERE schema = 'ph');
     END IF;
-    IF (SELECT count(*) FROM tviews.pg_tview_references
+    IF (SELECT count(*) FROM tviews.references
         WHERE entity IN ('child', 'grandchild') AND chosen) <> 2 THEN
         RAISE EXCEPTION 'matrix setup: the ph references are not published';
     END IF;
@@ -264,7 +264,7 @@ INSERT INTO pw.tb_book (pk_book, fk_author, title) VALUES (5, 1, 'b5');
 SELECT tviews.pg_tviews_flush_and_report(include_data => false) AS report \gset
 COMMIT;
 UPDATE pw.tb_book SET fk_author = 2 WHERE pk_book = 5;
-SELECT tviews.pg_tviews_feed_gaps() >= 0 AS gaps_readable \gset
+SELECT tviews.pg_tviews_count_feed_gaps() >= 0 AS gaps_readable \gset
 SELECT count(*) > 0 AS registry_readable FROM tviews.registry \gset
 RESET SESSION AUTHORIZATION;
 ALTER DATABASE :"DBNAME" RESET pg_tviews.publish_changes;
@@ -277,7 +277,7 @@ SELECT :'report'::jsonb ? 'collections' AS has_collections \gset
 \endif
 \if :gaps_readable
 \else
-    \echo 'matrix FAIL: pg_tviews_feed_gaps()'
+    \echo 'matrix FAIL: pg_tviews_count_feed_gaps()'
     SELECT 1/0;
 \endif
 \if :registry_readable

@@ -18,10 +18,10 @@ if [[ -n "$bad" ]]; then
   printf '%s' "$bad"
   exit 1
 fi
-# Only the catalog module (and the install script) names the catalog table; the
+# Only the catalog module (and the install SQL in sql/install/) names the catalog table; the
 # setting descriptions in src/config/mod.rs mention it as prose.
 meta=$(grep -rnE 'meta_table\(\)|pg_tview_meta' src --include='*.rs' \
-  | grep -vE '^src/(catalog/|install_sql\.rs:|config/mod\.rs:)' \
+  | grep -vE '^src/(catalog/|config/mod\.rs:)' \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//')
 if [[ -n "$meta" ]]; then
   echo "pg_tview_meta named outside src/catalog/:"

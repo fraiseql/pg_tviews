@@ -58,7 +58,7 @@ ANALYZE tb_user, tb_post, tb_comment, tv_comment;
 
 -- 1. A username write: the 50 comments on the user's 10 posts are patched, none
 --    recomputed, and no table is scanned whole to find them.
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 SELECT must(seq_scans_during('tv_comment', $$UPDATE tb_user SET username = 'one' WHERE pk_user = 7$$) = 0,
             'the write scanned tv_comment');
 SELECT must((patched, recomputed) = (50, 0), format('one user: %s patched, %s recomputed', patched, recomputed))
@@ -70,7 +70,7 @@ SELECT must(seq_scans_during('tb_post', $$UPDATE tb_user SET username = 'one aga
             'the write scanned tb_post');
 
 -- 2. Several users in one statement.
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 UPDATE tb_user SET username = username || '!' WHERE pk_user IN (8, 9, 10);
 SELECT must((patched, recomputed) = (150, 0), format('three users: %s patched, %s recomputed', patched, recomputed))
 FROM counts();
@@ -78,7 +78,7 @@ SELECT assert_fresh('tv_comment', 'pk_comment', 'three users renamed');
 
 -- 3. A user without posts: nothing written.
 INSERT INTO tb_user (pk_user, username) VALUES (999, 'nobody');
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 UPDATE tb_user SET username = 'still nobody' WHERE pk_user = 999;
 SELECT must((patched, recomputed) = (0, 0), format('no posts: %s patched, %s recomputed', patched, recomputed))
 FROM counts();
@@ -91,16 +91,17 @@ SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename and a move in one stat
 SELECT must((SELECT count(*) FROM tv_comment WHERE data #>> '{post,author,username}' = 'twelve') = 55,
             'the moved post''s comments do not show their new author');
 
--- 5. REPEATABLE READ: the lookup through tb_post is checked like the patch's own.
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-UPDATE tb_user SET username = 'rr' WHERE pk_user = 13;
+-- 5. A rename in an explicit transaction: the lookup through tb_post runs in
+--    the flush's own snapshot.
+BEGIN;
+UPDATE tb_user SET username = 'tx' WHERE pk_user = 13;
 COMMIT;
-SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename at REPEATABLE READ');
+SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename in a transaction');
 
 -- 6. Without an index on tb_post.fk_author the comments are still found (as the
 --    recompute found them, scanning tb_post) and patched.
 DROP INDEX tb_post_fk_author_idx;
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 UPDATE tb_user SET username = 'no index' WHERE pk_user = 14;
 SELECT must((patched, recomputed) = (50, 0), format('no index: %s patched, %s recomputed', patched, recomputed))
 FROM counts();
@@ -108,7 +109,7 @@ SELECT assert_fresh('tv_comment', 'pk_comment', 'a rename without an index on tb
 
 -- 7. With the patch off, the same write recomputes, as before.
 SET pg_tviews.direct_patch_enabled = off;
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 UPDATE tb_user SET username = 'recomputed' WHERE pk_user = 15;
 RESET pg_tviews.direct_patch_enabled;
 SELECT must((patched, recomputed) = (0, 50), format('patch off: %s patched, %s recomputed', patched, recomputed))

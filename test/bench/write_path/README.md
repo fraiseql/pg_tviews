@@ -29,6 +29,11 @@ database): a username copied into arrays of embedded rows (`array`) and across t
 (`two_hop`), with pg_tviews, with the patch path off, with the patch written by hand
 (`writes/*.manual.sql`) and plain.
 
+`mutations.sh [seconds]` measures fraiseql-shaped mutation functions (`mutations.sql`:
+a large TVIEW embedding the documents of the rows it allocates), each written per
+statement and once per row, called as one outer `SELECT`: ms per mutation and the TVIEW
+rows it refreshes (`tviews.stats`).
+
 `compare.sh head=28971 base=28972 -- [rounds] [seconds] [clients ...] [-- write ...]`
 compares builds: one cluster per build, the writes interleaved build by build (the
 order alternating each round), each run started only when the 1-minute load average is

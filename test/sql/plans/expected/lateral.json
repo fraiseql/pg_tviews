@@ -1,0 +1,84 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [],
+  "key": {
+    "column": "pk_user",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "user",
+      "initial_attnum": "public.tb_user.pk_user",
+      "initial_col": "pk_user",
+      "root": true,
+      "source_columns": [
+        "pk_user",
+        "id",
+        "name"
+      ],
+      "source_oid": "public.tb_user",
+      "source_table": "tb_user"
+    },
+    {
+      "entity_name": "user",
+      "initial_attnum": "public.tb_post.fk_user",
+      "initial_col": "fk_user",
+      "root": false,
+      "source_columns": [
+        "pk_post",
+        "fk_user",
+        "title"
+      ],
+      "source_oid": "public.tb_post",
+      "source_table": "tb_post"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_user.pk_user",
+        "public.tb_user.id",
+        "public.tb_user.name"
+      ],
+      "column": "pk_user",
+      "columns": [
+        "pk_user",
+        "id",
+        "name"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_user.pk_user"
+      ],
+      "relid": "public.tb_user",
+      "table": "public.tb_user"
+    },
+    {
+      "attnums": [
+        "public.tb_post.pk_post",
+        "public.tb_post.fk_user",
+        "public.tb_post.title"
+      ],
+      "column": "fk_user",
+      "columns": [
+        "pk_post",
+        "fk_user",
+        "title"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_post.fk_user"
+      ],
+      "relid": "public.tb_post",
+      "table": "public.tb_post"
+    }
+  ],
+  "version": 3
+}

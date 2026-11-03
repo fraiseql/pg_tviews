@@ -37,12 +37,12 @@ UPDATE tviews.pg_tview_meta SET plan = jsonb_set(plan, '{paths}', '"garbage"')
 -- The health check names it.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE status = 'ERROR' AND component = 'plans'
                      AND message LIKE '%tv_tag%' AND message LIKE '%pg_tviews_reregister%') THEN
         RAISE EXCEPTION 'FAIL: the health check does not report the unreadable plan: %',
             (SELECT string_agg(status || ' ' || component || ': ' || message, '; ')
-               FROM tviews.pg_tviews_health_check());
+               FROM tviews.pg_tviews_check_health());
     END IF;
 END $$;
 
@@ -79,7 +79,7 @@ END $$;
 SELECT tviews.pg_tviews_reregister('tag');
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check() WHERE status <> 'OK'
+    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health() WHERE status <> 'OK'
                                                                AND component = 'plans') THEN
         RAISE EXCEPTION 'FAIL: the health check still reports a plan after re-registration';
     END IF;

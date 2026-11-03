@@ -65,7 +65,7 @@ indexes on `fk_*` columns serve cascades from parent entities, and statistics re
 a crash or `pg_stat_reset()`. `pg_tviews_profile()` lists indexes it considers unused in
 `unused_indexes`, and missing cascade indexes in `missing_propagation_indexes`:
 ```sql
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
 ```
 
 ## Query Performance Analysis
@@ -97,7 +97,7 @@ SELECT entity, fanout FROM tviews.pg_tviews_profile();
 Refresh counters of the current session (compare before and after a write in the same
 session):
 ```sql
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 Statement timings, if `pg_stat_statements` is installed (PostgreSQL 13+ column names):

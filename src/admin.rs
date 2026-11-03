@@ -28,7 +28,7 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catal
 pub(crate) fn refresh_time_dependent(
     chosen: &[std::rc::Rc<crate::catalog::TviewMeta>],
 ) -> TViewResult<Vec<String>> {
-    let order = crate::cache::graph()?.topo_order;
+    let order = crate::catalog::graph()?.topo_order;
     let mut chosen: Vec<&crate::catalog::TviewMeta> =
         chosen.iter().map(std::rc::Rc::as_ref).collect();
     chosen.sort_by_key(|meta| {
@@ -42,7 +42,7 @@ pub(crate) fn refresh_time_dependent(
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(&meta.entity_name);
         } else {
-            crate::queue::enqueue_refresh_all(&meta.entity_name);
+            crate::concurrency::enqueue_refresh_all(&meta.entity_name);
         }
         refreshed.push(crate::utils::qualified_relname_from_oid(meta.tview_oid)?);
     }
@@ -58,7 +58,7 @@ pub(crate) fn refresh_time_dependent(
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
-    let graph = crate::cache::graph()?;
+    let graph = crate::catalog::graph()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
         for entity in read {
@@ -163,7 +163,7 @@ pub(crate) fn ensure_propagation_indexes(
 /// # Errors
 /// Returns error if the dependency graph cannot be loaded or a rebuild fails.
 pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
-    let graph = crate::cache::graph()?;
+    let graph = crate::catalog::graph()?;
     for entity in &graph.topo_order {
         crate::refresh::full::rebuild_one(entity)?;
     }
@@ -178,7 +178,7 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
 /// Returns an error if the catalog cannot be read.
 pub(crate) fn cascade_path(entity: &str) -> TViewResult<Vec<(i32, String, String)>> {
     const MAX_DEPTH: i32 = 10;
-    let graph = crate::cache::graph()?;
+    let graph = crate::catalog::graph()?;
     let mut rows = vec![(0, entity.to_string(), entity.to_string())];
     // Every path up from `entity` that visits a TVIEW once.
     let mut frontier = vec![vec![entity.to_string()]];

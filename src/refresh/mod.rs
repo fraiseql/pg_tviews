@@ -1,14 +1,14 @@
-//! Writing TVIEW rows: one row recomputed from its backing view (`row`), many at
-//! once (`bulk`), and the direct patch of a TVIEW's own columns (`direct`).
+//! Writing TVIEW rows: rows recomputed from the backing view by identity
+//! (`recompute`), every row reconciled with it (`full`), and the direct patch of
+//! a TVIEW's own columns (`direct`).
 
-pub mod row;
-
-pub mod bulk;
 pub mod direct;
 pub mod full;
+pub mod recompute;
 
-pub use bulk::refresh_bulk;
-pub use row::refresh_key;
+pub use recompute::recompute;
+
+pub(crate) use crate::queue::key::{key_array, key_cast, key_lookup, produced_keys};
 
 use crate::catalog::KeyType;
 use crate::queue::key::KeyValue;
@@ -17,124 +17,8 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::fmt::Write as _;
 
-/// `param` (`$1`) cast to the identity's type, or to an array of it: an integer
-/// identity is bound as `int8`, any other as text cast to its type, so a filter on
-/// the identity column can use its index.
-pub(crate) fn key_cast(key_type: &KeyType, param: &str, array: bool) -> String {
-    let brackets = if array { "[]" } else { "" };
-    match key_type {
-        KeyType::Int => format!("{param}::pg_catalog.int8{brackets}"),
-        KeyType::Text(ty) => format!("{param}::pg_catalog.text{brackets}::{ty}{brackets}"),
-    }
-}
-
-/// The values of `keys` as the identity binds them; a text key of an integer
-/// identity that is not an integer is an error.
-fn key_values(key_type: &KeyType, keys: &[KeyValue]) -> crate::TViewResult<KeyValues> {
-    Ok(match key_type {
-        KeyType::Int => KeyValues::Int(
-            keys.iter()
-                .map(|k| {
-                    k.to_int().ok_or_else(|| crate::TViewError::InvalidInput {
-                        parameter: "key".to_string(),
-                        reason: format!("{k} is not a value of an integer identity"),
-                    })
-                })
-                .collect::<crate::TViewResult<_>>()?,
-        ),
-        KeyType::Text(_) => KeyValues::Text(keys.iter().map(ToString::to_string).collect()),
-    })
-}
-
-enum KeyValues {
-    Int(Vec<i64>),
-    Text(Vec<String>),
-}
-
-/// `keys` as one array parameter, for `key_cast(…, true)`.
-pub(crate) fn key_array(
-    key_type: &KeyType,
-    keys: &[KeyValue],
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_values(key_type, keys)? {
-        KeyValues::Int(v) => crate::utils::spi::int8_array(v),
-        KeyValues::Text(v) => crate::utils::spi::text_array(v),
-    })
-}
-
-/// The identities an upsert's source produced ([`Produced::keys`], as text), as
-/// one array parameter for `key_cast(…, true)`.
-pub(crate) fn produced_keys(
-    key_type: &KeyType,
-    keys: Vec<String>,
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_type {
-        KeyType::Int => crate::utils::spi::int8_array(
-            keys.iter()
-                .map(|k| {
-                    k.parse().map_err(|_| crate::TViewError::InvalidInput {
-                        parameter: "key".to_string(),
-                        reason: format!("{k} is not a value of an integer identity"),
-                    })
-                })
-                .collect::<crate::TViewResult<_>>()?,
-        ),
-        KeyType::Text(_) => crate::utils::spi::text_array(keys),
-    })
-}
-
-/// One key as a parameter, for `key_cast(…, false)`.
-pub(crate) fn key_scalar(
-    key_type: &KeyType,
-    key: &KeyValue,
-) -> crate::TViewResult<DatumWithOid<'static>> {
-    Ok(match key_values(key_type, std::slice::from_ref(key))? {
-        KeyValues::Int(v) => crate::utils::spi::int8(v[0]),
-        KeyValues::Text(mut v) => crate::utils::spi::text(v.swap_remove(0)),
-    })
-}
-
-/// Identity keys bound from `$1` for a lookup, shaped by their count as
-/// [`crate::utils::spi::LookupKeys`] shapes keys of `fk_<entity>`: a backing view
-/// read by identity may join many rows of a table for each key (an aggregate of
-/// children), which a generic plan for an array estimates as ten keys' worth.
-pub(crate) struct KeyLookup {
-    /// What the identity is compared with by `OPERATOR(pg_catalog.=)`.
-    pub rhs: String,
-    /// The keys, as `rhs` reads them.
-    pub args: Vec<DatumWithOid<'static>>,
-    /// How a statement looking them up is planned.
-    pub plan: crate::utils::spi::Plan,
-}
-
-/// The lookup of `keys` of an identity of `key_type`; `None` without any.
-///
-/// # Errors
-/// A text key of an integer identity that is not an integer.
-pub(crate) fn key_lookup(
-    key_type: &KeyType,
-    keys: &[KeyValue],
-) -> crate::TViewResult<Option<KeyLookup>> {
-    use crate::utils::spi::{Plan, padded, shape, shaped_rhs};
-    if keys.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(match shape(keys.len()) {
-        Some(width) => KeyLookup {
-            rhs: shaped_rhs(width, 1, |p| key_cast(key_type, p, false)),
-            args: padded(keys.to_vec(), width)
-                .iter()
-                .map(|key| key_scalar(key_type, key))
-                .collect::<crate::TViewResult<_>>()?,
-            plan: Plan::Generic,
-        },
-        None => KeyLookup {
-            rhs: format!("ANY ({})", key_cast(key_type, "$1", true)),
-            args: vec![key_array(key_type, keys)?],
-            plan: Plan::PerExecution,
-        },
-    }))
-}
+/// Keys one refresh statement takes: a bulk change is written in batches of it.
+pub const BATCH_KEYS: usize = 1_000;
 
 /// The rows of a TVIEW a refresh touched, by the `pk_<entity>` values parents look
 /// them up by (ADR 0169, D4).
@@ -165,7 +49,7 @@ pub(crate) fn touched(
     written: Written,
     deleted: Vec<i64>,
 ) -> Touched {
-    if meta.identity.is_pk(&meta.entity_name) {
+    if meta.identity.is_pk(meta.key_column()) {
         return Touched {
             // A key read off a column of another type (a domain, numeric) is text.
             pks: keys
@@ -243,7 +127,7 @@ pub(crate) fn refuse_duplicate_keys_in(
         "SELECT (SELECT {qi_key}::pg_catalog.text FROM {qualified_view} WHERE {filter} \
                  GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
     );
-    let duplicate = Spi::connect(|client| {
+    let duplicate = crate::utils::spi::connect(|client| {
         crate::utils::spi::kept_select(client, &sql, args)?
             .first()
             .get::<String>(1)
@@ -350,9 +234,9 @@ pub(crate) fn run_counted_upsert(
     args: &[DatumWithOid],
     old: Option<&crate::catalog::collections::OldKeys>,
 ) -> crate::TViewResult<Produced> {
-    use crate::queue::affected::{Change, Recorded, record};
+    use crate::queue::log::{Change, Recorded, record};
     let entity = &meta.entity_name;
-    let qi_pk = ident::quoted(&format!("pk_{entity}"));
+    let qi_pk = ident::quoted(meta.key_column());
     let qi_key = ident::quoted(&meta.identity.column);
     // A UNION view returning several rows for one key is refused (ADR 0216) from
     // the rows the upsert reads, which then writes none: the view is read once.
@@ -380,7 +264,7 @@ pub(crate) fn run_counted_upsert(
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows, duplicate) = Spi::connect_mut(|client| {
+    let (keys, rows, duplicate) = crate::utils::spi::connect_mut(|client| {
         let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
         Ok::<_, spi::Error>((
             row.get::<Vec<String>>(1)?,
@@ -400,10 +284,7 @@ pub(crate) fn run_counted_upsert(
         Some(pgrx::JsonB(serde_json::Value::Array(rows))) => rows,
         _ => Vec::new(),
     };
-    crate::metrics::metrics_api::record_noop_skipped(
-        entity,
-        keys.len().saturating_sub(rows.len()) as u64,
-    );
+    crate::stats::record_noop_skipped(entity, keys.len().saturating_sub(rows.len()) as u64);
     let mut written = Written::default();
     let mut created = Vec::new();
     for row in rows {
@@ -443,15 +324,11 @@ pub(crate) fn run_counted_upsert(
 
 /// A refresh creates a TVIEW row only under its key lock (ADR 0207): every other
 /// transaction creating the same row waits for it, and one that finds the row
-/// then locks it before computing ([`lock_rows`]). A row created without the
-/// lock is a key whose row the refresh found, gone since: under REPEATABLE READ
-/// and SERIALIZABLE, a row a concurrent transaction deleted after the snapshot,
-/// which fails with 40001 as an UPDATE of that row would. Under READ COMMITTED
-/// the found rows are locked, so it can't happen.
+/// then locks it before computing ([`lock_rows`]). The found rows are locked, so
+/// a row created without its lock is a defect.
 ///
 /// # Errors
-/// An internal error for a row created without its key lock under READ
-/// COMMITTED.
+/// An internal error for a row created without its key lock.
 fn refuse_unlocked_creations(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
@@ -463,11 +340,6 @@ fn refuse_unlocked_creations(
     {
         return Ok(());
     }
-    if crate::concurrency::crosscheck::enabled() {
-        crate::concurrency::serialization_failure(
-            "a concurrent transaction deleted a TVIEW row this refresh read",
-        );
-    }
     Err(crate::TViewError::CatalogError {
         operation: format!("Create a row of {qi_tv}"),
         pg_error: "the row was created without its key lock".to_string(),
@@ -476,38 +348,28 @@ fn refuse_unlocked_creations(
 
 /// Lock the existing rows of `keys` in the TVIEW (in key order) before
 /// recomputing them, then the keys of those it doesn't hold yet, then the rows
-/// of those keys created in between, and return the rows' `pk_<entity>`. Under READ COMMITTED a concurrent writer
-/// recomputing one of these rows, or creating it, is then waited for here, and
-/// the recompute that follows, a new statement, sees what it committed; without
-/// the lock it waited inside its own upsert and wrote a document computed before
-/// that commit. Under REPEATABLE READ and SERIALIZABLE the upsert already fails
-/// on an existing row (SQLSTATE 40001): those rows are only read; a key another
-/// transaction is creating fails at once (ADR 0207).
+/// of those keys created in between, and return the rows' `pk_<entity>`. A
+/// concurrent writer recomputing one of these rows, or creating it, is then
+/// waited for here, and the recompute that follows, a new statement, sees what
+/// it committed; without the lock it waited inside its own upsert and wrote a
+/// document computed before that commit (ADR 0207).
 pub(crate) fn lock_rows(
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
 ) -> crate::TViewResult<Locked> {
-    // SAFETY: reads the backend's isolation level.
-    let transaction_snapshot =
-        unsafe { pgrx::pg_sys::XactIsoLevel } >= pgrx::pg_sys::XACT_REPEATABLE_READ.cast_signed();
     if keys.is_empty() {
         return Ok(Locked::default());
     }
     let key_type = &meta.key_type;
     let qi_key = ident::quoted(&meta.identity.column);
-    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
-    let lock = if transaction_snapshot {
-        ""
-    } else {
-        " FOR UPDATE"
-    };
+    let qi_pk = ident::quoted(meta.key_column());
     // The reference keys the rows hold before the recompute: what the change
     // feed names as the collections a row leaves.
     let references = meta.publishes_collections();
     let sql = format!(
         "SELECT t.{qi_pk}::pg_catalog.int8 AS pk, t.{qi_key}::pg_catalog.text AS key, {} \
-         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key}{lock}",
+         FROM {qi_tv} t WHERE t.{qi_key} OPERATOR(pg_catalog.=) ANY({}) ORDER BY t.{qi_key} FOR UPDATE",
         meta.reference_keys("t"),
         key_cast(key_type, "$1", true)
     );
@@ -532,7 +394,7 @@ pub(crate) fn lock_rows(
     // statement: the key lock only stops new creations of it. Without this the
     // upsert waits for that row's lock inside ON CONFLICT DO UPDATE and writes
     // what it computed before the wait.
-    if !transaction_snapshot && !missing.is_empty() {
+    if !missing.is_empty() {
         let created: Vec<KeyValue> = missing.into_iter().map(KeyValue::Text).collect();
         let args = [key_array(key_type, &created)?];
         let (more, _, more_old) = locked_rows(&sql, &args, references)?;
@@ -557,7 +419,7 @@ fn locked_rows(
     crate::catalog::collections::OldKeys,
 )> {
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    Ok(Spi::connect_mut(|client| {
+    Ok(crate::utils::spi::connect_mut(|client| {
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
         let mut old = crate::catalog::collections::OldKeys::new();
@@ -580,9 +442,8 @@ fn locked_rows(
 /// statements (direct patches, grouped by shape, then recomputes) then takes
 /// their row locks in the order every concurrent refresh does, so two of them
 /// never wait for each other in a cycle (#263); and a patch written into a parent
-/// can be checked against what the parent embeds now. Under REPEATABLE READ and
-/// SERIALIZABLE a row updated since the snapshot fails the write here (40001), as
-/// it would in the refresh; one being updated is waited for in key order too.
+/// can be checked against what the parent embeds now. A row being updated is
+/// waited for in key order too.
 ///
 /// # Errors
 /// Returns an error if the rows cannot be locked.
@@ -594,7 +455,7 @@ pub(crate) fn lock_in_key_order(
     let key_type = &meta.key_type;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_key = ident::quoted(&meta.identity.column);
-    let qi_pk = ident::quoted(&format!("pk_{}", meta.entity_name));
+    let qi_pk = ident::quoted(meta.key_column());
     let mut read = String::new();
     for column in columns {
         let _ = write!(read, ", t.{}::pg_catalog.int8", ident::quoted(column));
@@ -606,7 +467,7 @@ pub(crate) fn lock_in_key_order(
     );
     let args = [key_array(key_type, keys)?];
     // Read-write: a read-only SPI call refuses FOR UPDATE.
-    let rows = Spi::connect_mut(|client| {
+    let rows = crate::utils::spi::connect_mut(|client| {
         let mut rows = std::collections::HashMap::new();
         for row in crate::utils::spi::kept_update(client, &sql, &args)? {
             let Some(pk) = row.get::<i64>(1)? else {
@@ -641,9 +502,9 @@ pub(crate) fn run_journaled(
     meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
-    change: crate::queue::affected::Change,
+    change: crate::queue::log::Change,
 ) -> crate::TViewResult<Vec<i64>> {
-    let written = Spi::connect_mut(|client| {
+    let written = crate::utils::spi::connect_mut(|client| {
         let mut out = Vec::new();
         for row in crate::utils::spi::kept_update(client, sql, args)? {
             let pk: Option<i64> = row.get(1)?;
@@ -658,7 +519,7 @@ pub(crate) fn run_journaled(
     Ok(written
         .into_iter()
         .map(|(pk, id, references)| {
-            crate::queue::affected::record(crate::queue::affected::Recorded::of(
+            crate::queue::log::record(crate::queue::log::Recorded::of(
                 meta,
                 pk,
                 id,
@@ -677,7 +538,7 @@ pub(crate) fn run_journaled_delete(
     sql: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<Vec<i64>> {
-    run_journaled(meta, sql, args, crate::queue::affected::Change::Deleted)
+    run_journaled(meta, sql, args, crate::queue::log::Change::Deleted)
 }
 
 #[cfg(test)]

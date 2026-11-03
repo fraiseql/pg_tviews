@@ -88,9 +88,9 @@ DO $$ BEGIN
 END $$;
 
 CREATE FUNCTION _rc() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 CREATE FUNCTION _applied() RETURNS bigint LANGUAGE sql AS
-  $$ SELECT (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $$;
+  $$ SELECT (pg_tviews_show_queue()->>'direct_patches_applied')::bigint $$;
 
 -- ── Cycle 2: one-level cascade (user → post.author), zero recomputes ──────────
 DO $$
@@ -175,11 +175,11 @@ DO $$
 DECLARE rc0 bigint; fb0 bigint;
 BEGIN
   DELETE FROM tv_user WHERE pk_user = 1;   -- child row missing
-  rc0 := _rc(); fb0 := (pg_tviews_queue_stats()->>'direct_patch_fallbacks')::bigint;
+  rc0 := _rc(); fb0 := (pg_tviews_show_queue()->>'direct_patch_fallbacks')::bigint;
   UPDATE tb_user SET name = 'Eve' WHERE pk_user = 1;
 
   -- Child fell back at least once, and recompute(s) ran for the child + parents.
-  IF (pg_tviews_queue_stats()->>'direct_patch_fallbacks')::bigint - fb0 < 1 THEN
+  IF (pg_tviews_show_queue()->>'direct_patch_fallbacks')::bigint - fb0 < 1 THEN
     RAISE EXCEPTION '#56 cascade FAIL: missing child row did not fall back';
   END IF;
   IF _rc() = rc0 THEN

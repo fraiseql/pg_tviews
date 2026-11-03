@@ -42,9 +42,9 @@ SELECT version();
 SELECT tviews.pg_tviews_version(),
        (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 ```
 `is_empty = true` with `needs_rebuild = true` means an UNLOGGED TVIEW lost its rows
 (the server did not shut down cleanly). Rebuild:

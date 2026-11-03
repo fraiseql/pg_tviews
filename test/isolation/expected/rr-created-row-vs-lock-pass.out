@@ -14,7 +14,7 @@ step w_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1 FROM tb_item LIMIT
 (0 rows)
 
 step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
-ERROR:  could not serialize access: a concurrent transaction refreshes TVIEW rows from rows this write changes
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step w_rollback: ROLLBACK;
 step c_commit: COMMIT;
 step w_retry: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
@@ -46,7 +46,7 @@ step c_begin: BEGIN;
 step c_insert: INSERT INTO tb_item (pk_item, fk_place, fk_group, name) VALUES (5, 1, 5, 'i5');
 step c_commit: COMMIT;
 step w_delete: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
-ERROR:  could not serialize access: a concurrent transaction added rows this write must refresh
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step w_rollback: ROLLBACK;
 step w_retry: UPDATE tb_item SET deleted_at = now() WHERE pk_item = 1;
 step w_check: 

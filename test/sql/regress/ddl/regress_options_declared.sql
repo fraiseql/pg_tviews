@@ -118,10 +118,9 @@ CREATE ROLE regress_options_user;
 SET ROLE regress_options_user;
 SELECT must(outcome(format('SET pg_tviews.%s = %L', s, v)) LIKE '42501 %',
             'a user may set pg_tviews.' || s)
-FROM (VALUES ('max_propagation_depth', '5'), ('max_dependency_depth', '5'),
+FROM (VALUES ('publish_changes', 'rows'), ('max_refresh_rows', '5'),
              ('max_queue_size', '5'), ('lock_escalation_threshold', '0'),
              ('audit_enabled', 'off'), ('direct_patch_enabled', 'off')) AS r(s, v);
-SELECT must(outcome('SET pg_tviews.batch_size = 10') = 'ok', 'a user may not tune batch_size');
 RESET ROLE;
 DROP ROLE regress_options_user;
 SELECT must(NOT EXISTS (SELECT 1 FROM pg_settings WHERE name IN

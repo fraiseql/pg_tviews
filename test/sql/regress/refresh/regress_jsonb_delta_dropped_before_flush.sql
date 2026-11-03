@@ -1,10 +1,12 @@
--- A direct patch whose jsonb_delta is gone by flush time fails; it never calls a
--- same-named function from another schema.
+-- A direct patch calls jsonb_delta's function qualified with the schema it is
+-- installed in, never a same-named function from another schema; and jsonb_delta
+-- cannot be dropped between a patch's capture and its flush.
 --
--- Direct patches are captured while jsonb_delta is installed and applied when the
--- statement flushes. If jsonb_delta is dropped in between, the flush must not
--- fall back to public.jsonb_smart_patch_scalar: any role with CREATE on public
--- could have planted one, and the flush runs it as the TVIEW's owner.
+-- Direct patches are captured in a statement and applied when it flushes. The
+-- flush must not reach public.jsonb_smart_patch_scalar: any role with CREATE on
+-- public could have planted one, and the flush runs it as the TVIEW's owner. Since
+-- pg_tviews requires jsonb_delta, a DROP EXTENSION jsonb_delta in between is
+-- refused (2BP01) and the patch goes through jsonb_delta's own function.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_jsonb_delta_dropped_before_flush.sql
 -- expect-output: jsonb_delta dropped before flush: refused
@@ -53,10 +55,15 @@ END $$;
 DO $$
 BEGIN
     UPDATE tb_log SET note = patch_then_drop() WHERE pk_log = 1;
-    RAISE EXCEPTION 'the flush applied a patch without jsonb_delta';
-EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM LIKE '%PLANTED%' OR SQLERRM NOT LIKE '%jsonb_delta%' THEN
-        RAISE EXCEPTION 'wrong outcome: %', SQLERRM;
+    RAISE EXCEPTION 'jsonb_delta was dropped from under pg_tviews';
+EXCEPTION WHEN dependent_objects_still_exist THEN NULL;
+END $$;
+
+-- The patch goes through jd.jsonb_smart_patch_scalar, not the planted one.
+UPDATE tb_user SET bio = 'patched' WHERE pk_user = 1;
+DO $$ BEGIN
+    IF (SELECT data->>'bio' FROM tv_user WHERE pk_user = 1) IS DISTINCT FROM 'patched' THEN
+        RAISE EXCEPTION 'tv_user not patched';
     END IF;
 END $$;
 

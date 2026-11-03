@@ -7,6 +7,10 @@ use crate::queue::RefreshKey;
 use crate::queue::patch::{self, PatchState};
 use crate::queue::state;
 
+/// Entity batches one flush applies before it fails: only a loop (a user trigger
+/// on a TVIEW writing back what its refresh reads) reaches it.
+const MAX_FLUSH_STEPS: usize = 1_000;
+
 pub(super) fn flush_pending() -> TViewResult<()> {
     // Take what the triggers queued. The direct patches come with their queue
     // entries: keys carrying a usable chain are patched straight into
@@ -20,10 +24,11 @@ pub(super) fn flush_pending() -> TViewResult<()> {
         return Ok(());
     }
     crate::revision::check();
-    crate::queue::affected::begin_flush();
+    crate::concurrency::require_read_committed();
+    crate::queue::log::begin_flush();
     let timer = crate::metrics::metrics_api::record_refresh_start();
 
-    let mut flush = Flush::new(crate::cache::graph()?, queue, patches);
+    let mut flush = Flush::new(crate::catalog::graph()?, queue, patches);
     // Write each parent change into all its children at once; the
     // parents of every changed child join the queue.
     flush.apply_fanouts(fanout)?;
@@ -38,24 +43,16 @@ pub(super) fn flush_pending() -> TViewResult<()> {
         );
         flush.take_late()?;
         flush.iteration += 1;
-        let max_depth = crate::config::max_propagation_depth();
-        if flush.iteration > max_depth {
+        if flush.iteration > MAX_FLUSH_STEPS {
             return Err(crate::TViewError::DepthExceeded {
                 what: "propagation",
                 depth: flush.iteration,
-                max_depth,
+                max_depth: MAX_FLUSH_STEPS,
             });
         }
     }
 
-    // One audit entry per entity, written by the COMMIT hook.
-    let mut counts: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
-    for key in &flush.processed {
-        *counts.entry(&key.entity).or_insert(0) += 1;
-    }
-    for (entity, count) in counts {
-        crate::audit::log_refresh(entity, count);
-    }
+    crate::audit::log_refreshes(flush.processed.iter().map(|k| k.entity.as_str()))?;
     crate::metrics::metrics_api::record_refresh_complete(
         flush.processed.len(),
         flush.iteration - 1,
@@ -112,7 +109,8 @@ impl Flush {
             return None;
         }
         // The parents a refresh discovers come later in this order, so every key
-        // is refreshed after everything it reads, and only once.
+        // is refreshed after everything it reads, and once unless something it
+        // reads is written again during the flush.
         let sorted = self
             .graph
             .in_order(self.pending.drain().collect(), |k| &k.entity);

@@ -3,7 +3,7 @@
 --
 -- Each write ran ~10 generated statements, nine of them planned every time. They
 -- now run from plans kept for the backend: a second identical write prepares
--- nothing (plans_prepared in pg_tviews_queue_stats()), and a TVIEW or base table
+-- nothing (plans_prepared in pg_tviews_show_queue()), and a TVIEW or base table
 -- changed between writes in the same session is still refreshed right.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_kept_plans.sql
@@ -30,7 +30,7 @@ SELECT tviews.pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tb_user u ON u.pk_user = p.fk_user $$);
 
 CREATE FUNCTION prepared() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (tviews.pg_tviews_queue_stats()->>'plans_prepared')::bigint $$;
+    $$ SELECT (tviews.pg_tviews_show_queue()->>'plans_prepared')::bigint $$;
 CREATE FUNCTION assert_fresh(step text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE entity text; d bigint;
 BEGIN

@@ -4,8 +4,8 @@
 -- RowShare intent locks on the relation, in PostgreSQL's lock manager as
 -- advisory locks whose objsubid is 21622 (value) or 21623 (relation). They last until the end of the
 -- transaction, go with a rolled-back savepoint, are kept by a prepared
--- transaction, can't be taken or blocked through pg_advisory_lock(), and are
--- taken under SERIALIZABLE as under REPEATABLE READ.
+-- transaction, and can't be taken or blocked through pg_advisory_lock(). A
+-- SERIALIZABLE writer is refused before it takes any.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_value_locks.sql
 -- expect-output: value_locks: PASS
@@ -143,13 +143,16 @@ SELECT must(held('tb_region') = '{relation:RowExclusiveLock:1,value:ExclusiveLoc
             'a partition''s row holds ' || held('tb_region')::text);
 COMMIT;
 
--- 8. SERIALIZABLE takes them as REPEATABLE READ does: serializable snapshot
---    isolation orders serializable transactions among themselves only, not
---    against a READ COMMITTED writer.
+-- 8. A SERIALIZABLE writer is refused (0A000) before it locks anything:
+--    serializable snapshot isolation orders serializable transactions among
+--    themselves only, not against a READ COMMITTED writer.
 BEGIN ISOLATION LEVEL SERIALIZABLE;
-UPDATE tb_user SET name = 'ann!' WHERE pk_user = 1;
-SELECT must(held('tb_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:1}',
-            'SERIALIZABLE holds ' || held('tb_user')::text);
+DO $$ BEGIN
+    UPDATE tb_user SET name = 'ann!' WHERE pk_user = 1;
+    RAISE EXCEPTION 'value locks FAIL: a SERIALIZABLE write was not refused';
+EXCEPTION WHEN feature_not_supported THEN NULL;
+END $$;
+SELECT must(held('tb_user') = '{}', 'a refused SERIALIZABLE writer holds ' || held('tb_user')::text);
 COMMIT;
 
 -- 9. A refresh locks, shared, what the rows it computes read: the post's user
@@ -176,15 +179,15 @@ COMMIT;
 
 -- 10. Escalation: past pg_tviews.lock_escalation_threshold values of one relation
 --     a transaction locks the relation instead (0: always, -1: never), and
---     pg_tviews_queue_stats() counts the locks and escalations of the transaction.
+--     pg_tviews_show_queue() counts the locks and escalations of the transaction.
 INSERT INTO tb_user (pk_user, name) SELECT g, 'u' || g FROM generate_series(10, 19) g;
 BEGIN;
 SET LOCAL pg_tviews.lock_escalation_threshold = 4;
 UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
 SELECT must(held('tb_user') = '{relation:ExclusiveLock:1}',
             'past the threshold, a writer holds ' || held('tb_user')::text);
-SELECT must((pg_tviews_queue_stats()->>'value_lock_escalations')::int >= 1,
-            'no escalation counted: ' || pg_tviews_queue_stats()::text);
+SELECT must((pg_tviews_show_queue()->>'value_lock_escalations')::int >= 1,
+            'no escalation counted: ' || pg_tviews_show_queue()::text);
 COMMIT;
 BEGIN;
 SET LOCAL pg_tviews.lock_escalation_threshold = 0;
@@ -193,14 +196,14 @@ SELECT must(held('tb_user') = '{relation:ExclusiveLock:1}',
             'at threshold 0, a writer holds ' || held('tb_user')::text);
 COMMIT;
 BEGIN;
-SET LOCAL pg_tviews.lock_escalation_threshold = -1;
+SET LOCAL pg_tviews.lock_escalation_threshold = 1000000;
 UPDATE tb_user SET name = name || '.' WHERE pk_user BETWEEN 10 AND 19;
 SELECT must(held('tb_user') = '{relation:RowExclusiveLock:1,value:ExclusiveLock:10}',
-            'at threshold -1, a writer holds ' || held('tb_user')::text);
-SELECT must((pg_tviews_queue_stats()->>'value_locks')::int >= 10
-            AND (pg_tviews_queue_stats()->>'value_lock_escalations')::int = 0
-            AND (pg_tviews_queue_stats()->>'value_lock_waits')::int = 0,
-            'lock counters: ' || pg_tviews_queue_stats()::text);
+            'below a high threshold, a writer holds ' || held('tb_user')::text);
+SELECT must((pg_tviews_show_queue()->>'value_locks')::int >= 10
+            AND (pg_tviews_show_queue()->>'value_lock_escalations')::int = 0
+            AND (pg_tviews_show_queue()->>'value_lock_waits')::int = 0,
+            'lock counters: ' || pg_tviews_show_queue()::text);
 COMMIT;
 
 \echo 'value_locks: PASS'

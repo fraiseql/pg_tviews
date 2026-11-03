@@ -1,0 +1,92 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_ordcount",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "ordcount",
+      "initial_attnum": "public.tb_order.pk_order",
+      "initial_col": "pk_order",
+      "root": true,
+      "source_columns": [
+        "pk_order",
+        "id",
+        "fk_customer"
+      ],
+      "source_oid": "public.tb_order",
+      "source_table": "tb_order"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_order.pk_order",
+        "public.tb_order.id",
+        "public.tb_order.fk_customer"
+      ],
+      "column": "pk_order",
+      "columns": [
+        "pk_order",
+        "id",
+        "fk_customer"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_order.pk_order",
+        "public.tb_order.fk_customer"
+      ],
+      "relid": "public.tb_order",
+      "table": "public.tb_order"
+    },
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.name"
+      ],
+      "columns": [
+        "pk_customer",
+        "name"
+      ],
+      "hop": [
+        "pk_customer",
+        "fk_customer"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "reads": [
+        {
+          "attnum": "public.tb_customer.pk_customer",
+          "sql": "SELECT DISTINCT o1.{c:public.tb_order.fk_customer} FROM {r:public.tb_order} o1 WHERE o1.{c:public.tb_order.pk_order} OPERATOR(pg_catalog.=) ANY ($1)"
+        }
+      ],
+      "relid": "public.tb_customer",
+      "sql": "SELECT DISTINCT o1.{c:public.tb_order.pk_order} FROM pg_tviews_delta d, {r:public.tb_order} o1 WHERE (d.{c:public.tb_customer.pk_customer} OPERATOR(pg_catalog.=) o1.{c:public.tb_order.fk_customer})",
+      "table": "public.tb_customer"
+    },
+    {
+      "attnums": [
+        "public.mv_line_count.fk_order",
+        "public.mv_line_count.n"
+      ],
+      "columns": [
+        "fk_order",
+        "n"
+      ],
+      "kind": "all_keys",
+      "links": [
+        "public.mv_line_count.fk_order"
+      ],
+      "reason": "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without firing triggers",
+      "relid": "public.mv_line_count",
+      "table": "public.mv_line_count"
+    }
+  ],
+  "version": 3
+}

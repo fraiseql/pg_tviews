@@ -25,7 +25,7 @@ psql -X -v ON_ERROR_STOP=1 -d mydb -f docs/operations/runbooks/scripts/health-ch
 Or only the component status:
 ```sql
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 
@@ -68,12 +68,13 @@ WHERE cardinality(unused_indexes) > 0 OR cardinality(missing_propagation_indexes
 ```
 Show the indexes that would be created, then create them:
 ```sql
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(dry_run => true);
-SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes();
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(dry_run => true);
+SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all();
 ```
 
 ### Step 5: Registrations that need refreshing
-After an extension update some TVIEWs may need re-registration:
+`ALTER EXTENSION pg_tviews UPDATE` re-derives every TVIEW; one still marked
+`needs_reregister` is re-derived by hand:
 ```sql
 SELECT schema, name FROM tviews.registry WHERE needs_reregister;
 SELECT * FROM tviews.pg_tviews_reregister_all();

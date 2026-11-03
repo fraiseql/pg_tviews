@@ -80,7 +80,7 @@ psql -X -d mydb -c "SELECT pg_is_in_recovery();"   # false once recovery ended
 
 ### Step 3: Rebuild UNLOGGED TVIEWs
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();  -- is_empty / needs_rebuild
+SELECT * FROM tviews.pg_tviews_show_replication();  -- is_empty / needs_rebuild
 SELECT * FROM tviews.pg_tviews_rebuild_all();
 ```
 With `shared_preload_libraries = 'pg_tviews'`, the rebuild launcher runs this in every
@@ -103,7 +103,7 @@ SELECT tviews.pg_tviews_version() AS library,
        (SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews') AS extension;
 
 SELECT status, component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 
 SELECT schema, name, view, base_tables, needs_reregister
@@ -144,7 +144,7 @@ Point the applications at the restored database and run their health checks.
 
 ## Success Criteria
 - [ ] PostgreSQL is out of recovery and accepts connections
-- [ ] `tviews.pg_tviews_health_check()` reports no warning or error
+- [ ] `tviews.pg_tviews_check_health()` reports no warning or error
 - [ ] Every expected TVIEW is in `tviews.registry`, none is empty unexpectedly
 - [ ] TVIEWs equal their views; a test write propagates
 - [ ] Applications work
@@ -161,9 +161,9 @@ pg_tviews is not installed on the target server. Install the release the backup 
 taken with (see `docs/development/extension-versioning.md`, "Release tarball").
 
 ### `pg_tviews library catalog revision <n> does not match the installed extension (<m>)`
-The installed library is a different release from the restored extension catalog. Run
-`ALTER EXTENSION pg_tviews UPDATE;` then `SELECT * FROM tviews.pg_tviews_reregister_all();`
-(see [Extension Updates](../../upgrade/extension/extension-minor-update.md)).
+The installed library is a different release from the restored extension catalog. From
+the previous release, run `ALTER EXTENSION pg_tviews UPDATE;`; from an older one, drop
+and recreate, as the hint says ([Upgrading pg_tviews](../../upgrade.md)).
 
 ### A TVIEW is empty after the restore
 It is UNLOGGED and the restore did not carry its rows (physical restore, crash, or

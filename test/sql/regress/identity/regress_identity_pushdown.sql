@@ -4,7 +4,7 @@
 -- its type, `key = ANY($1::int8[])` or `= ANY($1::text[]::uuid[])`, which
 -- PostgreSQL pushes below the DISTINCT ON into the base table's index.
 --
--- The plans below are those of the refresh's source query (refresh/bulk.rs).
+-- The plans below are those of the refresh's source query (refresh/recompute.rs).
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/identity/regress_identity_pushdown.sql
 --

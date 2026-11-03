@@ -37,12 +37,12 @@ CREATE TRIGGER close_batch AFTER UPDATE ON tb_batch FOR EACH ROW
     WHEN (NEW.state = 'closed') EXECUTE FUNCTION close_batch();
 
 DO $$
-DECLARE before bigint := (pg_tviews_queue_stats()->>'flushes')::bigint;
+DECLARE before bigint := (pg_tviews_show_queue()->>'flushes')::bigint;
 BEGIN
     UPDATE tb_batch SET state = 'closed';
-    IF (pg_tviews_queue_stats()->>'flushes')::bigint - before IS DISTINCT FROM 1 THEN
+    IF (pg_tviews_show_queue()->>'flushes')::bigint - before IS DISTINCT FROM 1 THEN
         RAISE EXCEPTION 'expected one flush for the UPDATE, got %',
-            (pg_tviews_queue_stats()->>'flushes')::bigint - before;
+            (pg_tviews_show_queue()->>'flushes')::bigint - before;
     END IF;
 END $$;
 SELECT assert_fresh('tv_stage', 'pk_stage', 'a TRUNCATE run by a trigger of an UPDATE');

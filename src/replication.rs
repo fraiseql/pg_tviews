@@ -58,7 +58,7 @@ impl TviewRelation {
 /// transaction id): it must run on a hot standby.
 fn has_no_rows(qualified: &str) -> TViewResult<bool> {
     let sql = format!("SELECT NOT EXISTS (SELECT 1 FROM {qualified}) AS empty");
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let rows = client.select(&sql, Some(1), &[])?;
         rows.first().get_one::<bool>()
     })
@@ -82,7 +82,7 @@ fn in_recovery() -> bool {
 ///
 /// # Errors
 /// Returns an error if a catalog query or an emptiness probe fails.
-#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_replication_status()
+#[allow(clippy::type_complexity)] // Reason: one row of pg_tviews_show_replication()
 pub(crate) fn replication_status()
 -> TViewResult<Vec<(String, String, bool, Option<bool>, Option<bool>)>> {
     let recovering = in_recovery();
@@ -131,7 +131,7 @@ pub fn rebuild_all(only_empty: bool) -> TViewResult<Vec<(String, i64)>> {
 
     // A TVIEW whose backing view reads another TVIEW is rebuilt after it.
     let mut targets = TviewRelation::load(None)?;
-    let graph = crate::cache::graph()?;
+    let graph = crate::catalog::graph()?;
     let order = dependencies_first(&graph.children);
     targets.sort_by_key(|rel| {
         order

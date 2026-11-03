@@ -103,7 +103,7 @@ SELECT must(managed('app.tv_post') = '{idx_tv_post_author_pk_pk_post,idx_tv_post
             'after reregister: ' || managed('app.tv_post')::text);
 SELECT must(unmanaged('app.tv_post') = '{post_by_author}', 'tv_post user indexes');
 
--- pg_tviews_ensure_propagation_indexes() (an administrator's) records what it creates.
+-- pg_tviews_ensure_propagation_indexes_all() (an administrator's) records what it creates.
 DROP INDEX idx_tv_post_author_pk_pk_post, post_by_author;
 RESET ROLE;
 SELECT must((SELECT count(*) FROM tviews.pg_tviews_ensure_propagation_indexes('post')) = 1,

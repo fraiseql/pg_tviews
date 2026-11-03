@@ -27,7 +27,7 @@ A release (`.github/workflows/release.yml`, run on a `v*` tag) publishes:
 
 - `pg_tviews-v<version>.tar.gz`, built for PostgreSQL 18: `lib/pg_tviews.so` goes to
   `$(pg_config --pkglibdir)`, `extension/pg_tviews*` (control file, install script and
-  upgrade scripts) to `$(pg_config --sharedir)/extension`;
+  the update script from the previous release) to `$(pg_config --sharedir)/extension`;
 - a Sigstore bundle for the tarball and for each SBOM (SPDX, CycloneDX);
 - a build provenance attestation for the tarball, from
   `actions/attest-build-provenance`.
@@ -38,10 +38,11 @@ rebuild the extension yourself. The crate is also published to crates.io.
 
 ## Upgrading
 
-`ALTER EXTENSION pg_tviews UPDATE` is supported from 0.1.0-beta.20 on, one upgrade
-script per release ([extension versioning](development/extension-versioning.md)).
-Read the release's "Upgrade notes" in the CHANGELOG first: some releases ask for
-`SELECT * FROM tviews.pg_tviews_reregister_all();` or a full refresh afterwards.
+`ALTER EXTENSION pg_tviews UPDATE` updates from the previous release, with one script
+that re-derives every TVIEW; an install of an older release is dropped and its TVIEWs
+created again ([Upgrading pg_tviews](operations/upgrade.md),
+[extension versioning](development/extension-versioning.md)). Read the release's
+"Upgrade notes" in the CHANGELOG first: they list the grants to restore.
 
 ## Reporting issues
 

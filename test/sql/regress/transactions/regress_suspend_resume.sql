@@ -64,11 +64,11 @@ SELECT pg_tviews_suspend_triggers();
 SELECT pg_tviews_suspend_triggers();
 UPDATE tb_post SET title = title || '?' WHERE pk_post <= 10;
 SELECT pg_tviews_resume_triggers();
-SELECT must(pg_tviews_is_suspended(), 'inner resume ended the suspension');
+SELECT must(pg_tviews_show_suspended() IS NOT NULL, 'inner resume ended the suspension');
 SELECT must((SELECT data->>'title' FROM tv_post WHERE pk_post = 1) NOT LIKE '%?',
             'refresh ran before the outermost resume');
 SELECT pg_tviews_resume_triggers();
-SELECT must(NOT pg_tviews_is_suspended() AND in_sync(), 'outermost resume');
+SELECT must(pg_tviews_show_suspended() IS NULL AND in_sync(), 'outermost resume');
 COMMIT;
 
 -- ========================================================================
@@ -79,7 +79,7 @@ SELECT pg_tviews_suspend_triggers();
 DELETE FROM tb_post WHERE pk_post > 490;
 INSERT INTO tb_post (fk_user, title) VALUES (2, 'new');
 COMMIT;
-SELECT must(NOT pg_tviews_is_suspended(), 'still suspended after COMMIT');
+SELECT must(pg_tviews_show_suspended() IS NULL, 'still suspended after COMMIT');
 SELECT must(in_sync(), 'COMMIT without resume left TVIEWs stale');
 
 -- Incremental refresh works again afterwards.

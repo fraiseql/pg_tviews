@@ -25,7 +25,8 @@ queries over plain views. Why, and what a SQL-only edition would cost:
 - **Rust**: the toolchain pinned in `rust-toolchain.toml` (rustup installs it on the
   first build)
 - **cargo-pgrx** 0.17.0, the version the extension is built with
-- **jsonb_delta** (optional): enables the direct-patch fast path (below)
+- **jsonb_delta** 0.3.0 or later: required (below); `CREATE EXTENSION pg_tviews CASCADE`
+  installs it when its files are on the server
 
 ## 1. Build and install
 
@@ -63,15 +64,17 @@ The server development files come from your distribution:
 ## 2. Load the library
 
 pg_tviews installs its hooks (the interception of `CREATE TABLE tv_* AS`, `DROP TABLE
-tv_*` and `COMMIT`) when its library is loaded. Load it with the server, in
-`postgresql.conf`, then restart PostgreSQL:
+tv_*` and `COMMIT`), its shared memory and its settings when the server starts.
+Preload it in `postgresql.conf`, then restart PostgreSQL:
 
 ```ini
 shared_preload_libraries = 'pg_tviews'
 ```
 
-Without it, a `CREATE TABLE tv_* AS` that reaches the server un-intercepted fails,
-naming the fix; the SQL functions still work.
+Preloading is the only supported mode. Without it `CREATE EXTENSION pg_tviews` fails
+with `55000` (`pg_tviews is not in shared_preload_libraries`, hint: add it and
+restart). If the preload is removed after the extension is installed, every pg_tviews
+function and every write of its catalog fails the same way.
 
 ## 3. Create the extension
 
@@ -80,17 +83,17 @@ psql -d your_database
 ```
 
 ```sql
--- Optional, before or after pg_tviews: the direct-patch fast path
+-- Required by pg_tviews (CASCADE below installs it too)
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 
 -- Its objects go to the schema tviews
-CREATE EXTENSION IF NOT EXISTS pg_tviews;
+CREATE EXTENSION IF NOT EXISTS pg_tviews CASCADE;
 
 SELECT tviews.pg_tviews_version();
-SELECT tviews.pg_tviews_check_jsonb_delta();   -- true when jsonb_delta is installed
 ```
 
-`CREATE EXTENSION pg_tviews` needs `CREATE` on the database. Every object goes to the
+`CREATE EXTENSION pg_tviews` needs a superuser: its script creates event triggers and C
+functions, and the control file says `superuser = true`. Every object goes to the
 schema `tviews`; to call the functions unqualified, add it to the database's
 `search_path` (it applies to new sessions):
 
@@ -103,21 +106,33 @@ END $$;
 
 ## jsonb_delta
 
-pg_tviews works without other extensions. Without `jsonb_delta`, every TVIEW row a
-write affects is recomputed from its backing view, and `CREATE EXTENSION pg_tviews`
-says so with a WARNING. With it, an eligible single-row `UPDATE` (a changed column
-copied as-is into `data`, a child's document embedded in its parents) patches the
-stored documents in place instead of recomputing them; the result is the same
-document. The conditions and the measured figures are in the
-[README](../../README.md) and [Benchmark results](../benchmarks/results.md).
-A superuser can turn the fast path off with `SET pg_tviews.direct_patch_enabled = off`.
+pg_tviews requires `jsonb_delta` (`requires` in its control file): `CREATE EXTENSION
+pg_tviews` without it fails with PostgreSQL's "required extension is not installed",
+and `jsonb_delta` cannot be dropped while pg_tviews is installed. An eligible
+`UPDATE` (a changed column copied as-is into `data`, a child's document embedded in its
+parents) patches the stored documents in place instead of recomputing them; the result
+is the same document.
+
+The patches use two functions, measured per call:
+
+| Patch | Function | 23 KB document | 490 B document |
+|---|---|---|---|
+| A row's own document, nested merge (a child's document into its parent) | `jsonb_delta` | 5.02 µs (core JSONB: 6.37 µs) | |
+| One value written into many rows (a copied parent column, fan-out) | core `jsonb_set` | 4.14 µs (`jsonb_delta`: 4.81 µs) | 0.48 µs (`jsonb_delta`: 1.15 µs) |
+
+`jsonb_delta` wins the nested merge, where core JSONB names the document twice; core
+`jsonb_set` is faster for a one-value write, so the fan-out keeps it. A row's own
+top-level merge also goes through `jsonb_delta`, which is not faster there (23 KB:
+4.48 µs against 4.20 µs for core `||`). It is required rather than optional because one
+mode is simpler to keep correct than two. Its contract with pg_tviews is tested by
+`test/sql/regress/direct_patch/regress_jsonb_delta_semantics.sql`.
 
 ## Verification
 
 ```sql
 \dx pg_tviews
 
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 
 CREATE TABLE tb_install_check (pk_install_check bigint PRIMARY KEY, label text);
 CREATE TABLE tv_install_check AS
@@ -152,7 +167,8 @@ empty after a crash or a promotion until a background worker refills it. See
 |---|---|
 | `extension "pg_tviews" is not available` | the files are not in this server's directories: `pg_config --pkglibdir --sharedir` of the server you run, and reinstall with `--pg-config` |
 | `could not access file "pg_tviews"` at startup | `shared_preload_libraries` names a library that is not installed for this server |
-| `CREATE TABLE tv_* AS` fails asking for `shared_preload_libraries` | add `pg_tviews` there and restart |
+| `55000` `pg_tviews is not in shared_preload_libraries` | add `pg_tviews` there and restart |
+| `permission denied to create extension "pg_tviews"` | create it as a superuser |
 | `function pg_tviews_… does not exist` | qualify it (`tviews.pg_tviews_…`) or add `tviews` to the `search_path` |
 | permission denied (`42501`) on a maintenance function | it is not executable by `PUBLIC`: [Operator role](../user-guides/operators.md#operator-role) |
 | `cargo pgrx` version mismatch | `cargo install --locked cargo-pgrx --version 0.17.0 --force` |
@@ -172,9 +188,10 @@ ALTER EXTENSION pg_tviews UPDATE;
 ```
 
 The update re-derives every TVIEW from its stored definition and fails, naming the
-TVIEW, when one no longer analyses. It starts from 0.1.0-beta.20 or later
-([Deprecation warnings](../DEPRECATION_WARNINGS.md)). Until the database is updated,
-pg_tviews functions fail with `55000`, naming the fix.
+TVIEW, when one no longer analyses. It starts from the previous release; an older
+install is dropped and recreated ([Upgrading pg_tviews](../operations/upgrade.md)).
+Until the database is updated, writes to base tables and pg_tviews functions fail with
+`55000`, naming the fix.
 
 ## Uninstalling
 

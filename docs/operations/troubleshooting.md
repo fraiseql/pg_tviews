@@ -13,11 +13,11 @@ Run this first for any issue:
 ```sql
 -- Everything pg_tviews checks: extension, jsonb_delta, catalog, metadata,
 -- triggers, re-registration
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 
 -- Only problems
 SELECT component, severity, message
-FROM tviews.pg_tviews_health_check()
+FROM tviews.pg_tviews_check_health()
 WHERE severity <> 'info';
 ```
 
@@ -30,8 +30,8 @@ The refresh queue is in memory, per transaction, and is flushed at the end of ea
 statement and on `COMMIT`. Outside a write it is empty. Inside a transaction:
 
 ```sql
-SELECT tviews.pg_tviews_debug_queue();   -- keys queued in this transaction
-SELECT tviews.pg_tviews_queue_stats();   -- counters of this session
+SELECT tviews.pg_tviews_show_queue()->'queued';   -- keys queued in this transaction
+SELECT tviews.pg_tviews_show_queue();   -- counters of this session
 ```
 
 `tviews.stats` holds each TVIEW's refresh counters, cumulated over every session.
@@ -57,7 +57,7 @@ extension control file`)
    ```sql
    SHOW shared_preload_libraries;           -- must include pg_tviews
    CREATE EXTENSION jsonb_delta;
-   CREATE EXTENSION pg_tviews;
+   CREATE EXTENSION pg_tviews CASCADE;
    ```
 
 ### Permission Denied
@@ -205,11 +205,11 @@ keys than `pg_tviews.max_queue_size`. See
    ```sql
    SELECT name, cascade_kinds, uncascaded_tables, needs_reregister
    FROM tviews.registry WHERE entity = 'post';
-   SELECT tviews.pg_tviews_mapping_query('tv_post', 'tb_user'::regclass);
+   SELECT tviews.pg_tviews_show_mapping_query('tv_post', 'tb_user'::regclass);
    ```
 4. **Check that refresh is not suspended** in the writing transaction:
    ```sql
-   SELECT tviews.pg_tviews_is_suspended();
+   SELECT tviews.pg_tviews_show_suspended() IS NOT NULL;
    ```
 5. **Repair**: `SELECT tviews.pg_tviews_refresh('post');` (or
    `SELECT tviews.pg_tviews_refresh_all();`).
@@ -222,7 +222,7 @@ the launcher worker (`pg_tviews.auto_rebuild_databases`, `*` by default) or its 
 write refills it, and a standby cannot read it.
 
 ```sql
-SELECT * FROM tviews.pg_tviews_replication_status();
+SELECT * FROM tviews.pg_tviews_show_replication();
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);
 ALTER TABLE tv_post SET LOGGED;   -- readable on standbys; fills a reset TVIEW first
 ```
@@ -247,7 +247,7 @@ EXPLAIN ANALYZE SELECT * FROM public.v_post WHERE pk_post = 1;
 SELECT * FROM tviews.stats WHERE entity = 'post';
 
 -- Session counters (compare before and after a write, in one session)
-SELECT tviews.pg_tviews_queue_stats();
+SELECT tviews.pg_tviews_show_queue();
 ```
 
 Index the columns the view joins on, create the missing propagation indexes
@@ -274,8 +274,8 @@ SELECT pk_post, pg_column_size(data) AS size_bytes
 FROM public.tv_post ORDER BY size_bytes DESC LIMIT 10;
 ```
 
-Lower `pg_tviews.batch_size` (keys recomputed per refresh statement), split very
-large write statements, and keep documents small (paginate large arrays).
+Split very large write statements into smaller transactions, make bulk changes after
+`pg_tviews_suspend_triggers()`, and keep documents small (paginate large arrays).
 
 ### Lock Conflicts
 
@@ -314,9 +314,8 @@ YMD`, …, see [Rendering](../reference/ddl.md#rendering)): from another time zo
 ## Connection Pooling Issues
 
 Suspension (`pg_tviews_suspend_triggers()`) ends with the transaction, and the
-refresh queue is per transaction, so transaction-mode pooling is safe. A session
-setting such as `SET pg_tviews.batch_size` stays on the pooled connection: reset it
-or configure `server_reset_query = DISCARD ALL` in PgBouncer session mode.
+refresh queue is per transaction, so transaction-mode pooling is safe. pg_tviews has
+no per-session settings to reset.
 
 ## Advanced Troubleshooting
 
@@ -350,7 +349,7 @@ SELECT name, base_tables FROM tviews.registry;
 ### Recovery After a Crash
 
 ```sql
-SELECT * FROM tviews.pg_tviews_health_check();
+SELECT * FROM tviews.pg_tviews_check_health();
 SELECT * FROM tviews.pg_tviews_rebuild_all(only_empty => true);
 -- Prepared transactions carry their TVIEW refreshes: COMMIT PREPARED or
 -- ROLLBACK PREPARED them
@@ -371,7 +370,7 @@ When reporting issues, include:
    ```sql
    SELECT name, query, base_tables, cascade_kinds, uncascaded_tables FROM tviews.registry;
    ```
-4. **Health check output**: `SELECT * FROM tviews.pg_tviews_health_check();`
+4. **Health check output**: `SELECT * FROM tviews.pg_tviews_check_health();`
 5. **Trigger status**:
    ```sql
    SELECT tgrelid::regclass, tgname, tgenabled FROM pg_trigger WHERE tgname LIKE 'trg_tview_%';

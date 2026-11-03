@@ -109,12 +109,12 @@ SELECT check_fresh('UPDATE of a partition');
 
 -- ── an UPDATE of a column the TVIEW does not read maps nothing ──────────────
 DO $$
-DECLARE before bigint := (tviews.pg_tviews_queue_stats()->>'total_refreshes')::bigint;
+DECLARE before bigint := (tviews.pg_tviews_show_queue()->>'total_refreshes')::bigint;
 BEGIN
     UPDATE tb_sku SET cost = cost + 1;
-    IF (tviews.pg_tviews_queue_stats()->>'total_refreshes')::bigint <> before THEN
+    IF (tviews.pg_tviews_show_queue()->>'total_refreshes')::bigint <> before THEN
         RAISE EXCEPTION 'FAIL [column-aware]: an UPDATE of tb_sku.cost refreshed % rows',
-            (tviews.pg_tviews_queue_stats()->>'total_refreshes')::bigint - before;
+            (tviews.pg_tviews_show_queue()->>'total_refreshes')::bigint - before;
     END IF;
 END $$;
 SELECT check_fresh('column-aware skip');

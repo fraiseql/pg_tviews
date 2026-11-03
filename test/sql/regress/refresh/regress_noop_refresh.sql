@@ -147,10 +147,10 @@ BEGIN
     END IF;
 END $$;
 CREATE FUNCTION _recomputes() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint $$;
 -- Session-cumulative count of refresh writes skipped because nothing changed.
 CREATE FUNCTION _skipped() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>'refresh_noop_skipped')::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>'refresh_noop_skipped')::bigint $$;
 CREATE TABLE _skip0 (v bigint);
 CREATE FUNCTION _expect_skipped(expected bigint, label text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE got bigint := _skipped() - (SELECT v FROM _skip0);

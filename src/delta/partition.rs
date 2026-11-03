@@ -5,7 +5,7 @@
 
 use super::mapping::{refresh_all, rendered};
 use super::render::{computed_columns, key_of, key_sql_type};
-use super::transition::{changed_values, crosscheck_keys, texts};
+use super::transition::{changed_values, texts};
 use super::trigger::{suspended, truncate_mapped};
 use crate::catalog::TviewMeta;
 use crate::config::UncascadedPolicy;
@@ -15,23 +15,23 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
-/// Refresh in full every TVIEW whose row trigger sits on the root of `table`'s
-/// partition tree: the rows of a partition attached to it or detached from it
-/// changed with no row trigger firing.
+/// Refresh in full every TVIEW the row trigger on the root of `table`'s
+/// partition tree serves: the rows of a partition attached to it or detached
+/// from it changed with no row trigger firing.
 ///
 /// # Errors
 /// Returns an error if the catalog query or a refresh fails.
 pub fn refresh_tviews_over(table: Oid) -> TViewResult<()> {
     let root = crate::catalog::partition_root(table)?;
-    let entities = crate::dependency::triggers::row_trigger_entities(root)?;
-    if entities.is_empty() {
+    let readers = crate::catalog::table_readers(root)?;
+    if readers.row().next().is_none() {
         return Ok(());
     }
-    for entity in &entities {
+    for entity in readers.row() {
         if suspended() {
             crate::suspend::record_change(entity);
         } else {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::concurrency::enqueue_refresh_all(entity);
         }
     }
     crate::flush::flush_refresh_queue()
@@ -86,7 +86,7 @@ pub fn map_leaving_partition(partition: Oid, lock_parent: bool) -> TViewResult<(
         if suspended() {
             crate::suspend::record_change(&entity);
         } else if foreign {
-            crate::queue::enqueue_refresh_all(&entity);
+            crate::concurrency::enqueue_refresh_all(&entity);
         } else {
             map_partition_rows(&entity, partition, ancestor, false)?;
         }
@@ -113,7 +113,7 @@ pub fn map_entering_partition(partition: Oid) -> TViewResult<()> {
         if suspended() {
             crate::suspend::record_change(&entity);
         } else if foreign {
-            crate::queue::enqueue_refresh_all(&entity);
+            crate::concurrency::enqueue_refresh_all(&entity);
         } else {
             map_partition_rows(&entity, partition, ancestor, true)?;
         }
@@ -129,8 +129,8 @@ fn readers_above(partition: Oid) -> TViewResult<Vec<(String, Oid)>> {
         "SELECT relid FROM pg_catalog.pg_partition_ancestors($1) WHERE relid <> $1",
         partition,
     )? {
-        for entity in crate::dependency::triggers::row_trigger_entities(ancestor)? {
-            readers.push((entity, ancestor));
+        for entity in crate::catalog::table_readers(ancestor)?.row() {
+            readers.push((entity.to_string(), ancestor));
         }
     }
     Ok(readers)
@@ -138,7 +138,7 @@ fn readers_above(partition: Oid) -> TViewResult<Vec<(String, Oid)>> {
 
 /// The OIDs `sql` returns for `relid` (its `$1`).
 fn oids(sql: &str, relid: Oid) -> TViewResult<Vec<Oid>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut out = Vec::new();
         for row in client.select(sql, None, &[crate::utils::spi::oid(relid)])? {
             out.extend(row.get::<Oid>(1)?);
@@ -184,7 +184,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
     // The owner reads the partition itself, under the partition's own privileges
     // and row security, not the root's: one it cannot read whole is refreshed in
     // full.
-    let readable = Spi::get_one_with_args::<bool>(
+    let readable = crate::utils::spi::one::<bool>(
         "SELECT pg_catalog.has_table_privilege($1, 'SELECT') AND NOT c.relrowsecurity \
          FROM pg_catalog.pg_class c WHERE c.oid = $1",
         &[crate::utils::spi::regclass(partition)],
@@ -192,7 +192,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
     .map_err(|e| crate::utils::spi::error("has_table_privilege", &e))?
     .unwrap_or(false);
     let Some(keys_sql) = keys_sql.filter(|_| readable) else {
-        crate::queue::enqueue_refresh_all(entity);
+        crate::concurrency::enqueue_refresh_all(entity);
         return Ok(());
     };
     let rows = format!(
@@ -210,14 +210,11 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         key_sql_type(key_type)
     );
     // Read-write: a fresh snapshot, which sees every row committed before the locks.
-    let lookup = |crosscheck: bool| {
-        Spi::connect_mut(|client| {
+    let lookup = || {
+        crate::utils::spi::connect_mut(|client| {
             let mut keys = Vec::new();
             for row in crate::utils::spi::kept_update(client, &sql, &[])? {
                 keys.extend(key_of(&row, key_type)?);
-            }
-            if crosscheck {
-                crosscheck_keys(&sql, &[], &keys)?;
             }
             Ok::<_, TViewError>(keys)
         })
@@ -228,13 +225,15 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
             &meta,
             mapping,
             |column| {
-                Spi::connect_mut(|client| texts(client, None, &changed_values(&delta, column), &[]))
-                    .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
+                crate::utils::spi::connect_mut(|client| {
+                    texts(client, None, &changed_values(&delta, column), &[])
+                })
+                .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
             },
             lookup,
         )?
     } else {
-        lookup(true)?
+        lookup()?
     };
     if !keys.is_empty() {
         crate::queue::enqueue_refresh_bulk(entity, keys);
@@ -257,7 +256,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind {
         MappingKind::AllKeys if full_refresh => {
-            crate::queue::enqueue_refresh_all(entity);
+            crate::concurrency::enqueue_refresh_all(entity);
             Ok(true)
         }
         // An `all_keys` table outside `full_refresh` still maps the reads of it
@@ -307,19 +306,16 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                 &meta,
                 mapping,
                 |column| {
-                    Spi::connect_mut(|client| {
+                    crate::utils::spi::connect_mut(|client| {
                         texts(client, None, &changed_values(&delta, column), &images)
                     })
                     .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
                 },
-                |crosscheck| {
-                    Spi::connect_mut(|client| {
+                || {
+                    crate::utils::spi::connect_mut(|client| {
                         let mut keys = Vec::new();
                         for row in crate::utils::spi::kept_update(client, &sql, &images)? {
                             keys.extend(key_of(&row, key_type)?);
-                        }
-                        if crosscheck {
-                            crosscheck_keys(&sql, &images, &keys)?;
                         }
                         Ok::<_, TViewError>(keys)
                     })

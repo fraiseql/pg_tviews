@@ -1,8 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Two-phase commit through pgbouncer in transaction pooling mode: a TVIEW refresh
+# is part of the prepared transaction, and COMMIT PREPARED / ROLLBACK PREPARED from
+# whatever server connection the pool hands out decide it. Run by run.sh, which
+# sets PGHOST/PGPORT/PGDATABASE to the pgbouncer.
 set -euo pipefail
-
-export PGHOST=localhost
-export PGPORT=6432
 
 echo "Testing 2PC edge cases..."
 
@@ -10,7 +11,8 @@ echo "Testing 2PC edge cases..."
 psql <<EOF
 DROP TABLE IF EXISTS tv_twopc CASCADE;
 CREATE TABLE IF NOT EXISTS tb_twopc (pk_twopc SERIAL PRIMARY KEY, id UUID NOT NULL DEFAULT gen_random_uuid(), label TEXT);
-CREATE TABLE tv_twopc AS SELECT pk_twopc, id, jsonb_build_object('label', label) AS data FROM tb_twopc;
+SELECT tviews.pg_tviews_create('tv_twopc',
+  \$\$SELECT pk_twopc, id, jsonb_build_object('label', label) AS data FROM tb_twopc\$\$);
 EOF
 
 echo "Test 1: Prepare → Commit"

@@ -30,19 +30,6 @@ pub struct AsOwner {
 }
 
 impl AsOwner {
-    /// Switch to the owner of `entity`'s `tv_*` table.
-    ///
-    /// # Errors
-    /// Returns an error if the entity is not registered or its table is gone.
-    pub fn of_entity(entity: &str) -> TViewResult<Self> {
-        let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
-            TViewError::TviewNotFound {
-                name: entity.to_string(),
-            }
-        })?;
-        Self::of_table(meta.tview_oid)
-    }
-
     /// Switch to the owner of the relation `table`.
     ///
     /// # Errors
@@ -56,7 +43,7 @@ impl AsOwner {
     /// # Errors
     /// Returns an error if the extension's row cannot be read.
     pub fn of_extension() -> TViewResult<Self> {
-        let owner = Spi::connect(|client| {
+        let owner = crate::utils::spi::connect(|client| {
             client
                 .select(
                     "SELECT extowner FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews'",
@@ -227,6 +214,12 @@ impl Drop for CatalogPath {
     }
 }
 
+/// Whether `pg_tviews` is doing work on a caller's behalf (a [`CatalogPath`] or
+/// an [`AsOwner`] is open): the queries running now are its own.
+pub fn in_extension_work() -> bool {
+    REPLACED_PATHS.with(|paths| !paths.borrow().is_empty())
+}
+
 thread_local! {
     /// The `search_path` each open [`CatalogPath`] replaced: the caller's.
     /// `None` for an [`AsOwner`], under which nothing the caller wrote is resolved.
@@ -317,7 +310,7 @@ unsafe fn pin_settings() {
 /// # Errors
 /// Returns an error if the catalog query fails.
 pub fn require_owner(table: Oid, tview: &str) -> TViewResult<()> {
-    let allowed = Spi::connect(|client| {
+    let allowed = crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::oid(table)];
         client
             .select(

@@ -82,9 +82,11 @@ pg_module_magic!();
 /// not during initdb or other bootstrap contexts.
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
+    crate::revision::note_preload();
     crate::config::register_gucs();
     crate::stats::init();
     crate::cache::register_relcache_callback();
+    crate::cache::set_catalog(crate::catalog::queries::meta_table_oid);
     crate::rebuild_worker::register();
 
     // SAFETY: _PG_init runs in PostgreSQL backend context. Installing hooks and

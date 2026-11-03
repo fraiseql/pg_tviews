@@ -124,7 +124,7 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- ── Existing installs: pg_tviews_ensure_propagation_indexes() ───────────────
+-- ── Existing installs: pg_tviews_ensure_propagation_indexes_all() ───────────────
 -- Simulate TVIEWs created before this fix by dropping their propagation indexes.
 DO $$
 DECLARE r record;
@@ -148,7 +148,7 @@ BEGIN
     -- dry_run reports the DDL and creates nothing: tv_post.fk_user and
     -- tv_comment.fk_post hold an embedded TVIEW's key; tv_comment.fk_user is a
     -- reference (its FOREIGN KEY to tb_user), which a reader composes by.
-    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes(NULL, true);
+    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes_all(true);
     IF n <> 3 THEN
         RAISE EXCEPTION 'FAIL #71: dry run reported % statements, expected 3', n;
     END IF;
@@ -168,7 +168,7 @@ BEGIN
     -- a user index that already leads with the fk counts as covering it
     CREATE INDEX user_owned_fk_user ON tv_comment (fk_user);
 
-    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes();
+    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes_all();
     IF n <> 1 OR NOT pg_temp.has_fk_pk_index('tv_comment', 'fk_post', 'pk_comment') THEN
         RAISE EXCEPTION 'FAIL #71: ensure() created % indexes, expected tv_comment.fk_post only', n;
     END IF;
@@ -177,7 +177,7 @@ BEGIN
     END IF;
 
     -- idempotent
-    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes();
+    SELECT count(*) INTO n FROM pg_tviews_ensure_propagation_indexes_all();
     IF n <> 0 THEN
         RAISE EXCEPTION 'FAIL #71: second ensure() call created % indexes, expected 0', n;
     END IF;

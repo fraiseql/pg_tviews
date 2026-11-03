@@ -573,6 +573,7 @@ fn an_all_keys_table_keeps_the_mapping_of_its_traceable_reads() {
 }
 
 mod identity;
+mod plan;
 mod read_sets;
 
 /// `tb_comment c JOIN tb_post p ON p.pk_post = c.fk_post JOIN tb_user u ON

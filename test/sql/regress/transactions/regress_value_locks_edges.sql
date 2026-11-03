@@ -4,10 +4,8 @@
 --    equal but their text forms differ (numeric 5 = 5.00, a case-insensitive
 --    collation): values are locked by the hash of their type's equality, in the
 --    written column's type and collation.
--- 2. Under REPEATABLE READ, the cross-check against the latest snapshot fails
---    only on a concurrent change, not on what a recompute itself makes of the
---    rows: a view combining two branch rows into one row per key (DISTINCT ON
---    over a UNION) refreshes without 40001.
+-- 2. A view combining two branch rows into one row per key (DISTINCT ON over a
+--    UNION) refreshes two keys of one statement into one row each.
 --
 -- A prepared transaction holds the writer's locks while this session runs the
 -- other side, with lock_timeout to tell a wait from none.
@@ -56,7 +54,7 @@ SELECT must((SELECT ok FROM waited), 'a refresh reading price 5.00 did not wait 
 DROP TABLE waited;
 INSERT INTO tb_item VALUES (2, DEFAULT, 5, 'i2');
 SELECT assert_fresh('tv_item', 'pk_item', 'numeric 5 = 5.00');
-SELECT must((SELECT column_name FROM tviews.pg_tviews_read_set_queries('tv_item', 'tb_price'::regclass))
+SELECT must((SELECT column_name FROM tviews.pg_tviews_show_read_sets('tv_item', 'tb_price'::regclass))
             = 'code', 'the join on numerics is not locked by value');
 
 -- ... and a case-insensitive collation: 'Ann' = 'ann'.
@@ -90,8 +88,8 @@ DROP TABLE waited;
 INSERT INTO tb_doc VALUES (2, DEFAULT, 'ann', 'd2');
 SELECT assert_fresh('tv_doc', 'pk_doc', 'case-insensitive collation');
 
--- 2. A UNION read through DISTINCT ON, a key in both branches, REPEATABLE READ
---    (two keys in one statement).
+-- 2. A UNION read through DISTINCT ON, a key in both branches (two keys in one
+--    statement).
 CREATE TABLE tb_task (pk_task integer PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 CREATE TABLE tb_task_copy (pk_task integer PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), title text);
 INSERT INTO tb_task VALUES (1, DEFAULT, 'a'), (3, DEFAULT, 'c');
@@ -103,10 +101,10 @@ SELECT pg_tviews_create('tv_task', $TV$
   ORDER BY u.pk_task, u.pref
 $TV$);
 INSERT INTO tb_task_copy VALUES (1, DEFAULT, 'a'), (4, DEFAULT, 'd');
-BEGIN ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
 UPDATE tb_task SET title = title || '!' WHERE pk_task IN (1, 3);
 COMMIT;
 SELECT must((SELECT count(*) FROM tv_task WHERE pk_task = 1) = 1, 'the duplicated key is not one row');
-SELECT assert_fresh('tv_task', 'pk_task', 'DISTINCT ON over a UNION under REPEATABLE READ');
+SELECT assert_fresh('tv_task', 'pk_task', 'DISTINCT ON over a UNION, two keys');
 
 \echo 'value_locks_edges: PASS'

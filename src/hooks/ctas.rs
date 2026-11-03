@@ -1,8 +1,8 @@
 //! `CREATE TABLE tv_* AS`: read from the parse tree and turned into a TVIEW.
 
 use super::{
-    CStr, Intercept, PgLogLevel, PgSqlErrorCode, Spi, TViewError, TViewResult, function_name,
-    pg_guard, pg_sys,
+    CStr, Intercept, PgLogLevel, PgSqlErrorCode, TViewError, TViewResult, function_name, pg_guard,
+    pg_sys,
 };
 
 /// A `CREATE [UNLOGGED] TABLE [IF NOT EXISTS] [schema.]tv_* [WITH (fillfactor = n,
@@ -39,7 +39,7 @@ impl CtasTarget {
 
     /// Whether `IF NOT EXISTS` applies: a relation of that name exists in the
     /// schema the table would be created in. `PostgreSQL` then skips the statement
-    /// with a notice. Uses SPI: call it outside `catch_unwind`.
+    /// with a notice. Uses SPI.
     fn skipped(&self) -> TViewResult<bool> {
         if !self.if_not_exists {
             return Ok(false);
@@ -52,7 +52,7 @@ impl CtasTarget {
             crate::utils::spi::text(schema.as_str()),
             crate::utils::spi::text(self.table.as_str()),
         ];
-        Spi::connect(|client| {
+        crate::utils::spi::connect(|client| {
             client
                 .select(
                     "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
@@ -77,11 +77,11 @@ pub(super) const CTAS_HINT: &str = "Create or change the TVIEW with \
     SELECT tviews.pg_tviews_create_or_replace('tv_<entity>', $$<query>$$, \
     options => '{\"logged\": …, \"fillfactor\": …}').";
 
-/// Read a `CREATE TABLE tv_* AS` into a decision, from the parse tree only (no
-/// SPI: this runs inside `catch_unwind`).
+/// Read a `CREATE TABLE tv_* AS` into a decision, from the parse tree and the
+/// statement's text only (no SPI).
 ///
 /// Anything but a `tv_*` table target passes through. What a TVIEW cannot honour is
-/// refused; the rest becomes a [`Ctas`] to create after `catch_unwind`. Both carry
+/// refused; the rest becomes a [`Ctas`] to create with SPI. Both carry
 /// the target, so that `IF NOT EXISTS` on an existing relation is checked first.
 ///
 /// SAFETY: the pointers come from the `ProcessUtility` hook and are null-checked.
@@ -95,8 +95,9 @@ pub(super) unsafe fn inspect_create_table_as(
         let Some(table_name) = tview_ctas_target(ctas.cast()) else {
             return Ok(Intercept::PassThrough);
         };
-        // TEST ONLY: simulate a hook that never saw this statement (see the
+        // Test builds only: simulate a hook that never saw this statement (see the
         // missed-interception check in the event trigger).
+        #[cfg(feature = "test-hooks")]
         if crate::config::test_skip_ctas_intercept() {
             return Ok(Intercept::PassThrough);
         }
@@ -330,7 +331,7 @@ pub(super) fn skipped_or_raise(target: &CtasTarget) -> bool {
 
 /// Create the TVIEW a `CREATE TABLE tv_* AS` names, with `CREATE TABLE AS`
 /// semantics, and report its rows in the command tag (`SELECT n`), as
-/// `PostgreSQL` would. Runs outside `catch_unwind`: errors are raised as they are.
+/// `PostgreSQL` would. Errors are raised as they are.
 ///
 /// SAFETY: `qc` must be null or the hook's valid `QueryCompletion*`.
 pub(super) unsafe fn create_tview_from_ctas(ctas: &Ctas, qc: *mut pg_sys::QueryCompletion) {
@@ -396,59 +397,40 @@ pub(super) unsafe fn statement_text(query_string: &str, pstmt: *const pg_sys::Pl
 
 /// Extract the SELECT from the text of one `CREATE TABLE [schema.]tv_x AS SELECT …`
 /// statement: everything after the `AS` that follows the table name, without a
-/// trailing `;`. The statement is tokenized, so comments, quoted names and string
-/// literals are read as PostgreSQL reads them.
+/// trailing `;`. The statement is read by PostgreSQL's lexer, so comments, quoted
+/// names and literals are read as the server read them; `table_name` is the
+/// target's name as the server parsed it.
 pub(super) fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<String> {
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::keywords::Keyword;
-    use sqlparser::tokenizer::{Token, Tokenizer};
-    let tokens = Tokenizer::new(&PostgreSqlDialect {}, stmt_sql)
-        .tokenize_with_location()
-        .ok()?;
-    let offsets = crate::ddl::rename::byte_offsets(stmt_sql, &tokens);
-    let sig: Vec<usize> = (0..tokens.len())
-        .filter(|&i| !matches!(tokens[i].token, Token::Whitespace(_)))
-        .collect();
-    let word = |i: usize| match &tokens[sig[i]].token {
-        Token::Word(w) => Some(w),
-        _ => None,
-    };
-    let keyword =
-        |i: usize, k: Keyword| word(i).is_some_and(|w| w.keyword == k && w.quote_style.is_none());
-    if !keyword(0, Keyword::CREATE) {
+    use crate::utils::lexer::Kind;
+    let tokens = crate::utils::lexer::tokens(stmt_sql)?;
+    let keyword = |i: usize, k: &str| tokens.get(i).is_some_and(|t| t.is_keyword(k));
+    let char_at = |i: usize, c: char| tokens.get(i).is_some_and(|t| t.kind == Kind::Char(c));
+    if !keyword(0, "create") {
         return None;
     }
     // CREATE [TEMP | UNLOGGED …] TABLE
-    let mut i = (1..sig.len().min(4)).find(|&i| keyword(i, Keyword::TABLE))? + 1;
-    if keyword(i, Keyword::IF) && keyword(i + 1, Keyword::NOT) && keyword(i + 2, Keyword::EXISTS) {
+    let mut i = (1..tokens.len().min(4)).find(|&i| keyword(i, "table"))? + 1;
+    if keyword(i, "if") && keyword(i + 1, "not") && keyword(i + 2, "exists") {
         i += 3;
     }
     // [schema .] name
-    let mut name = word(i)?;
-    while matches!(
-        sig.get(i + 1).map(|&j| &tokens[j].token),
-        Some(Token::Period)
-    ) {
+    let mut name = tokens.get(i)?.name()?;
+    while char_at(i + 1, '.') {
         i += 2;
-        name = word(i)?;
+        name = tokens.get(i)?.name()?;
     }
-    if !crate::utils::ident::names(&name.value, name.quote_style.is_some(), table_name) {
+    if name != table_name {
         return None;
     }
     i += 1;
     // [WITH ( … )]
-    if keyword(i, Keyword::WITH)
-        && matches!(
-            sig.get(i + 1).map(|&j| &tokens[j].token),
-            Some(Token::LParen)
-        )
-    {
+    if keyword(i, "with") && char_at(i + 1, '(') {
         let mut depth = 0;
         i += 1;
-        while i < sig.len() {
-            match tokens[sig[i]].token {
-                Token::LParen => depth += 1,
-                Token::RParen => {
+        while let Some(token) = tokens.get(i) {
+            match token.kind {
+                Kind::Char('(') => depth += 1,
+                Kind::Char(')') => {
                     depth -= 1;
                     if depth == 0 {
                         break;
@@ -460,81 +442,12 @@ pub(super) fn extract_ctas_select(stmt_sql: &str, table_name: &str) -> Option<St
         }
         i += 1;
     }
-    if !keyword(i, Keyword::AS) {
+    if !keyword(i, "as") {
         return None;
     }
-    let start = offsets[*sig.get(i + 1)?];
-    let select = stmt_sql[start..].trim().trim_end_matches(';').trim();
+    let select = stmt_sql[tokens.get(i + 1)?.at..]
+        .trim()
+        .trim_end_matches(';')
+        .trim();
     (!select.is_empty()).then(|| select.to_string())
-}
-
-#[cfg(test)]
-mod ctas_extraction_tests {
-    use super::extract_ctas_select;
-
-    #[test]
-    fn extracts_select_and_strips_semicolon() {
-        let sql = "CREATE TABLE tv_post AS SELECT pk_post, id, data FROM tb_post;";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("SELECT pk_post, id, data FROM tb_post")
-        );
-    }
-
-    #[test]
-    fn handles_schema_if_not_exists_and_case() {
-        let sql = "create table if not exists public.tv_post as\n  select 1";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("select 1")
-        );
-    }
-
-    #[test]
-    fn ignores_earlier_occurrences_of_the_name() {
-        let sql = "/* tv_post as */ CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
-        // A comment is read as one: the SELECT starts after the statement's AS.
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("SELECT 'tv_post as x' FROM t")
-        );
-        let sql = "CREATE TABLE tv_post AS SELECT 'tv_post as x' FROM t";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("SELECT 'tv_post as x' FROM t")
-        );
-    }
-
-    #[test]
-    fn does_not_match_a_different_table() {
-        let sql = "CREATE TABLE tv_post_extra AS SELECT 1";
-        assert_eq!(extract_ctas_select(sql, "tv_post"), None);
-    }
-
-    #[test]
-    fn handles_quoted_names() {
-        let sql = "CREATE TABLE \"s\".\"tv_post\" AS SELECT 1";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("SELECT 1")
-        );
-    }
-
-    #[test]
-    fn skips_a_comment_with_an_apostrophe_after_as() {
-        let sql = "CREATE TABLE tv_post AS -- don't\nSELECT 1;";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_post").as_deref(),
-            Some("SELECT 1")
-        );
-    }
-
-    #[test]
-    fn non_ascii_names_keep_offsets_on_char_boundaries() {
-        let sql = "CREATE TABLE tv_café AS SELECT 'é' AS \"ü\"";
-        assert_eq!(
-            extract_ctas_select(sql, "tv_café").as_deref(),
-            Some("SELECT 'é' AS \"ü\"")
-        );
-    }
 }

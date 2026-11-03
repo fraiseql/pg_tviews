@@ -255,8 +255,8 @@ pub(super) unsafe fn matview_refresh_of(pstmt: *const pg_sys::PlannedStmt) -> Op
     }
 }
 
-/// A statement after which the backing views must follow their tables' grants,
-/// and their owners when `owners`.
+/// A statement after which the backing views must be left to their owners
+/// (grants revoked), and follow their tables' owners when `owners`.
 pub(super) struct PrivilegesChange {
     pub(super) owners: bool,
 }
@@ -331,16 +331,14 @@ impl PartitionDdl {
         let parents = resolve(self.changed_rows_of.into_iter().collect());
         // Partition roots are cached per backend.
         crate::cache::invalidate_all();
-        for oid in tables {
-            crate::dependency::triggers::ensure_partition_triggers(oid)?;
-        }
+        crate::dependency::sync_tables(&tables)?;
         // The rows of an attached partition enter the tree with no row written:
         // mapped to the keys they reach, as their INSERT would be.
         let mapped = !attached.is_empty();
         for oid in attached {
             crate::delta::map_entering_partition(oid)?;
         }
-        if mapped && !crate::executor::inside_writing_statement() {
+        if mapped && !crate::executor::defers_flush() {
             crate::flush::flush_refresh_queue()?;
         }
         // The rows a concurrent detach takes out across its two transactions:
@@ -594,7 +592,7 @@ pub(super) unsafe fn drops_pg_tviews(pstmt: *const pg_sys::PlannedStmt) -> bool 
 /// caller's `search_path` (the hook's own work runs under a fixed one).
 ///
 /// Returns `InvalidOid` when the relation (or its schema) doesn't exist. This is a
-/// direct catalog lookup: no SPI, so it is safe inside the hook's `catch_unwind`.
+/// direct catalog lookup: no SPI, so [`super::decide`] may call it.
 ///
 /// SAFETY: `rv` must be null or a valid `RangeVar*`.
 pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys::Oid {

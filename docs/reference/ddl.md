@@ -92,13 +92,34 @@ Nothing else is matched by name:
   `tb_order`);
 - the column holding an embedded TVIEW's key may have any name (`author_pk`, below).
 
-FraiseQL's trinity identifiers (`id` UUID, `pk_<entity>`, `identifier`, and
-`<parent>_id`) are a convention that fits pg_tviews, not a requirement.
+### Keys
 
-A TVIEW's rows are named by `pk_<entity>`, which is its table's primary key. A
-`DISTINCT ON` TVIEW's rows are named by its `DISTINCT ON` key instead ([ADR
-0169](../adr/0169-tview-row-identity.md)); `tviews.registry.identity` reports the
-column.
+Three columns carry the identity of a TVIEW's rows. This is a contract:
+
+- **`pk_<entity>` is the row key.** The definition gives it as `smallint`, `integer`,
+  `bigint` or a domain over one; any other type is refused before anything is created
+  (`42804`, `pk_x is uuid: a TVIEW's pk_<entity> must be an integer key …`, with the
+  hint to keep a uuid in `id`). In `tv_<entity>` it is a `bigint` and the table's
+  primary key, and refreshes carry it as a 64-bit integer.
+- **`id` is the public identifier, a `uuid`.** `tv_<entity>.id` is `uuid NOT NULL`
+  and indexed; `pg_tviews_flush_and_report()` and the change feed
+  ([change feed](../user-guides/change-feed.md)) name rows by it. A definition whose
+  `id` is another type fails filling the table (`42804`). A TVIEW without `id` is
+  maintained, but the change feed can only name its type, not its rows.
+- **`fk_<entity>` holds the `pk_<entity>` of the row it references**, and joins on it
+  (`JOIN tb_user u ON u.pk_user = p.fk_user`). pg_tviews maps writes through the join
+  conditions, not through this name; an `fk_*` column keeps the type the definition
+  gives it. A `FOREIGN KEY` from the base table's column to another TVIEW's base
+  table publishes the column in `tviews.registry.references`, which is what a reader
+  composes by ([Contract for tools](read-contract.md)).
+
+A `DISTINCT ON` TVIEW's rows are keyed on its `DISTINCT ON` key instead ([ADR
+0169](../adr/0169-tview-row-identity.md)): that column is the table's primary key, and
+`tviews.registry.identity` reports it. `pk_<entity>` still names the entity and must be
+an integer, but it is an ordinary column there and may repeat.
+
+FraiseQL's other identifiers, `identifier` (a text slug) and `<parent>_id` (a parent's
+uuid, indexed for filtering), are ordinary columns.
 
 **Backing view.** The definition is stored as a view `tviews.<schema>__tv_<entity>`
 (in pg_tviews' own schema, named after the TVIEW's table and fitted to 63 bytes;
@@ -134,9 +155,9 @@ except columns whose names give them a fixed type:
 | Column | Type | Notes |
 |---|---|---|
 | `pk_<entity>` (the first `pk_*`) | `bigint` | the primary key, unless the TVIEW is `DISTINCT ON`; the definition gives it as `smallint`, `integer`, `bigint` or a domain over one, else it is refused (`42804`) |
-| `id` | `uuid` | `NOT NULL`, indexed |
+| `id` | `uuid` | `NOT NULL`, indexed; another type fails (`42804`) |
 | `data` | `jsonb` | optional |
-| `fk_*` | `bigint` | indexed with `pk_<entity>` |
+| `fk_*` | the view's type | indexed with `pk_<entity>` |
 | `*_id` | the view's type | indexed |
 
 The table's columns come in this order: `pk_<entity>`, `id`, `identifier`, `data`,
@@ -262,6 +283,9 @@ JOIN tb_user u ON u.pk_user = p.fk_user;
 All of it happens in the caller's transaction: a rollback leaves nothing behind.
 
 ### Supported SQL features
+
+[Supported shapes](shapes.md) sums this up in one table: each definition shape, how it
+is maintained or why it is refused, and the test that proves it.
 
 - **JOINs**: INNER, LEFT, RIGHT, FULL OUTER
 - **Aggregations**: GROUP BY, HAVING, jsonb_agg(), array_agg()
@@ -400,8 +424,9 @@ A definition is refused, nothing created, when:
 - it has no column to key the rows on, or its key does not match the TVIEW's name
   (above);
 - its `DISTINCT ON` key is composite, an expression, or not projected (`0A000`);
-- it would make TVIEWs read each other in a cycle (`42P17`), or nests views deeper
-  than `pg_tviews.max_dependency_depth` (10; `54001`);
+- it would make TVIEWs read each other in a cycle (`42P17`), nests views, subqueries
+  and CTEs more than 32 query levels deep (`0A000`), or views more than 64 deep
+  (`54001`); flatten the views the TVIEW reads;
 - it reads a table no cascade reaches, calls a function that may read tables, or reads
   the current time, without declaring what to do about it (`22023`; see the next
   sections);
@@ -409,6 +434,9 @@ A definition is refused, nothing created, when:
   child fires no trigger on the parent. Read `FROM ONLY` the table, or make it a
   partitioned table. A table a TVIEW reads gets no new inheritance child
   (`CREATE TABLE … INHERITS`, `ALTER TABLE … INHERIT` fail with `0A000`);
+- it reads a table a logical replication subscription writes (`0A000`): the apply
+  worker fires no statement trigger. Create the TVIEW on the publisher and publish its
+  table ([Replication](../operations/replication.md));
 - it reads a temporary table: PostgreSQL refuses the backing view it would need
   (`cannot create temporary relation in non-temporary schema`).
 
@@ -440,11 +468,11 @@ NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of 
          make them cheaper
 ```
 
-`tviews.pg_tviews_mapping_query('tv_order', 'tb_sku'::regclass)` returns the query.
+`tviews.pg_tviews_show_mapping_query('tv_order', 'tb_sku'::regclass)` returns the query.
 
 The triggers follow the kind of each table:
 
-| Kind | Triggers on the base table (per TVIEW) | What a write does |
+| Kind | Triggers on the base table | What a write does |
 |---|---|---|
 | `local` | row trigger | the key is read off each changed row (and its old image) |
 | `mapped`, `all_keys` | three statement triggers with transition tables (`INSERT`, `UPDATE`, `DELETE`) | one mapping query over the statement's changed rows; under `full_refresh` an `all_keys` write refreshes the whole TVIEW |
@@ -504,7 +532,7 @@ rows in or out with no row trigger firing:
 - `DETACH … CONCURRENTLY` (which commits in the middle, and its `FINALIZE`) refreshes
   the TVIEWs over that table in full.
 
-`pg_tviews_health_check()` reports a partition whose triggers are missing, and
+`pg_tviews_check_health()` reports a partition whose triggers are missing, and
 `pg_tviews_reregister_all()` puts them back.
 
 ### Tables no cascade reaches
@@ -722,19 +750,22 @@ COMMIT;
 
 ## Privileges
 
-A TVIEW's table is an ordinary table: grant on it as on any other. Its backing view,
-in `tviews`, follows it:
+A TVIEW's table is an ordinary table: grant on it as on any other, and row-level
+security on it applies to its readers. Its backing view, in `tviews`, is its owner's
+alone, because it reads the base tables with the owner's privileges (a reader granted
+it would read every row the definition yields, whatever a policy on `tv_<entity>`
+hides):
 
-- whoever can `SELECT` from `tv_<entity>` (a role, or `PUBLIC`) can `SELECT` from its
-  backing view, so a role granted `SELECT ON ALL TABLES IN SCHEMA app`, or reading
-  `app` through default privileges, reads `tviews.app__tv_<entity>` too;
-- the view's grants are made its table's when the TVIEW is created or rebuilt, and
-  after every `GRANT` or `REVOKE` on tables, including `ON ALL TABLES IN SCHEMA`;
+- no grant on the table reaches the view (`ON ALL TABLES IN SCHEMA app` and default
+  privileges included); readers read `tv_<entity>`;
+- a privilege granted on the view itself is revoked when the TVIEW is created or
+  rebuilt, and after every `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO` and
+  `REASSIGN OWNED`;
 - `ALTER TABLE tv_<entity> OWNER TO` (and `REASSIGN OWNED`) gives the view the new
   owner, who reads the base tables through it;
-- only `SELECT` is copied, without grant option; `INSERT`, `UPDATE` and the others
-  granted on the table are not. A grant made on the backing view alone is taken back
-  by the next of these.
+- whether a TVIEW is empty while its definition yields rows (a restore that left the
+  data out) is the health check's `contents` component, which reads each backing view
+  as its owner.
 
 `USAGE` on `tviews` is granted to `PUBLIC` by the extension.
 
@@ -840,10 +871,63 @@ refresh](#how-a-write-finds-the-tview-rows-to-refresh)):
 
 Every table but a `propagated` one also gets a statement-level flush trigger
 (`tviews.pg_tview_flush_trigger`), which refreshes the queued keys at the end of each
-statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`). They
-are named `trg_tview_<role>_<entity>_on_<schema>_<table>`, one set per TVIEW. Nothing
-needs installing by hand: `tviews.pg_tviews_health_check()` reports missing or orphaned
-triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs them.
+statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`).
+
+A table carries one set of these, however many TVIEWs read it: the union of what its
+readers need, named `trg_tview_<role>_on_<schema>_<table>`, without arguments. Each
+trigger serves every TVIEW of its kind on the table. Creating a second TVIEW over a
+table adds no trigger unless it needs a kind the table lacks, and dropping one removes
+none until the last reader of the table goes. Each partition of a partitioned table
+gets one flush and one truncate trigger. Creating a TVIEW still needs the `TRIGGER`
+privilege on every table it reads, whether or not the set is already there.
+
+A pg_tviews trigger is disabled for every TVIEW of its table at once: `ALTER TABLE …
+DISABLE TRIGGER` cannot stop one TVIEW alone. Use
+[`pg_tviews_suspend_triggers()`](api.md#suspending-refresh) to defer refreshes. Nothing
+needs installing by hand: `tviews.pg_tviews_check_health()` reports missing, orphaned
+or disabled triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()`
+re-installs them.
+
+### Firing order
+
+PostgreSQL fires the triggers of one timing and level on a table in name order (byte
+order: `A`–`Z`, then `_`, then `a`–`z`), row triggers before statement triggers. The
+order of pg_tviews' triggers relative to yours is part of its contract:
+
+| Trigger | Level | Fires |
+|---|---|---|
+| `trg_tview_row_on_*` | `AFTER INSERT OR UPDATE OR DELETE`, row | queues the keys of the row, for every TVIEW reading it by key |
+| `trg_tview_delta_i_on_*`, `trg_tview_delta_u_on_*`, `trg_tview_delta_d_on_*` | `AFTER INSERT`, `UPDATE`, `DELETE`, statement, with transition tables | queue the keys the statement's changed rows map to, for every TVIEW mapping the table |
+| `trg_tview_flush_on_*` | `AFTER INSERT OR UPDATE OR DELETE`, statement | refreshes everything queued |
+| `trg_tview_truncate_on_*` | `AFTER TRUNCATE`, statement | refreshes the TVIEWs over the table whole |
+
+What a user trigger on a base table sees:
+
+- A `BEFORE` trigger, or an `AFTER … FOR EACH ROW` trigger, fires before the flush:
+  the TVIEWs are as they were before the statement.
+- An `AFTER … FOR EACH STATEMENT` trigger whose name sorts before `trg_tview_flush_`
+  (`audit_post`, `a_check`) fires before the flush: the TVIEWs are not refreshed for
+  this statement yet.
+- One whose name sorts after `trg_tview_flush_on_<schema>_<table>` (`zz_notify`,
+  `u_sync`) fires after it: the TVIEWs are refreshed.
+- A write such a trigger makes to a base table (a nested statement) is not flushed on
+  its own: the enclosing statement refreshes it, at its flush when the write comes
+  before it, or when the statement finishes when it comes after. Each TVIEW row is then
+  refreshed once, from the final state
+  (`test/sql/regress/transactions/regress_trigger_writes_own_table.sql`).
+
+Keep your trigger names off the `trg_tview_` prefix, so the order stays plain.
+
+A user trigger on a `tv_*` table fires during the flush, when pg_tviews inserts,
+updates or deletes that row (a statement trigger there, for each statement of the
+flush that writes the table). It runs
+as the refresh does, as the TVIEW's owner with `search_path = pg_catalog, pg_temp`, so
+it qualifies the names it uses. A write it makes to a base table is refreshed in the
+same flush, together with every TVIEW reading the rows it changed, even those the flush
+already refreshed. A trigger that keeps writing back what the refresh reads never
+settles: the flush fails with `54001` after 1,000 entity batches, and the write with it
+(`test/sql/regress/transactions/regress_trigger_writes_back_during_flush.sql`,
+`regress_requeued_during_flush.sql`).
 
 A commit with refresh work still queued (a flush trigger dropped or disabled) fails
 with `55000`; a write whose row trigger cannot tell what to refresh (a plan that does
@@ -868,6 +952,7 @@ See [Troubleshooting](../operations/troubleshooting.md) for refresh problems and
 
 ## See also
 
+- [Supported shapes](shapes.md): every definition shape, maintained or refused
 - [Contract for tools](read-contract.md): `tviews.registry` and
   `pg_tviews_create_or_replace()`
 - [API Reference](api.md)

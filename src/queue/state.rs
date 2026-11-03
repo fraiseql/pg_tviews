@@ -47,12 +47,11 @@ enum Undo {
     Drained(Pending),
 }
 
-/// Where a subtransaction started, in the pending work and the affected-rows
-/// journal.
+/// Where a subtransaction started, in the pending work and the write log.
 #[derive(Debug)]
 pub struct Mark {
     undo: usize,
-    journal: super::affected::Mark,
+    log: super::log::Mark,
 }
 
 #[derive(Default)]
@@ -109,6 +108,13 @@ pub fn queue_insert(key: RefreshKey) -> bool {
         t.pending.queue.insert(key);
         true
     })
+}
+
+/// Whether refresh work is pending (keys, patches or fan-out fields). `false`
+/// while the queue is being changed: a query run from inside that change is
+/// `pg_tviews`' own.
+pub fn has_pending() -> bool {
+    TXN.with(|t| t.try_borrow().is_ok_and(|t| !t.pending.is_empty()))
 }
 
 /// Whether `key` is queued.
@@ -179,13 +185,13 @@ pub fn clear() {
 
 /// A subtransaction started: where to roll back to.
 pub fn mark() -> Mark {
-    let journal = super::affected::mark();
+    let log = super::log::mark();
     TXN.with(|t| {
         let mut t = t.borrow_mut();
         t.open += 1;
         Mark {
             undo: t.undo.len(),
-            journal,
+            log,
         }
     })
 }
@@ -193,7 +199,7 @@ pub fn mark() -> Mark {
 /// The subtransaction of `mark` committed: what it did now belongs to its
 /// parent.
 pub fn release(mark: Mark) {
-    super::affected::release(mark.journal);
+    super::log::release(mark.log);
     TXN.with(|t| {
         let mut t = t.borrow_mut();
         t.open = t.open.saturating_sub(1);
@@ -218,7 +224,7 @@ pub fn rollback(mark: Mark) {
             t.undo.clear();
         }
     });
-    super::affected::rollback(mark.journal);
+    super::log::rollback(mark.log);
 }
 
 #[cfg(test)]

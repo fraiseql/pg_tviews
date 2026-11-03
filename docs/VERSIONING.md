@@ -147,7 +147,7 @@ v1.0.6 (security patch, same day if possible)
 |-----------|-----------|------|------|------|
 | 0.1.x | ❌ | ✅ | ✅ | ✅ |
 
-- **✅**: Supported, built and tested in CI (clippy, regression and integration suites)
+- **✅**: Supported, built and tested in CI (clippy, regression, differential and documentation suites)
 - **❌**: Not supported: `CREATE EXTENSION pg_tviews` refuses to install
 
 ## Version Checking in Code

@@ -13,12 +13,12 @@ pub(crate) use json_indexes::{
     apply as apply_json_indexes, declared as declared_json_indexes, present as present_json_indexes,
 };
 use register::Registration;
-pub(crate) use relations::view_source_columns;
 use relations::{
     create_backing_view, create_materialized_table, key_table_on_identity, populate_initial_data,
     relation_exists, relation_oid, tview_exists,
 };
 pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
+
 #[cfg(test)]
 mod tests;
 
@@ -38,7 +38,6 @@ pub(crate) fn without_rows<T>(create: impl FnOnce() -> T) -> T {
 }
 
 pub use select::ViewColumns;
-pub(crate) use select::check_one_select;
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
@@ -51,7 +50,7 @@ use pgrx::prelude::*;
 /// `PostgreSQL` convention for unqualified DDL statements.
 pub(crate) fn current_schema() -> TViewResult<String> {
     let _caller = crate::owner::CallerPath::enter();
-    crate::utils::spi_get_string("SELECT current_schema()::text")
+    crate::utils::spi::get_string("SELECT current_schema()::text")
         .map_err(|e| TViewError::CatalogError {
             operation: "Get current schema".to_string(),
             pg_error: e.to_string(),
@@ -128,7 +127,7 @@ fn checked_definition(
         .entity
         .clone()
         .ok_or_else(|| TViewError::RequiredColumnMissing {
-            column_name: format!("pk_{named}"),
+            column_name: crate::lineage::plan::key_column(named),
             context: format!(
                 "the definition of tv_{named}: a TVIEW's definition outputs a pk_<entity> \
                  column, the first of which names the entity"
@@ -316,14 +315,11 @@ fn finish(
     crate::lifecycle::validity::mark(entity, table_oid)?;
     // Triggers on the tables it reads, as their lineage needs them: base tables,
     // and other TVIEWs' tables it maps like them.
-    crate::dependency::install_triggers(
-        &crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage),
-        entity,
-    )?;
+    let plan = crate::dependency::trigger_plan(&derivation.lineage);
+    crate::dependency::check_installable(&plan, &[], entity)?;
+    crate::dependency::sync_tables(&plan.iter().map(|&(table, _)| table).collect::<Vec<_>>())?;
     crate::cache::invalidate_all();
-    // Buffered and flushed at once (in SPI context).
-    crate::audit::log_create(entity, definition);
-    crate::audit::flush_audit_buffer()
+    crate::audit::log_create(entity, definition)
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
@@ -384,10 +380,7 @@ pub fn reregister_metadata(
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();
-    Ok(crate::dependency::trigger_plan(
-        &derivation.base_tables,
-        &derivation.lineage,
-    ))
+    Ok(crate::dependency::trigger_plan(&derivation.lineage))
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
@@ -411,8 +404,9 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
             name: entity.to_string(),
         });
     };
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     let plan = reregister_metadata(entity, &schema_name, &definition)?;
-    crate::dependency::sync_entity_triggers(&plan, entity)?;
+    crate::dependency::sync_read_tables(&plan, &read_before, entity)?;
     crate::catalog::row::clear_needs_reregister(entity)
 }
 
@@ -432,4 +426,24 @@ pub(crate) fn stored_group_keys(
             })
         })
         .transpose()
+}
+
+/// The plan registering `view_oid` as the TVIEW of `entity` would store, with the
+/// default options, without creating anything (the plan-snapshot tests).
+///
+/// # Errors
+/// What registration would refuse the view with.
+pub(crate) fn plan_of(entity: &str, view_oid: pgrx::pg_sys::Oid) -> TViewResult<serde_json::Value> {
+    let base_tables = crate::dependency::base_tables_of(view_oid)?;
+    let derivation = derive(
+        entity,
+        None,
+        &base_tables,
+        view_oid,
+        &Declarations::defaults(),
+    )?;
+    serde_json::to_value(&derivation.plan).map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Encode the plan of tv_{entity}"),
+        pg_error: e.to_string(),
+    })
 }

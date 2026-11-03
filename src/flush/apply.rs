@@ -136,8 +136,6 @@ impl Flush {
         if !recompute.is_empty() {
             self.recompute(entity, recompute)?;
         }
-        // REPEATABLE READ: the rows are what the latest snapshot computes.
-        crate::concurrency::crosscheck::refreshed_rows(&*self.meta(entity)?, &values)?;
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
         }
@@ -215,23 +213,18 @@ impl Flush {
         // A full refresh may bring rows back: look their parents up in the
         // parents' views too.
         self.queue_parents_to_recompute(entity, &changed, &changed)?;
-        if meta.identity.is_pk(entity) {
+        if meta.identity.is_pk(meta.key_column()) {
             self.processed
                 .extend(changed.into_iter().map(|pk| RefreshKey::pk(entity, pk)));
         }
         Ok(())
     }
 
-    /// Recompute `keys` from the view, one row with a smart patch or several in
-    /// bulk, and queue the parents of the rows touched to recompute too: their
-    /// child's whole document changed.
+    /// Recompute `keys` from the view, and queue the parents of the rows touched
+    /// to recompute too: their child's whole document changed.
     fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();
-        let touched = if let [key] = keys.as_slice() {
-            crate::refresh::refresh_key(&*self.meta(entity)?, key)?
-        } else {
-            crate::refresh::refresh_bulk(entity, &keys)?
-        };
+        let touched = crate::refresh::recompute(&*self.meta(entity)?, &keys)?;
         self.queue_parents_to_recompute(entity, &touched.pks, &touched.appeared)
     }
 
@@ -316,11 +309,13 @@ impl Flush {
         Ok(())
     }
 
-    /// Queue `key` unless this flush refreshed it already.
+    /// Queue `key`. A key this flush refreshed already is refreshed again: in
+    /// dependency order a parent comes after its children, so a child refreshed
+    /// after it was refreshed late (a user trigger wrote what it reads during the
+    /// flush), and the parent read the child's old row.
     fn queue(&mut self, key: RefreshKey) {
-        if !self.processed.contains(&key) {
-            self.pending.insert(key);
-        }
+        self.processed.remove(&key);
+        self.pending.insert(key);
     }
 
     /// `entity`'s catalog row.

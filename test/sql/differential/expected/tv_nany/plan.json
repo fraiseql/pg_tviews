@@ -1,0 +1,49 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [],
+  "key": {
+    "column": "pk_nany",
+    "type": "integer"
+  },
+  "paths": [],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_node.pk_node",
+        "public.tb_node.id",
+        "public.tb_node.path",
+        "public.tb_node.name",
+        "public.tb_node.deleted_at"
+      ],
+      "columns": [
+        "pk_node",
+        "id",
+        "path",
+        "name",
+        "deleted_at"
+      ],
+      "kind": "mapped",
+      "links": [
+        "public.tb_node.pk_node",
+        "public.tb_node.path",
+        "public.tb_node.deleted_at"
+      ],
+      "reads": [
+        {
+          "attnum": "<whole row>"
+        }
+      ],
+      "relid": "public.tb_node",
+      "sql": "SELECT DISTINCT d.{c:public.tb_node.pk_node} FROM pg_tviews_delta d UNION SELECT DISTINCT o1.{c:public.tb_node.pk_node} FROM pg_tviews_delta d, {r:public.tb_node} o1 WHERE ((d.{c:public.tb_node.pk_node} OPERATOR(pg_catalog.=) ANY ((pg_catalog.string_to_array(o1.{c:public.tb_node.path}, '.'::pg_catalog.text))::integer[])) AND ((pg_catalog.string_to_array(o1.{c:public.tb_node.path}, '.'::pg_catalog.text))::integer[]) OPERATOR(pg_catalog.@>) ARRAY[d.{c:public.tb_node.pk_node}])",
+      "table": "public.tb_node"
+    }
+  ],
+  "version": 3
+}

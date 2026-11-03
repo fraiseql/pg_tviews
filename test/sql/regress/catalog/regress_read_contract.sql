@@ -62,7 +62,7 @@ CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#133 FAIL: %', what; END IF; END $$;
 
 -- 1. The contract version and the view's columns, in order.
-SELECT must(tviews.contract_version() = 2, 'contract_version() is not 2');
+SELECT must(tviews.contract_version() = 3, 'contract_version() is not 3');
 SELECT must(
     (SELECT string_agg(attname || ' ' || format_type(atttypid, atttypmod), ', ' ORDER BY attnum)
      FROM pg_attribute WHERE attrelid = 'tviews.registry'::regclass AND attnum > 0)
@@ -142,7 +142,7 @@ SELECT must((SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.pro
 CREATE ROLE regress_133_reader;
 SET ROLE regress_133_reader;
 SELECT must((SELECT count(*) FROM tviews.registry) = 3, 'a plain role cannot read the registry');
-SELECT must(tviews.contract_version() = 2, 'a plain role cannot call contract_version()');
+SELECT must(tviews.contract_version() = 3, 'a plain role cannot call contract_version()');
 RESET ROLE;
 
 DROP SCHEMA app CASCADE;

@@ -92,9 +92,6 @@ pub enum TViewError {
         context: String,
     },
 
-    /// The `jsonb_delta` extension is not installed.
-    JsonbDeltaMissing,
-
     /// A statement's refresh is bigger than a limit allows (ADR 0233).
     RefreshLimit { limit: Limit },
 
@@ -142,7 +139,6 @@ impl TViewError {
             Self::DepthExceeded { .. } => PgSqlErrorCode::ERRCODE_STATEMENT_TOO_COMPLEX,
             Self::InvalidSelectStatement { .. } => PgSqlErrorCode::ERRCODE_SYNTAX_ERROR,
             Self::RequiredColumnMissing { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_COLUMN,
-            Self::JsonbDeltaMissing => PgSqlErrorCode::ERRCODE_UNDEFINED_FUNCTION,
             Self::RefreshLimit { .. } => PgSqlErrorCode::ERRCODE_PROGRAM_LIMIT_EXCEEDED,
             Self::WrongState { .. } => PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
             Self::PrepareRefused { .. } => PgSqlErrorCode::ERRCODE_INVALID_TRANSACTION_STATE,
@@ -187,7 +183,6 @@ impl TViewError {
             Self::RelationExists { .. } => {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
-            Self::JsonbDeltaMissing => Some("CREATE EXTENSION jsonb_delta;".into()),
             Self::KeyTypeRefused { .. } => Some(
                 "Key the rows on an integer column, and keep a uuid key in the id column.".into(),
             ),
@@ -203,7 +198,11 @@ impl TViewError {
             ),
             Self::RefreshLimit {
                 limit: Limit::Queue { .. },
-            } => Some("Raise pg_tviews.max_queue_size, or write in smaller transactions.".into()),
+            } => Some(
+                "Write in smaller transactions, or make a bulk change after \
+                 pg_tviews_suspend_triggers()."
+                    .into(),
+            ),
             Self::RefreshLimit {
                 limit: Limit::Rows { tview, .. },
             } => Some(format!(
@@ -211,10 +210,9 @@ impl TViewError {
                  after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
                  once, at resume or commit."
             )),
-            Self::DepthExceeded { what, .. } if *what == "dependency" => Some(
-                "Raise pg_tviews.max_dependency_depth, or flatten the views the TVIEW reads."
-                    .into(),
-            ),
+            Self::DepthExceeded { what, .. } if *what == "dependency" => {
+                Some("Flatten the views the TVIEW reads.".into())
+            }
             Self::DuplicateKey { .. } => Some(
                 "Make the UNION branches' keys disjoint (a sign or an offset per branch), or \
                  keep one row per key with DISTINCT ON over the UNION, ordered by preference."
@@ -342,9 +340,6 @@ impl fmt::Display for TViewError {
                 column_name,
                 context,
             } => write!(f, "Required column '{column_name}' missing in {context}"),
-            Self::JsonbDeltaMissing => {
-                write!(f, "Required extension 'jsonb_delta' is not installed")
-            }
             Self::DuplicateKey {
                 tview,
                 key_column,
@@ -464,7 +459,6 @@ mod tests {
                 column_name: s(),
                 context: s(),
             },
-            TViewError::JsonbDeltaMissing,
             TViewError::RefreshLimit {
                 limit: Limit::Queue { size: 1, max: 1 },
             },
@@ -503,7 +497,6 @@ mod tests {
                 | TViewError::DepthExceeded { .. }
                 | TViewError::InvalidSelectStatement { .. }
                 | TViewError::RequiredColumnMissing { .. }
-                | TViewError::JsonbDeltaMissing
                 | TViewError::RefreshLimit { .. }
                 | TViewError::WrongState { .. }
                 | TViewError::PrepareRefused { .. }

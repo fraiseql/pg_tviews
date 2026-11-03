@@ -12,6 +12,7 @@ use crate::error::TViewError;
 fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     if crate::suspend::is_suspended() {
         return Err(TViewError::WrongState {
             reason: "Cannot refresh: triggers are suspended".to_string(),
@@ -41,25 +42,39 @@ fn pg_tviews_rebuild_all(
 {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::concurrency::require_read_committed();
     Ok(TableIterator::new(crate::replication::rebuild_all(
         only_empty,
     )?))
 }
 
-/// Zero the refresh statistics of `tview`, or of every TVIEW of the database
-/// (`tviews.stats`, ADR 0221).
+/// Zero the refresh statistics of every TVIEW of the database (`tviews.stats`,
+/// ADR 0221).
 #[pg_extern]
-fn pg_tviews_stats_reset(tview: default!(Option<&str>, "NULL")) -> Result<(), ErrorReport> {
+fn pg_tviews_reset_stats_all() -> Result<(), ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
-    if let Some(name) = tview {
-        crate::stats::reset(&[crate::catalog::resolve::find(name)?.table], false)?;
-    } else {
-        let tables: Vec<_> = crate::catalog::row::relations()?
-            .into_iter()
-            .map(|listed| listed.table)
-            .collect();
-        crate::stats::reset(&tables, true)?;
-    }
+    let tables: Vec<_> = crate::catalog::row::relations()?
+        .into_iter()
+        .map(|listed| listed.table)
+        .collect();
+    crate::stats::reset(&tables, true)?;
     Ok(())
+}
+
+/// Create the propagation indexes every TVIEW is missing, and return their DDL;
+/// with `dry_run`, only return it.
+#[pg_extern]
+fn pg_tviews_ensure_propagation_indexes_all(
+    dry_run: default!(bool, false),
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    let metas: Vec<_> = crate::catalog::TviewMeta::load_all()?
+        .into_iter()
+        .map(std::rc::Rc::new)
+        .collect();
+    Ok(SetOfIterator::new(
+        crate::admin::ensure_propagation_indexes(&metas, dry_run)?,
+    ))
 }

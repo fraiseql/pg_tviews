@@ -76,8 +76,8 @@ SET client_min_messages TO ERROR;
 SET pg_tviews.direct_patch_enabled = $guc;
 SET pg_tviews.max_queue_size = 1000000;
 UPDATE tb_user SET bio = 'warm' WHERE pk_user = 1;
-SELECT (pg_tviews_queue_stats()->>'view_recomputes')::bigint AS rc0,
-       (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint AS ap0 \gset
+SELECT (pg_tviews_show_queue()->>'view_recomputes')::bigint AS rc0,
+       (pg_tviews_show_queue()->>'direct_patches_applied')::bigint AS ap0 \gset
 SELECT extract(epoch FROM clock_timestamp()) AS t0 \gset
 DO \$b\$ BEGIN
   FOR i IN 1..$ITERS LOOP
@@ -86,8 +86,8 @@ DO \$b\$ BEGIN
 END \$b\$;
 SELECT extract(epoch FROM clock_timestamp()) AS t1 \gset
 SELECT 'RESULT|' || round($ITERS / (:t1 - :t0))::text
-       || '|' || ((pg_tviews_queue_stats()->>'view_recomputes')::bigint - :rc0)::text
-       || '|' || ((pg_tviews_queue_stats()->>'direct_patches_applied')::bigint - :ap0)::text;
+       || '|' || ((pg_tviews_show_queue()->>'view_recomputes')::bigint - :rc0)::text
+       || '|' || ((pg_tviews_show_queue()->>'direct_patches_applied')::bigint - :ap0)::text;
 SQL
 }
 

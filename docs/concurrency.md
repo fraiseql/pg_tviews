@@ -1,19 +1,33 @@
 # Concurrency
 
-How TVIEW refreshes behave when several transactions write at once: when the refresh
-runs, what it guarantees under each isolation level, what it locks, and what to retry.
-The design is [ADR 0207](adr/0207-concurrent-maintenance.md).
+**Writers run at `READ COMMITTED`. After every commit, each TVIEW row equals its
+backing view; otherwise the writing transaction fails with `40P01` (a deadlock) and can
+be retried.** The exceptions are listed [below](#exceptions); the design is
+[ADR 0207](adr/0207-concurrent-maintenance.md).
+
+A transaction at `REPEATABLE READ` or `SERIALIZABLE` that writes to a table a TVIEW
+reads, or refreshes or rebuilds TVIEWs, is refused with `0A000` before it writes: its
+snapshot cannot see what it would wait for, so pg_tviews could only fail it after the
+fact. Reads of TVIEWs work at every level (reports, `pg_dump`). fraiseql's mutation
+functions keep rules that span rows with constraints (`UNIQUE`, `CHECK`, exclusion) and
+`SELECT … FOR UPDATE`, which need no retry loop.
 
 ## When a TVIEW is refreshed
 
 A write to a base table is refreshed **inside the writer's transaction**:
 
-- at the end of each statement (a statement-level flush trigger), so an autocommit
-  statement is refreshed before it returns. A statement run from a trigger of a write
-  to a TVIEW's base table (a trigger that writes its own table, level by level) leaves
-  its work to that write, which refreshes once at its end: each TVIEW row is computed
-  once, from the final state. A query that only reads defers nothing: in `SELECT f()`,
-  each statement of `f` that writes is refreshed before the next one reads;
+- once per top-level statement, at its end, so an autocommit statement is refreshed
+  before it returns. Statements run inside it (by a function it calls, as a fraiseql
+  mutation `SELECT app.fn(…)` runs its writes, or by a trigger of its write) leave
+  their work to it: each TVIEW row is computed once, from the final state, however many
+  statements wrote its sources ([ADR 0286](adr/0286-refresh-once-per-statement.md));
+- earlier, when a query inside that statement reads a TVIEW's table (directly or
+  through a view, from any function, a cursor or `RETURN QUERY`): what was queued is
+  refreshed first, and the query sees it. A mutation that reads its result back before
+  it returns reads it fresh. A refresh that fails raises there, or at the end of the
+  top-level statement, where a function's own exception handler no longer catches it;
+  `pg_tviews.max_refresh_rows` counts the rows of one such refresh. `CALL` and `DO`
+  are not statements of their own here: each statement they run is top-level;
 - before `COMMIT` and before `PREPARE TRANSACTION` (the `ProcessUtility` hook), so the
   refresh writes belong to the transaction.
 
@@ -25,33 +39,32 @@ whoever the writer is, and renders values under fixed settings (see
 
 Nothing is queued across transactions. A transaction that would commit with refresh
 work still queued (a flush trigger dropped or disabled) fails instead, with SQLSTATE
-`55000`, naming the TVIEWs; `pg_tviews_health_check()` reports the missing trigger.
+`55000`, naming the TVIEWs; `pg_tviews_check_health()` reports the missing trigger.
 
 ## Guarantees
 
 Two transactions can write rows that feed the same TVIEW row at the same time: one
 renames a user while another inserts a post whose `tv_post` row embeds that user, or
 re-points a post to that user, or inserts the first order of a user into an aggregate
-TVIEW. Whatever the order of their statements and commits:
-
-| Isolation level | Outcome |
-|---|---|
-| `READ COMMITTED` (PostgreSQL's default) | every TVIEW row equals its backing view once both have committed. The second transaction waits for the first, then computes from a snapshot that sees its commit. |
-| `REPEATABLE READ` | every TVIEW row equals its backing view, or one transaction fails with `40001` (retry it). A snapshot can't see what committed after it, however long it waits, so such a transaction never waits for these locks, and checks what it refreshed and what it found against the latest snapshot, as PostgreSQL's foreign-key checks do. |
-| `SERIALIZABLE` | as `REPEATABLE READ`. PostgreSQL's serializable snapshot isolation orders serializable transactions among themselves only: against a `READ COMMITTED` writer it detects nothing, so pg_tviews takes the same locks and checks as under `REPEATABLE READ`. |
-
-`REPEATABLE READ` costs more: each refreshed row is computed a second time under the
-latest snapshot, and under contention on the same values many transactions fail and
-must be retried (measured: about a fifth fewer transactions per second than `READ
-COMMITTED` with writes spread over 1,000 users; on 10 hot users, most renames
-conflict). Prefer `READ COMMITTED` for transactions that write TVIEW base tables, and
-retry with a backoff.
+TVIEW. Whatever the order of their statements and commits, every TVIEW row equals its
+backing view once both have committed: the second transaction waits for the first,
+then computes from a snapshot that sees its commit.
 
 This holds for every way a definition reads another row: an embedded TVIEW, a direct
 join, a fan-out patch, a join several hops away, an outer join to a row not inserted
 yet, a table under the `full_refresh` policy, a child carrying the key in its own row,
 a new group of an aggregate TVIEW. Each case is an isolation spec in
 `test/isolation/specs/`.
+
+## Exceptions
+
+| What | Consequence | See |
+|---|---|---|
+| A pg_tviews trigger disabled (`ALTER TABLE … DISABLE TRIGGER`, `ENABLE REPLICA`), or a write under `session_replication_role = replica` | the write is not seen: the TVIEW stays as it was until `pg_tviews_refresh()`; `pg_tviews_check_health()` reports disabled triggers | [operators guide](user-guides/operators.md) |
+| A table a logical replication subscription writes | refused at create (`0A000`); a table subscribed later is reported by the health check: the apply worker fires no statement trigger | [replication](operations/replication.md) |
+| Refresh suspended (`pg_tviews_suspend_triggers()`) | the TVIEWs are rebuilt at resume or at an explicit `COMMIT`; an implicit commit of suspended writes (a procedure's `COMMIT`, several statements in one query string) fails with `55000` | [Suspended refresh](#suspended-refresh) |
+| A table under the `full_refresh` policy | each write refreshes the whole TVIEW, locking it and every relation it reads | [DDL reference](reference/ddl.md) |
+| A TVIEW that reads the current time | its rows drift from the view between writes until `pg_tviews_refresh_time_dependent()` | [DDL reference](reference/ddl.md) |
 
 ## What waits for what
 
@@ -73,9 +86,7 @@ link** (it inserts and deletes no row, and updates only columns its TVIEWs show,
 columns they join, filter, group or order by) takes no shared value lock: two such
 writes, say two users editing their own `bio`, each refreshing posts that show both
 users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
-those rows would. Under `REPEATABLE READ` and `SERIALIZABLE` the second of them fails
-with `40001` instead, as a plain `UPDATE` of a row updated since its snapshot does.
-Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
+those rows would. Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
 
 A statement takes its locks in one pass, in a fixed order: its exclusive locks on the
 values it changed and, after a link change, the shared locks of the rows it reaches.
@@ -92,7 +103,7 @@ deadlock:
 - **Rows the refresh reaches itself:** the parents of an embedded TVIEW.
 
 PostgreSQL detects a deadlock and fails one of the transactions with `deadlock detected`
-(SQLSTATE `40P01`). **Retry transactions that fail with `40001` or `40P01`**.
+(SQLSTATE `40P01`). **Retry transactions that fail with `40P01`**.
 
 A write that changes a link locks what every row it reaches reads, so the cost of a link
 change grows with its fan-out. When each child shows an aggregate of its parent (each
@@ -105,10 +116,10 @@ item the count of its place's current items), compose the aggregate at read time
 |---|---|---|
 | A write to a table a TVIEW's mapping joins | exclusive value locks on the join values of the rows it changed, old and new; in a transaction that changed a link, also the shared value locks of the TVIEW rows those values reach (found without locks first). Both are taken in one pass in a fixed order, for every TVIEW over the table, before the TVIEW rows are looked up again | end of transaction |
 | A write to a TVIEW's rows that other TVIEWs embed | exclusive value locks on those rows' keys, before it looks up the parents | end of transaction |
-| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`; under `REPEATABLE READ` and `SERIALIZABLE`, when the refresh writes them in several statements) | end of transaction |
+| A refresh of some rows (every write) | in a transaction that changed a link (see above): shared value locks on every join value the rows read (including values no row holds yet), and on the keys of the embedded rows; always: exclusive locks on the keys of the rows it creates, then row locks on the existing `tv_<entity>` rows in key order (`SELECT … FOR UPDATE`) | end of transaction |
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
-| Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it (under `REPEATABLE READ` they fail with `40001`); readers are not blocked | end of transaction |
+| Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it; readers are not blocked | end of transaction |
 | Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
 
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'
@@ -143,7 +154,7 @@ WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
 ORDER BY l.granted, l.pid;
 ```
 
-`pg_tviews_queue_stats()` counts a transaction's `value_locks`,
+`pg_tviews_show_queue()` counts a transaction's `value_locks`,
 `value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`.
 
 ## Suspended refresh
@@ -159,9 +170,9 @@ The settings are listed in the [README's Configuration table](../README.md#confi
 The ones that bear on concurrent writers:
 
 - `pg_tviews.lock_escalation_threshold` (superuser): value locks per relation before a transaction
-  locks the relation (0 always locks relations; -1 never does, which can exhaust the
-  shared lock table on a bulk write);
-- `pg_tviews.max_queue_size` (superuser): refreshes one transaction may queue before it fails;
+  locks the relation (minimum 0, which always locks relations);
+- `pg_tviews.max_queue_size` (superuser, hidden): refresh keys one transaction may queue
+  before it fails;
 - `pg_tviews.direct_patch_enabled` (superuser, hidden): the direct-patch fast path (on
   by default).
 

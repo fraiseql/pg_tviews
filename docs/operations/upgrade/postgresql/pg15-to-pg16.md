@@ -4,14 +4,14 @@
 pg_tviews supports PostgreSQL 16, 17 and 18; on an older server
 `CREATE EXTENSION pg_tviews` fails with `pg_tviews requires PostgreSQL 16 or later`.
 A database that runs pg_tviews on PostgreSQL 15 (with a release up to `0.1.0-beta.20`)
-must move to PostgreSQL 16 or later **before** pg_tviews can be updated to a current
-release. The same steps apply to 15 to 17 or 15 to 18.
+must move to PostgreSQL 16 or later **before** the current pg_tviews release can be
+installed. The same steps apply to 15 to 17 or 15 to 18.
 
 ## Approach
 Change one thing at a time:
 
 1. Move PostgreSQL from 15 to 16, keeping the pg_tviews release you run now.
-2. Then update pg_tviews on PostgreSQL 16.
+2. Then move pg_tviews to the current release on PostgreSQL 16.
 
 Doing both at once means restoring a catalog written by one release into another, and
 leaves no clean rollback point.
@@ -31,11 +31,11 @@ On the PostgreSQL 15 server, in each database with pg_tviews:
 SELECT version();
 SELECT extversion, extnamespace::regnamespace AS schema
 FROM pg_extension WHERE extname = 'pg_tviews';
-SELECT * FROM pg_tviews_health_check();
+SELECT * FROM pg_tviews_check_health();
 ```
 Note `extversion`. `0.1.0` means a release up to `0.1.0-beta.19`, installed in the
 schema shown (its functions are not in `tviews`); later releases live in schema
-`tviews`, so qualify the call as `tviews.pg_tviews_health_check()` there.
+`tviews`, so qualify the call as `tviews.pg_tviews_check_health()` there.
 
 ## Method 1: pg_upgrade
 pg_upgrade copies the data files and keeps object OIDs, so the extension, its catalog
@@ -75,7 +75,7 @@ for a `0.1.0` install use the functions in its own schema):
    SELECT version();
    SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews';
    SELECT status, component, severity, message
-   FROM tviews.pg_tviews_health_check()
+   FROM tviews.pg_tviews_check_health()
    WHERE severity <> 'info';
    ```
 2. TVIEWs and their contents:
@@ -84,7 +84,7 @@ for a `0.1.0` install use the functions in its own schema):
    ```
 3. Emptied UNLOGGED TVIEWs:
    ```sql
-   SELECT * FROM tviews.pg_tviews_replication_status();
+   SELECT * FROM tviews.pg_tviews_show_replication();
    SELECT * FROM tviews.pg_tviews_rebuild_all();
    ```
 4. A write propagates:
@@ -100,10 +100,12 @@ for a `0.1.0` install use the functions in its own schema):
 ## Then update pg_tviews
 With PostgreSQL 16 running:
 
-- `extversion` = `0.1.0` (releases up to `0.1.0-beta.19`): install the current release
-  and run `scripts/migrate-from-0.1.0.sql` in each database (README, "Upgrading").
-- Later releases: [Extension Updates](../extension/extension-minor-update.md)
-  (`ALTER EXTENSION pg_tviews UPDATE`, then `SELECT * FROM tviews.pg_tviews_reregister_all();`).
+- The installed release is the one before the current release:
+  [Extension Updates](../extension/extension-minor-update.md)
+  (`ALTER EXTENSION pg_tviews UPDATE`).
+- An older release (any release that ran on PostgreSQL 15 is one): drop the extension,
+  install the current release and create the TVIEWs again
+  ([Upgrading pg_tviews](../../upgrade.md#from-an-older-release)).
 
 ## Rollback
 - pg_upgrade (without `--link`): the 15 cluster is untouched until you start 16 and

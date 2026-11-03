@@ -1,7 +1,7 @@
 -- The propagation indexes are the plan's embed lookups, whatever their names.
 --
 -- A parent TVIEW's rows are found by the columns holding an embedded TVIEW's
--- key (the plan's lookups). pg_tviews_ensure_propagation_indexes() creates the
+-- key (the plan's lookups). pg_tviews_ensure_propagation_indexes_all() creates the
 -- index each one needs, and pg_tviews_profile() reports the missing ones; a
 -- column is not one because it is called fk_*.
 --

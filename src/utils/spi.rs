@@ -3,6 +3,7 @@
 //! against the Rust value.
 
 use crate::error::{TViewError, TViewResult};
+use crate::utils::log_debug;
 use pgrx::datum::{DatumWithOid, FromDatum, IntoDatum};
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
@@ -292,6 +293,66 @@ pub fn run(sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<()> {
     Spi::run_with_args(sql, args).map_err(|e| error(sql, &e))
 }
 
+/// The first two columns of the first row of `sql`, `None`s without one.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn two<A: FromDatum + IntoDatum, B: FromDatum + IntoDatum>(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> TViewResult<(Option<A>, Option<B>)> {
+    match Spi::get_two_with_args::<A, B>(sql, args) {
+        Ok(values) => Ok(values),
+        Err(pgrx::spi::Error::InvalidPosition) => Ok((None, None)),
+        Err(e) => Err(error(sql, &e)),
+    }
+}
+
+/// The first three columns of the first row of `sql`.
+///
+/// # Errors
+/// Returns the query's error.
+pub fn three<A: FromDatum + IntoDatum, B: FromDatum + IntoDatum, C: FromDatum + IntoDatum>(
+    sql: &str,
+) -> TViewResult<(Option<A>, Option<B>, Option<C>)> {
+    Spi::get_three::<A, B, C>(sql).map_err(|e| error(sql, &e))
+}
+
+/// Run `f` in a read-only SPI connection: the extension reaches SPI through this
+/// module only (`scripts/check-spi-facade.sh`).
+pub fn connect<R>(f: impl FnOnce(&pgrx::spi::SpiClient<'_>) -> R) -> R {
+    Spi::connect(f)
+}
+
+/// Run `f` in an SPI connection that may change data and sees the transition
+/// tables of the trigger whose data is `trigger_data` (an AFTER statement
+/// trigger's).
+///
+/// # Errors
+/// The registration's failure, or what `f` returns.
+pub fn connect_over_transition_tables<T>(
+    trigger_data: *mut pgrx::pg_sys::TriggerData,
+    f: impl FnOnce(&mut pgrx::spi::SpiClient<'_>) -> TViewResult<T>,
+) -> TViewResult<T> {
+    Spi::connect_mut(|client| {
+        // SAFETY: inside an AFTER statement trigger the TriggerData is valid; this
+        // registers its transition tables with the SPI connection just opened.
+        let registered = unsafe { pgrx::pg_sys::SPI_register_trigger_data(trigger_data) };
+        if registered != pgrx::pg_sys::SPI_OK_TD_REGISTER.cast_signed() {
+            return Err(TViewError::SpiError {
+                query: "SPI_register_trigger_data".to_string(),
+                error: format!("returned {registered}"),
+            });
+        }
+        f(client)
+    })
+}
+
+/// Run `f` in an SPI connection that may change data.
+pub fn connect_mut<R>(f: impl FnOnce(&mut pgrx::spi::SpiClient<'_>) -> R) -> R {
+    Spi::connect_mut(f)
+}
+
 /// The rows of the table `table_oid`.
 ///
 /// # Errors
@@ -337,7 +398,89 @@ pub fn rows<T>(
 /// # Errors
 /// Returns the statement's error.
 pub fn run_ddl(sql: &str) -> TViewResult<()> {
-    super::spi_run_ddl(sql).map_err(|e| error(sql, &e))
+    ddl(sql).map_err(|e| error(sql, &e))
+}
+
+/// Execute a DDL statement via SPI in non-atomic mode.
+///
+/// In `PostgreSQL` 18.1 compiled with assertions enabled, calling `SPI_execute()` for DDL
+/// (CREATE VIEW, CREATE TABLE, CREATE TRIGGER, etc.) from within an atomic SPI context
+/// triggers an assertion failure → SIGSEGV.  The fix is two-fold:
+///
+/// 1. Connect via `SPI_connect_ext(SPI_OPT_NONATOMIC)` to open a non-atomic SPI context.
+/// 2. Execute via `SPI_execute_extended()` with `allow_nonatomic = true`, which suppresses
+///    `PostgreSQL`'s internal assertion that DDL cannot run in an atomic transaction context.
+///
+/// Using `SPI_execute()` even after `SPI_connect_ext(SPI_OPT_NONATOMIC)` still fires the
+/// assertion in PG18 assert builds; `SPI_execute_extended` with `allow_nonatomic` is the
+/// correct API for DDL executed from SPI callbacks.
+///
+/// This function is used for all DDL calls issued internally by `pg_tviews_create` and
+/// related functions.
+///
+/// # Errors
+/// Returns an error string if `SPI_connect_ext` or `SPI_execute` fails.
+///
+/// # Safety
+/// Calls raw `PostgreSQL` SPI functions.  Must only be called from a `PostgreSQL` backend.
+fn ddl(sql: &str) -> Result<(), String> {
+    use std::ffi::CString;
+
+    log_debug!(
+        "run_ddl() called with SQL ({} chars): {}",
+        sql.len(),
+        super::truncate_chars(sql, 200)
+    );
+
+    let c_sql = CString::new(sql).map_err(|e| format!("DDL SQL contains null byte: {e}"))?;
+
+    // SAFETY: run_ddl is only called from PostgreSQL backend context where SPI
+    // functions are valid. SPI_connect_ext/SPI_execute_extended/SPI_finish
+    // are thread-local PostgreSQL operations.
+    unsafe {
+        // Atomic, as the caller is (a trigger, a hook, a function called from a
+        // query): only a caller that may itself commit (a procedure) gets a
+        // non-atomic connection, so the DDL can never end its transaction.
+        let nonatomic = pg_sys::SPI_inside_nonatomic_context();
+        #[allow(clippy::cast_possible_wrap)]
+        // Reason: PostgreSQL SPI constants are u32, API takes i32
+        let connect_result = pg_sys::SPI_connect_ext(if nonatomic {
+            pg_sys::SPI_OPT_NONATOMIC as i32
+        } else {
+            0
+        });
+        #[allow(clippy::cast_possible_wrap)]
+        // Reason: PostgreSQL SPI constants are u32, API takes i32
+        if connect_result != pg_sys::SPI_OK_CONNECT as i32 {
+            error!(
+                "run_ddl() FAILED: SPI_connect_ext returned error code: {}",
+                connect_result
+            );
+        }
+
+        let opts = pg_sys::SPIExecuteOptions {
+            read_only: false,
+            allow_nonatomic: nonatomic,
+            tcount: 0,
+            ..pg_sys::SPIExecuteOptions::default()
+        };
+
+        let execute_result =
+            pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
+
+        // Always finish even on error
+        pg_sys::SPI_finish();
+
+        if execute_result < 0 {
+            error!(
+                "run_ddl() FAILED: SPI_execute_extended error {} for DDL: {}",
+                execute_result, sql
+            );
+        }
+    }
+
+    log_debug!("run_ddl() succeeded");
+    Ok(())
 }
 
 /// The statement `sql` kept for the backend: prepared on first use for the
@@ -357,7 +500,7 @@ fn statement(
 ) -> pgrx::spi::Result<std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> {
     let types: Vec<Oid> = args.iter().map(DatumWithOid::oid).collect();
     let key = (sql.to_string(), types, mutating, over);
-    if let Some(kept) = crate::cache::STATEMENTS.with(|m| m.get(&key)) {
+    if let Some(kept) = STATEMENTS.with(|m| m.get(&key)) {
         return Ok(kept);
     }
     let pg_types: Vec<pgrx::PgOid> = key.1.iter().map(|&t| pgrx::PgOid::from(t)).collect();
@@ -371,7 +514,7 @@ fn statement(
     if let Some(table) = over {
         crate::cache::watch(&[table]);
     }
-    crate::cache::STATEMENTS.with(|m| m.insert(key, kept.clone()));
+    STATEMENTS.with(|m| m.insert(key, kept.clone()));
     Ok(kept)
 }
 
@@ -419,63 +562,24 @@ pub fn kept_update_over<'conn>(
 /// A row of a query, its columns as text (`None` for NULL).
 pub type TextRow = Vec<Option<String>>;
 
-/// The rows of the read-only query `sql` as text, under the latest snapshot
-/// instead of the transaction's: what a REPEATABLE READ transaction can't see
-/// yet, as PostgreSQL's foreign-key checks read it. From its plan kept with
-/// `keep` when there is one (never for a query over a trigger's transition
-/// tables, which are the statement's own). The caller is inside an SPI
-/// connection (one that sees the transition tables, if the query reads them).
-///
-/// # Errors
-/// Returns an error if the query can't be prepared or doesn't return rows.
-pub fn latest_rows_connected(
-    sql: &str,
-    args: &[DatumWithOid<'_>],
-    keep: Option<Plan>,
-) -> TViewResult<Vec<TextRow>> {
-    let (mut types, mut values, nulls) = bind(args);
-    if keep != Some(Plan::Generic) {
-        crate::metrics::metrics_api::record_per_execution_plan();
-    }
-    let kept = match keep {
-        Some(plan) => Some(kept_plan(sql, &mut types, plan)?),
-        None => None,
-    };
-    // SAFETY: inside an SPI connection; the plan (kept, or prepared here and
-    // freed below) and the arguments, of the types it was prepared for, live
-    // until the call returns.
-    unsafe {
-        let plan = if let Some(plan) = &kept {
-            plan.0.as_ptr()
-        } else {
-            let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
-            let nargs = i32::try_from(types.len()).map_err(|e| error(sql, &e))?;
-            let plan = pg_sys::SPI_prepare(src.as_ptr(), nargs, types.as_mut_ptr());
-            if plan.is_null() {
-                return Err(error(
-                    sql,
-                    &format!("SPI_prepare failed ({})", { pg_sys::SPI_result }),
-                ));
-            }
-            plan
-        };
-        let rc = pg_sys::SPI_execute_snapshot(
-            plan,
-            values.as_mut_ptr(),
-            nulls.as_ptr(),
-            pg_sys::GetLatestSnapshot(),
-            std::ptr::null_mut(),
-            true,
-            false,
-            0,
-        );
-        let rows = tuptable_rows(sql, rc);
-        if kept.is_none() {
-            pg_sys::SPI_freeplan(plan);
-        }
-        rows
-    }
+thread_local! {
+    /// `(how it is planned, SQL)` → its kept statement, for the queries every
+    /// refresh runs and the catalog reads. Kept across an invalidation:
+    /// PostgreSQL revalidates a kept plan when what it reads changes, and a TVIEW
+    /// changed changes the SQL generated for it.
+    static PLANS: crate::cache::Memo<(Plan, String), std::rc::Rc<KeptPlan>> =
+        crate::cache::Memo::keeping(|_| true);
+    /// `(SQL, argument types, mutating, the table whose transition tables it
+    /// reads)` → the statement kept for the backend. Kept across an invalidation
+    /// as [`PLANS`] are, but for the statements over transition tables:
+    /// PostgreSQL does not revalidate those when their table changes.
+    static STATEMENTS: crate::cache::Memo<StatementKey, std::rc::Rc<pgrx::spi::OwnedPreparedStatement>> =
+        crate::cache::Memo::keeping(|(_, _, _, over)| over.is_none());
 }
+
+/// What a kept statement is found by: its SQL, its argument types, whether it
+/// may change data, and the table whose transition tables it reads.
+type StatementKey = (String, Vec<Oid>, bool, Option<Oid>);
 
 /// How a kept statement is planned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -493,15 +597,6 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// The plan of a statement holding lookups planned `self` and `other`.
-    #[must_use]
-    pub const fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Generic, Self::Generic) => Self::Generic,
-            _ => Self::PerExecution,
-        }
-    }
-
     /// The cursor option `SPI_prepare_cursor` takes for this plan.
     const fn cursor_option(self) -> u32 {
         match self {
@@ -610,7 +705,7 @@ pub fn catalog_one<T: OwnedColumn>(sql: &str, args: &[DatumWithOid<'_>]) -> TVie
 /// Inside an SPI connection.
 fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::Rc<KeptPlan>> {
     let key = (mode, sql.to_string());
-    if let Some(plan) = crate::cache::PLANS.with(|m| m.get(&key)) {
+    if let Some(plan) = PLANS.with(|m| m.get(&key)) {
         return Ok(plan);
     }
     let src = std::ffi::CString::new(sql).map_err(|e| error(sql, &e))?;
@@ -634,7 +729,7 @@ fn kept_plan(sql: &str, types: &mut [Oid], mode: Plan) -> TViewResult<std::rc::R
         std::rc::Rc::new(KeptPlan(plan))
     };
     crate::metrics::metrics_api::record_plan_prepared();
-    crate::cache::PLANS.with(|m| m.insert(key, plan.clone()));
+    PLANS.with(|m| m.insert(key, plan.clone()));
     Ok(plan)
 }
 
@@ -742,15 +837,6 @@ impl KeptRow<'_> {
     }
 }
 
-/// The rows of the result an SPI call returned with `rc`, as text.
-///
-/// # Safety
-/// The SPI call that returned `rc` was the last one, in the current connection.
-unsafe fn tuptable_rows(sql: &str, rc: i32) -> TViewResult<Vec<TextRow>> {
-    // SAFETY: the caller's contract.
-    unsafe { tuptable_map(sql, rc, |row| Ok(row.texts())) }
-}
-
 /// The rows of the result an SPI call returned with `rc`, each read by `read`.
 ///
 /// # Safety
@@ -786,6 +872,50 @@ unsafe fn tuptable_map<R>(
         pg_sys::SPI_freetuptable(table);
         rows
     }
+}
+
+/// Safe wrapper for `crate::utils::spi::one::<String>(, &[])` that avoids SIGABRT in pgrx 0.16.1.
+///
+/// `crate::utils::spi::one::<String>(, &[])` invokes `SPI_getvalue` which returns a `*const c_char`
+/// owned by the SPI memory context. The `String` conversion attempts to free that
+/// pointer after the SPI call returns, causing an abort. This helper keeps the SPI
+/// context alive during value extraction.
+pub fn get_string(query: &str) -> crate::TViewResult<Option<String>> {
+    crate::utils::spi::connect(|client| {
+        let mut rows = client.select(query, Some(1), &[])?;
+        match rows.next() {
+            Some(row) => Ok(row[1].value::<String>()?),
+            None => Ok(None),
+        }
+    })
+}
+
+thread_local! {
+    /// Relation → its column names, in order.
+    static COLUMNS: crate::cache::Memo<Oid, Vec<String>> = crate::cache::Memo::new();
+}
+
+/// The column names of relation `rel_oid`, in order (cached per backend). Used
+/// for the column lists of upserts.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn get_view_columns_by_oid(rel_oid: Oid) -> crate::TViewResult<Vec<String>> {
+    COLUMNS.with(|m| {
+        m.get_or_load(rel_oid, || {
+            crate::cache::watch(&[rel_oid]);
+            Ok(crate::utils::spi::catalog_rows(
+                "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a \
+                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
+                &[crate::utils::spi::oid(rel_oid)],
+                |row| row.get::<String>(1),
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+        })
+    })
 }
 
 #[cfg(test)]

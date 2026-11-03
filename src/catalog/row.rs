@@ -3,7 +3,6 @@
 
 use crate::error::{TViewError, TViewResult};
 use pgrx::pg_sys::Oid;
-use pgrx::prelude::*;
 use std::collections::HashSet;
 
 fn read_error(what: &str, entity: &str, e: &impl std::fmt::Display) -> TViewError {
@@ -18,7 +17,7 @@ fn read_error(what: &str, entity: &str, e: &impl std::fmt::Display) -> TViewErro
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn exists(entity: &str) -> TViewResult<bool> {
-    Spi::get_one_with_args::<bool>(
+    crate::utils::spi::one::<bool>(
         &format!(
             "SELECT EXISTS (SELECT 1 FROM {} WHERE entity = $1)",
             super::meta_table()
@@ -29,28 +28,13 @@ pub fn exists(entity: &str) -> TViewResult<bool> {
     .map_err(|e| read_error("registration", entity, &e))
 }
 
-/// The stored (normalized) definition of `entity`'s TVIEW.
-///
-/// # Errors
-/// Returns an error if the catalog cannot be read.
-pub fn definition(entity: &str) -> TViewResult<Option<String>> {
-    Spi::get_one_with_args::<String>(
-        &format!(
-            "SELECT definition FROM {} WHERE entity = $1",
-            super::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| read_error("definition", entity, &e))
-}
-
 /// The stored definition of `entity`'s TVIEW and the schema of its table; both
 /// `None` when there is no such TVIEW.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn definition_and_schema(entity: &str) -> TViewResult<(Option<String>, Option<String>)> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text(entity)];
         client
             .select(
@@ -77,7 +61,7 @@ pub fn definition_and_schema(entity: &str) -> TViewResult<(Option<String>, Optio
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn group_keys(entity: &str) -> TViewResult<Option<serde_json::Value>> {
-    Spi::get_one_with_args::<pgrx::JsonB>(
+    crate::utils::spi::one::<pgrx::JsonB>(
         &format!(
             "SELECT group_keys FROM {} WHERE entity = $1",
             super::meta_table()
@@ -94,7 +78,7 @@ pub fn group_keys(entity: &str) -> TViewResult<Option<serde_json::Value>> {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn typename(entity: &str) -> TViewResult<Option<String>> {
-    Spi::get_one_with_args::<String>(
+    crate::utils::spi::one::<String>(
         &format!(
             "SELECT graphql_typename FROM {} WHERE entity = $1",
             super::meta_table()
@@ -131,7 +115,7 @@ pub fn typenames() -> TViewResult<Vec<(String, String)>> {
 /// Returns an error if the catalog cannot be written.
 pub fn set_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
             super::meta_table()
@@ -149,7 +133,7 @@ pub fn set_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn time_dependent(entity: &str) -> TViewResult<bool> {
-    Spi::get_one_with_args::<bool>(
+    crate::utils::spi::one::<bool>(
         &format!(
             "SELECT time_dependent FROM {} WHERE entity = $1",
             super::meta_table()
@@ -166,7 +150,7 @@ pub fn time_dependent(entity: &str) -> TViewResult<bool> {
 /// Returns an error if the catalog cannot be written.
 pub fn clear_needs_reregister(entity: &str) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET needs_reregister = false WHERE entity = $1",
             super::meta_table()
@@ -216,7 +200,7 @@ pub fn view_of_table(table: Oid) -> TViewResult<Option<Oid>> {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn counts() -> TViewResult<(i64, i64, i64)> {
-    let (total, stale, orphaned) = Spi::get_three::<i64, i64, i64>(&format!(
+    let (total, stale, orphaned) = crate::utils::spi::three::<i64, i64, i64>(&format!(
         "SELECT pg_catalog.count(*), \
                 pg_catalog.count(*) FILTER (WHERE m.needs_reregister), \
                 pg_catalog.count(*) FILTER (WHERE NOT EXISTS \
@@ -230,6 +214,59 @@ pub fn counts() -> TViewResult<(i64, i64, i64)> {
         stale.unwrap_or(0),
         orphaned.unwrap_or(0),
     ))
+}
+
+/// The columns a stored plan numbers whose number no longer has their name, as
+/// `tv_<entity> (<table>.<column>)`, comma-separated; `None` when there is none.
+/// A plan that does not decode numbers nothing here.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub fn stale_column_numbers() -> TViewResult<Option<String>> {
+    let rows = crate::utils::spi::catalog_rows(
+        &format!(
+            "SELECT entity::text, plan FROM {} ORDER BY entity",
+            super::meta_table()
+        ),
+        &[],
+        |row| Ok((row.get::<String>(1)?, row.get::<pgrx::JsonB>(2)?)),
+    )?;
+    let (mut entities, mut relids, mut attnums, mut names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (entity, plan) in rows {
+        let (Some(entity), Some(plan)) = (entity, plan) else {
+            continue;
+        };
+        let Ok(plan) = crate::lineage::plan::TviewPlan::decode(&entity, plan.0) else {
+            continue;
+        };
+        for (relid, attnum, name) in plan.numbered_columns() {
+            entities.push(entity.clone());
+            relids.push(Oid::from(relid));
+            attnums.push(attnum);
+            names.push(name);
+        }
+    }
+    if entities.is_empty() {
+        return Ok(None);
+    }
+    crate::utils::spi::catalog_one::<String>(
+        "SELECT pg_catalog.string_agg(DISTINCT pg_catalog.format('tv_%s (%s.%I)', n.entity, \
+                    n.rel::pg_catalog.regclass, n.name), ', ') \
+           FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.text[]), \
+                           pg_catalog.unnest($2::pg_catalog.oid[]), \
+                           pg_catalog.unnest($3::pg_catalog.int2[]), \
+                           pg_catalog.unnest($4::pg_catalog.text[])) AS n(entity, rel, attnum, name) \
+          WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+                             WHERE a.attrelid = n.rel AND a.attnum = n.attnum \
+                               AND a.attname = n.name AND NOT a.attisdropped)",
+        &[
+            crate::utils::spi::text_array_of(&entities),
+            crate::utils::spi::oid_array(relids),
+            crate::utils::spi::int2_array(attnums),
+            crate::utils::spi::text_array_of(&names),
+        ],
+    )
 }
 
 /// A TVIEW as [`relations`] lists it.
@@ -246,7 +283,7 @@ pub struct Listed {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn relations() -> TViewResult<Vec<Listed>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut out = Vec::new();
         for row in client.select(
             &format!(

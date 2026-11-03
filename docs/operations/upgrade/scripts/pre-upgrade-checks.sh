@@ -31,20 +31,24 @@ fi
 available="$(q "SELECT default_version FROM pg_available_extensions WHERE name = 'pg_tviews'")"
 say "ok" "pg_tviews $installed installed, $available available"
 if [[ "$installed" == "0.1.0" ]]; then
-    say "note" "0.1.0 installs move with scripts/migrate-from-0.1.0.sql, not ALTER EXTENSION UPDATE"
+    say "note" "0.1.0 installs are dropped and recreated, not updated (docs/operations/upgrade.md)"
+fi
+if [[ -z "$(q "SELECT 1 FROM pg_extension WHERE extname = 'jsonb_delta'")" ]]; then
+    say "FAIL" "jsonb_delta is not installed: ALTER EXTENSION pg_tviews UPDATE refuses without it"
+    problems=1
 fi
 
 # Problems the health check already sees: fix them before upgrading.
-errors="$(q "SELECT count(*) FROM tviews.pg_tviews_health_check() WHERE severity = 'error'")"
+errors="$(q "SELECT count(*) FROM tviews.pg_tviews_check_health() WHERE severity = 'error'")"
 if (( errors > 0 )); then
     say "FAIL" "the health check reports $errors error(s):"
-    q "SELECT '  ' || component || ': ' || message FROM tviews.pg_tviews_health_check() WHERE severity = 'error'"
+    q "SELECT '  ' || component || ': ' || message FROM tviews.pg_tviews_check_health() WHERE severity = 'error'"
     problems=1
 else
     say "ok" "health check: no errors"
 fi
 
-say "info" "$(q "SELECT count(*) FROM tviews.registry") TVIEW(s) registered, $(q "SELECT count(*) FROM tviews.registry WHERE needs_reregister") waiting for pg_tviews_reregister_all()"
+say "info" "$(q "SELECT count(*) FROM tviews.registry") TVIEW(s) registered, $(q "SELECT count(*) FROM tviews.registry WHERE needs_reregister") marked needs_reregister"
 
 # A prepared transaction keeps its pending refreshes until COMMIT PREPARED.
 prepared="$(q "SELECT count(*) FROM pg_prepared_xacts WHERE database = current_database()")"

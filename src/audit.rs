@@ -1,123 +1,102 @@
-use pgrx::prelude::*;
-use std::cell::RefCell;
+//! The audit log (`pg_tviews.audit_enabled`): one row per TVIEW created,
+//! dropped, or refreshed by a flush, written where it happens, so a rolled-back
+//! transaction or savepoint takes its rows with it. Nothing is built while the
+//! setting is off.
 
-// ── Audit entry types ───────────────────────────────────────────────────
+use std::collections::BTreeMap;
 
-#[derive(Clone, Debug)]
-pub enum AuditOperation {
-    Create,
-    Drop,
-    Refresh,
-}
-
-impl AuditOperation {
-    const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Create => "CREATE",
-            Self::Drop => "DROP",
-            Self::Refresh => "REFRESH",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AuditEntry {
-    pub entity: String,
-    pub operation: AuditOperation,
-    pub rows_affected: Option<i64>,
-    pub details: serde_json::Value,
-}
-
-// ── Thread-local transaction buffer ─────────────────────────────────────
-
-thread_local! {
-    static AUDIT_BUFFER: RefCell<Vec<AuditEntry>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Push an audit entry into the transaction buffer. No SPI, no GUC check.
-fn buffer_entry(entry: AuditEntry) {
-    AUDIT_BUFFER.with(|buf| buf.borrow_mut().push(entry));
-}
-
-/// Buffer a TVIEW creation event.
-pub fn log_create(entity: &str, definition: &str) {
-    buffer_entry(AuditEntry {
-        entity: entity.to_string(),
-        operation: AuditOperation::Create,
-        rows_affected: None,
-        details: serde_json::json!({
-            "definition": definition,
-            "version": env!("CARGO_PKG_VERSION"),
-        }),
-    });
-}
-
-/// Buffer a TVIEW drop event.
-pub fn log_drop(entity: &str) {
-    buffer_entry(AuditEntry {
-        entity: entity.to_string(),
-        operation: AuditOperation::Drop,
-        rows_affected: None,
-        details: serde_json::Value::Null,
-    });
-}
-
-/// Buffer a TVIEW refresh event.
-pub fn log_refresh(entity: &str, rows_affected: i64) {
-    buffer_entry(AuditEntry {
-        entity: entity.to_string(),
-        operation: AuditOperation::Refresh,
-        rows_affected: Some(rows_affected),
-        details: serde_json::Value::Null,
-    });
-}
-
-/// Flush all buffered audit entries via a single bulk INSERT.
-///
-/// Gated by `pg_tviews.audit_enabled` — if disabled, just clears the buffer.
-///
-/// Runs SPI: call it after a statement's flush or from the `ProcessUtility`
-/// hook, never from a transaction callback (where SPI is not available).
-pub fn flush_audit_buffer() -> crate::TViewResult<()> {
-    let entries: Vec<AuditEntry> = AUDIT_BUFFER.with(|buf| buf.borrow_mut().drain(..).collect());
-
-    if entries.is_empty() || !crate::config::audit_enabled() {
+/// Write `entries` (`{op, entity, rows, details}` objects) as the extension owner,
+/// which owns the log and records the session user. Runs SPI.
+fn write(entries: Vec<serde_json::Value>) -> crate::TViewResult<()> {
+    if entries.is_empty() {
         return Ok(());
     }
-
-    // Serialize all entries as a JSON array and unpack server-side.
-    // This avoids delimiter-collision issues with string_to_array.
-    let json_array: Vec<serde_json::Value> = entries
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "op": e.operation.as_str(),
-                "entity": e.entity,
-                "rows": e.rows_affected,
-                "details": e.details,
-            })
-        })
-        .collect();
-    let payload = serde_json::Value::Array(json_array).to_string();
-
-    let payload_ref: &str = &payload;
-
-    // The log is writable only by the extension owner, which inserts the entries
-    // and records the session user.
+    let payload = serde_json::Value::Array(entries).to_string();
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "SELECT {}.pg_tviews_audit_write($1::jsonb)",
             crate::utils::ext_schema()
         ),
-        &[crate::utils::spi::text(payload_ref)],
-    )?;
-
-    Ok(())
+        &[crate::utils::spi::text(&payload)],
+    )
 }
 
-/// Clear the audit buffer without flushing. Safe to call from xact ABORT
-/// callbacks (no SPI needed — just drops the Vec contents).
-pub fn clear_audit_buffer() {
-    AUDIT_BUFFER.with(|buf| buf.borrow_mut().clear());
+fn entry(
+    op: &str,
+    entity: &str,
+    rows: Option<i64>,
+    details: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({"op": op, "entity": entity, "rows": rows, "details": details})
+}
+
+/// Audit a TVIEW's creation.
+///
+/// # Errors
+/// Returns an error if the entry cannot be written.
+pub fn log_create(entity: &str, definition: &str) -> crate::TViewResult<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
+    write(vec![entry(
+        "CREATE",
+        entity,
+        None,
+        &serde_json::json!({
+            "definition": definition,
+            "version": env!("CARGO_PKG_VERSION"),
+        }),
+    )])
+}
+
+/// Audit a TVIEW's drop.
+///
+/// # Errors
+/// Returns an error if the entry cannot be written.
+pub fn log_drop(entity: &str) -> crate::TViewResult<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
+    write(vec![entry("DROP", entity, None, &serde_json::Value::Null)])
+}
+
+/// Audit a flush: one entry per entity, with the number of its rows refreshed.
+///
+/// # Errors
+/// Returns an error if the entries cannot be written.
+pub fn log_refreshes<'a>(entities: impl Iterator<Item = &'a str>) -> crate::TViewResult<()> {
+    if !crate::config::audit_enabled() {
+        return Ok(());
+    }
+    write(refresh_entries(entities))
+}
+
+/// One `REFRESH` entry per entity of `entities`, counting its occurrences.
+fn refresh_entries<'a>(entities: impl Iterator<Item = &'a str>) -> Vec<serde_json::Value> {
+    let mut counts: BTreeMap<&str, i64> = BTreeMap::new();
+    for entity in entities {
+        *counts.entry(entity).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(entity, n)| entry("REFRESH", entity, Some(n), &serde_json::Value::Null))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flush_is_one_entry_per_entity_with_its_row_count() {
+        let entries = refresh_entries(["user", "tag", "user"].into_iter());
+        assert_eq!(
+            entries,
+            vec![
+                entry("REFRESH", "tag", Some(1), &serde_json::Value::Null),
+                entry("REFRESH", "user", Some(2), &serde_json::Value::Null),
+            ]
+        );
+    }
 }

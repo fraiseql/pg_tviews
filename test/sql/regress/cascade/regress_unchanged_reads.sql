@@ -33,9 +33,9 @@ SELECT tviews.pg_tviews_create('tv_post', $$
 
 CREATE FUNCTION work() RETURNS jsonb LANGUAGE sql AS $$
     SELECT jsonb_build_object(
-        'recomputes', (tviews.pg_tviews_queue_stats()->>'view_recomputes')::bigint,
-        'patched', (tviews.pg_tviews_queue_stats()->>'direct_patches_applied')::bigint,
-        'locks', (tviews.pg_tviews_queue_stats()->>'value_locks')::bigint) $$;
+        'recomputes', (tviews.pg_tviews_show_queue()->>'view_recomputes')::bigint,
+        'patched', (tviews.pg_tviews_show_queue()->>'direct_patches_applied')::bigint,
+        'locks', (tviews.pg_tviews_show_queue()->>'value_locks')::bigint) $$;
 CREATE FUNCTION assert_fresh(step text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE entity text; d bigint;
 BEGIN

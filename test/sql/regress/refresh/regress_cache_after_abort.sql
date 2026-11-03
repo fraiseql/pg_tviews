@@ -7,7 +7,7 @@
 -- transaction rolled back a catalog change of its own: a rename or a TVIEW created
 -- and rolled back is still forgotten.
 --
--- pg_tviews_queue_stats() counts the transaction's own catalog lookups, so each
+-- pg_tviews_show_queue() counts the transaction's own catalog lookups, so each
 -- measured write runs in a transaction that reads them, and compares them with those
 -- of a warm write after a commit.
 --
@@ -34,7 +34,7 @@ SELECT tviews.pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tb_author a ON a.pk_author = p.fk_author $$);
 
 CREATE FUNCTION lookups() RETURNS int LANGUAGE sql AS
-$$ SELECT (tviews.pg_tviews_queue_stats()->>'catalog_lookups')::int $$;
+$$ SELECT (tviews.pg_tviews_show_queue()->>'catalog_lookups')::int $$;
 CREATE FUNCTION must(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'cache after abort FAIL: %', msg; END IF; END $$;
 CREATE FUNCTION in_sync() RETURNS boolean LANGUAGE sql AS $$

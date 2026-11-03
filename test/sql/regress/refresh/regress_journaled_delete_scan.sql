@@ -80,10 +80,10 @@ SELECT check_write('two posts, READ COMMITTED',
 SELECT check_write('five posts, READ COMMITTED',
                    $$UPDATE tb_tag SET name = 'five' WHERE pk_tag IN (1, 5, 7, 9, 11)$$);
 
--- 3. The same at REPEATABLE READ.
-BEGIN ISOLATION LEVEL REPEATABLE READ;
-SELECT check_write('two posts, REPEATABLE READ',
-                   $$UPDATE tb_tag SET name = 'rr' WHERE pk_tag IN (5, 7)$$);
+-- 3. The same in an explicit transaction.
+BEGIN;
+SELECT check_write('two posts, in a transaction',
+                   $$UPDATE tb_tag SET name = 'tx' WHERE pk_tag IN (5, 7)$$);
 COMMIT;
 
 -- 4. Posts deleted by one statement: both TVIEW rows go, the others stay.

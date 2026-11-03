@@ -29,7 +29,7 @@ SELECT tviews.pg_tviews_create('tv_user', $$
 SELECT tviews.pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('title', p.title, 'author', u.data) AS data
     FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 SELECT must((SELECT count(*) FROM tviews.stats) = 2, 'one row per TVIEW');
 SELECT must(NOT bool_or(untracked) AND bool_and(view_recomputes = 0 AND rows_written = 0),
             'after a reset: ' || string_agg(entity || '=' || rows_written, ','))
@@ -64,11 +64,11 @@ SELECT must((SELECT rows_written FROM tviews.stats WHERE entity = 'user') >
 DROP TABLE stats_before;
 
 -- 4. Reset one TVIEW, then all; a dropped TVIEW leaves the view.
-SELECT tviews.pg_tviews_stats_reset('post');
+SELECT tviews.pg_tviews_reset_stats('post');
 SELECT must((SELECT rows_written FROM tviews.stats WHERE entity = 'post') = 0
             AND (SELECT rows_written FROM tviews.stats WHERE entity = 'user') > 0,
             'reset of one TVIEW');
-SELECT tviews.pg_tviews_stats_reset();
+SELECT tviews.pg_tviews_reset_stats_all();
 SELECT must((SELECT sum(rows_written) FROM tviews.stats) = 0, 'reset of every TVIEW');
 SELECT tviews.pg_tviews_drop('post');
 SELECT must((SELECT array_agg(entity) FROM tviews.stats) = '{user}', 'a dropped TVIEW is still listed');
@@ -77,7 +77,7 @@ SELECT must((SELECT array_agg(entity) FROM tviews.stats) = '{user}', 'a dropped 
 CREATE ROLE regress_stats_reader;
 SET ROLE regress_stats_reader;
 SELECT must((SELECT count(*) FROM tviews.stats) = 1, 'a plain role cannot read tviews.stats');
-SELECT must(outcome('SELECT tviews.pg_tviews_stats_reset()') LIKE '42501 %',
+SELECT must(outcome('SELECT tviews.pg_tviews_reset_stats_all()') LIKE '42501 %',
             'a plain role may reset the statistics');
 RESET ROLE;
 DROP ROLE regress_stats_reader;

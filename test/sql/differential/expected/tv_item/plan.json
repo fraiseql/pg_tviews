@@ -1,0 +1,68 @@
+{
+  "direct": [
+    [
+      "name",
+      "name"
+    ]
+  ],
+  "embeds": [],
+  "key": {
+    "column": "pk_item",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "item",
+      "initial_attnum": "public.tb_item.pk_item",
+      "initial_col": "pk_item",
+      "root": true,
+      "source_columns": [
+        "pk_item",
+        "id",
+        "fk_category",
+        "name"
+      ],
+      "source_oid": "public.tb_item",
+      "source_table": "tb_item"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_item.pk_item",
+        "public.tb_item.id",
+        "public.tb_item.fk_category",
+        "public.tb_item.name"
+      ],
+      "column": "pk_item",
+      "columns": [
+        "pk_item",
+        "id",
+        "fk_category",
+        "name"
+      ],
+      "kind": "local",
+      "relid": "public.tb_item",
+      "table": "public.tb_item"
+    },
+    {
+      "attnums": [
+        "public.tb_category.pk_category",
+        "public.tb_category.fk_parent",
+        "public.tb_category.name"
+      ],
+      "columns": [
+        "pk_category",
+        "fk_parent",
+        "name"
+      ],
+      "kind": "all_keys",
+      "reason": "read in a recursive CTE (public.v_category_path), read through view public.v_category_path, with no condition linking it to the TVIEW key",
+      "relid": "public.tb_category",
+      "table": "public.tb_category"
+    }
+  ],
+  "version": 3
+}

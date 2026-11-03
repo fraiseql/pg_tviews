@@ -19,7 +19,7 @@ CREATE EXTENSION pg_tviews;
 CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION '#202 FAIL: %', what; END IF; END $$;
 CREATE FUNCTION queued() RETURNS int LANGUAGE sql AS $$
-    SELECT jsonb_array_length(tviews.pg_tviews_debug_queue()) $$;
+    SELECT jsonb_array_length((tviews.pg_tviews_show_queue()->'queued')) $$;
 
 CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text);
 CREATE TABLE tb_line (pk_line bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),

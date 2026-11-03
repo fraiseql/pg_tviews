@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Run the pg_tviews regression suite (test/sql/regress/<feature>/regress_*.sql).
 #
-# Each test runs in a throwaway database. Tests that require the real jsonb_delta
-# extension are skipped (not failed) when it is not installed in the cluster, so
-# this script is safe to run in CI images that ship only pg_tviews.
+# Each test runs in a throwaway database. The cluster needs jsonb_delta, which
+# pg_tviews requires.
 #
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/run_regression_tests.sh [file ...]
@@ -31,9 +30,12 @@ tmpdb="pg_tviews_regress_$$"
 psql -d postgres -tAc "SELECT 1" >/dev/null 2>&1 || {
   echo "ERROR: cannot connect to PostgreSQL at $PGHOST:$PGPORT as $PGUSER"; exit 2; }
 
-# Is the real jsonb_delta extension available in this cluster?
+# pg_tviews requires jsonb_delta: without it no test can create the extension.
 have_jsonb_delta=$(psql -d postgres -tAc \
   "SELECT count(*) FROM pg_available_extensions WHERE name='jsonb_delta'" 2>/dev/null || echo 0)
+if [[ "$have_jsonb_delta" == "0" ]]; then
+  echo "ERROR: jsonb_delta is not installed in this cluster; pg_tviews requires it"; exit 2
+fi
 
 pass=0 fail=0 skip=0 xfail=0 failed_names=""
 
@@ -111,10 +113,6 @@ fi
 out="$(mktemp)"
 for f in "${files[@]}"; do
   name="$(basename "$f")"
-  # The fallback test deliberately runs without jsonb_delta; everything else needs it.
-  if [[ "$name" != *fallback* && "$have_jsonb_delta" == "0" ]]; then
-    echo "SKIP  $name (jsonb_delta not installed)"; skip=$((skip+1)); continue
-  fi
   psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
   psql -d postgres -c "CREATE DATABASE $tmpdb" >/dev/null 2>&1
   # The extension lives in schema tviews; tests call its functions unqualified.

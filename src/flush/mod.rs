@@ -42,10 +42,17 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
         return Ok(());
     };
     let _path = crate::owner::CatalogPath::pin();
+    let wrote = crate::queue::has_pending();
     drain::flush_pending()?;
+    crate::executor::flushed(wrote);
     // The collections the written rows belong to, named by their parents'
     // public ids while SPI is available (the commit callback has none).
-    crate::queue::published::resolve()
+    crate::publish::resolve_parents()
+}
+
+/// Whether a flush is running in this backend.
+pub fn is_flushing() -> bool {
+    FLUSHING.get()
 }
 
 thread_local! {

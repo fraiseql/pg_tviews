@@ -105,7 +105,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::boolean(time_dependent),
     ];
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(&sql, &args).map_err(|e| TViewError::SpiError {
+    crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
         query: sql,
         error: e.to_string(),
     })
@@ -126,7 +126,7 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
         crate::utils::spi::oid_array(declared.function_read_tables),
         crate::utils::spi::text(declared.time_refresh),
     ];
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET uncascaded_policy = $2, \
                  uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
@@ -151,7 +151,7 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TViewResult<()> {
     let _owner = crate::owner::AsOwner::of_extension()?;
-    Spi::run_with_args(
+    crate::utils::spi::run(
         &format!(
             "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
              WHERE entity = $1 AND group_keys->>$2 = $3",
@@ -203,7 +203,7 @@ pub fn dropped_by_event(entity: &str) -> TViewResult<Option<bool>> {
 /// # Errors
 /// A [`TViewError::SpiError`] when the catalog cannot be read.
 pub fn table_left_and_owned(entity: &str) -> TViewResult<(Option<bool>, Option<bool>)> {
-    Spi::get_two_with_args::<bool, bool>(
+    crate::utils::spi::two::<bool, bool>(
         &format!(
             "SELECT t.oid IS NOT NULL, \
                     COALESCE(pg_catalog.pg_has_role(t.relowner, 'USAGE'), false) \
@@ -250,7 +250,7 @@ pub fn extension_backing_views() -> TViewResult<Vec<Oid>> {
     if current != Some(true) {
         return Ok(Vec::new());
     }
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -296,52 +296,34 @@ pub fn leftover_view(schema: &str, name: &str) -> TViewResult<Option<Oid>> {
     )
 }
 
-// --- Backing view owners and grants ------------------------------------------
+// --- Backing view owners and privileges -------------------------------------
 
-/// For each TVIEW (the one whose table is `$1`, every one when `$1` is NULL), the
-/// statements that give its backing view the `SELECT` grants of its table, as
-/// `(view, statement)`. The view's owner is left out: it has every privilege.
-const SELECT_GRANT_CHANGES: &str = "\
-    WITH tview AS ( \
-        SELECT m.table_oid::pg_catalog.oid AS tab, v.oid AS view, v.relowner AS owner, \
-               pg_catalog.format('%I.%I', n.nspname, v.relname) AS name \
-        FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
-        JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace \
-        WHERE $1 IS NULL OR m.table_oid::pg_catalog.oid = $1 \
-    ), wanted AS ( \
-        SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.tab, \
-               pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner \
-    ), held AS ( \
-        SELECT t.view, t.name, a.grantee FROM tview t JOIN pg_catalog.pg_class c ON c.oid = t.view, \
-               pg_catalog.aclexplode(c.relacl) a \
-        WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.owner \
-    ), changes AS ( \
-        SELECT view, name, grantee, true AS adds FROM (TABLE wanted EXCEPT TABLE held) g \
-        UNION ALL \
-        SELECT view, name, grantee, false FROM (TABLE held EXCEPT TABLE wanted) r \
-    ) \
-    SELECT view, pg_catalog.format(CASE WHEN adds THEN 'GRANT SELECT ON %s TO %s' \
-                                        ELSE 'REVOKE SELECT ON %s FROM %s CASCADE' END, \
-               name, \
-               pg_catalog.string_agg(CASE WHEN grantee = 0 THEN 'PUBLIC' \
-                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(grantee)) END, \
-                   ', ' ORDER BY grantee)) \
-    FROM changes GROUP BY view, name, adds ORDER BY view, adds";
+/// For each backing view (of the TVIEW whose table is `$1`, of every one when
+/// `$1` is NULL) on which a role other than its owner holds a privilege, the
+/// statement that revokes them all, as `(view, statement)`.
+const GRANT_REVOCATIONS: &str = "\
+    SELECT v.oid, pg_catalog.format('REVOKE ALL ON %I.%I FROM %s CASCADE', n.nspname, v.relname, \
+               pg_catalog.string_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' \
+                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END, ', ')) \
+    FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
+    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace, \
+         pg_catalog.aclexplode(v.relacl) a \
+    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND a.grantee <> v.relowner \
+    GROUP BY v.oid, n.nspname, v.relname ORDER BY v.oid";
 
-/// The `GRANT`/`REVOKE` statements that give the backing view of the TVIEW whose
-/// table is `table` (of every TVIEW when `None`) the `SELECT` grants of that
-/// table, as `(view, statement)`. Read-write: a fresh snapshot, which sees the
-/// statement just run.
+/// The `REVOKE` statements that leave the backing view of the TVIEW whose table
+/// is `table` (of every TVIEW when `None`) to its owner alone, as
+/// `(view, statement)`. Read-write: a fresh snapshot, which sees the statement
+/// just run.
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
-pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
+pub fn grant_revocations(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
     let args = [crate::utils::spi::oid(table)];
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         client
             .update(
-                &SELECT_GRANT_CHANGES.replace("{meta}", &super::meta_table()),
+                &GRANT_REVOCATIONS.replace("{meta}", &super::meta_table()),
                 None,
                 &args,
             )?
@@ -349,7 +331,7 @@ pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option
             .collect::<Result<Vec<_>, spi::Error>>()
     })
     .map_err(|e| TViewError::CatalogError {
-        operation: "Compare backing view grants with their tables'".to_string(),
+        operation: "Read the grants on backing views".to_string(),
         pg_error: e.to_string(),
     })
 }
@@ -362,7 +344,7 @@ pub fn grant_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn owner_changes(table: Option<Oid>) -> TViewResult<Vec<(Option<Oid>, Option<String>)>> {
     let args = [crate::utils::spi::oid(table)];
-    Spi::connect_mut(|client| {
+    crate::utils::spi::connect_mut(|client| {
         client
             .update(
                 &format!(
@@ -424,13 +406,13 @@ pub fn reading_column(relid: Oid, column: &str) -> TViewResult<Vec<(String, Stri
          JOIN pg_catalog.pg_attribute a ON a.attrelid = r.relid AND a.attnum = r.attnum \
          WHERE r.depth = 0 AND r.relid = $1 AND a.attname = $2 \
          ORDER BY m.entity",
-        super::reads::view_reads_cte(&format!(
+        crate::lineage::reads::view_reads_cte(&format!(
             "SELECT m.view_oid::pg_catalog.oid, m.view_oid::pg_catalog.oid, 0 FROM {} m",
             super::meta_table()
         )),
         super::meta_table()
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [
             crate::utils::spi::oid(relid),
             crate::utils::spi::text(column),
@@ -458,11 +440,11 @@ pub fn reading_column(relid: Oid, column: &str) -> TViewResult<Vec<(String, Stri
 pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Vec<(String, Oid)>> {
     let (meta_table, reads) = (
         super::meta_table(),
-        format!("{}.pg_tview_reads", crate::utils::ext_schema()),
+        format!("{}.reads", crate::utils::ext_schema()),
     );
     // Its view or its table. A TVIEW reads everything the TVIEWs it reads do, and
     // their views: it reads more of the others' views and tables than any of them.
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let mut dependents = Vec::new();
         for row in client.select(
             &format!(
@@ -501,16 +483,13 @@ pub fn readers_of(entity: &str, view_oid: Oid, table_oid: Oid) -> TViewResult<Ve
 pub fn column_readers_of(table: Oid, columns: &[String]) -> TViewResult<Vec<String>> {
     entities(
         &format!(
-            "SELECT DISTINCT m.entity::text FROM {} m, \
-                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
-             WHERE (t->>'relid')::pg_catalog.oid = $1 \
-               AND (pg_catalog.jsonb_array_length(COALESCE(t->'attnums', '[]')) = 0 \
-                    OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements_text(t->'attnums') n \
-                               JOIN pg_catalog.pg_attribute a \
-                                 ON a.attrelid = $1 AND a.attnum = n::pg_catalog.int2 \
-                               WHERE a.attname::pg_catalog.text = ANY ($2))) \
+            "SELECT DISTINCT m.entity::text FROM {} m, {}.pg_tviews_plan_tables(m.plan) t \
+             WHERE t.relid = $1 \
+               AND (pg_catalog.cardinality(t.columns) = 0 \
+                    OR t.columns OPERATOR(pg_catalog.&&) $2::pg_catalog.text[]) \
              ORDER BY 1",
-            super::meta_table()
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[
             crate::utils::spi::oid(table),
@@ -540,13 +519,13 @@ pub fn type_readers_of(enum_type: Oid) -> TViewResult<Vec<String>> {
                              AND r.ev_class = m.view_oid::pg_catalog.oid \
                              AND d.refclassid = 'pg_catalog.pg_type'::pg_catalog.regclass \
                              AND d.refobjid IN (SELECT oid FROM types)) \
-                OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(m.plan->'tables') t \
+                OR EXISTS (SELECT 1 FROM {}.pg_tviews_plan_tables(m.plan) t \
                            JOIN pg_catalog.pg_attribute a \
-                             ON a.attrelid = (t->>'relid')::pg_catalog.oid \
-                            AND a.attnum > 0 AND NOT a.attisdropped \
+                             ON a.attrelid = t.relid AND a.attnum > 0 AND NOT a.attisdropped \
                            WHERE a.atttypid IN (SELECT oid FROM types)) \
              ORDER BY 1",
-            super::meta_table()
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[crate::utils::spi::oid(enum_type)],
         "Find the TVIEWs showing an enum",
@@ -571,10 +550,10 @@ fn entities(
 pub fn table_readers_of(table: Oid) -> TViewResult<Vec<String>> {
     entities(
         &format!(
-            "SELECT DISTINCT m.entity::text FROM {} m, \
-                 pg_catalog.jsonb_array_elements(m.plan->'tables') t \
-             WHERE (t->>'relid')::pg_catalog.oid = $1 ORDER BY 1",
-            super::meta_table()
+            "SELECT DISTINCT m.entity::text FROM {} m, {}.pg_tviews_plan_tables(m.plan) t \
+             WHERE t.relid = $1 ORDER BY 1",
+            super::meta_table(),
+            crate::utils::ext_schema()
         ),
         &[crate::utils::spi::oid(table)],
         "Find the TVIEWs reading a table",
@@ -588,7 +567,7 @@ pub fn table_readers_of(table: Oid) -> TViewResult<Vec<String>> {
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn full_refresh_readers_of(matview: Oid) -> TViewResult<Vec<String>> {
     let args = [crate::utils::spi::oid(matview)];
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -638,7 +617,7 @@ pub fn meta_table_oid() -> Option<Oid> {
 pub fn function_read_relation(
     table: Oid,
 ) -> TViewResult<(Option<String>, Option<String>, Option<String>)> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         client
             .select(
                 &format!(
@@ -704,7 +683,7 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
          ORDER BY m.entity",
         super::meta_table()
     );
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text(entity)];
         let mut out = Vec::new();
         for row in client.select(&query, None, &args)? {
@@ -730,7 +709,7 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, String, String)>> {
-    Spi::connect(|client| {
+    crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text_array(entities)];
         let mut out = Vec::new();
         for row in client.select(

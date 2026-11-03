@@ -28,7 +28,7 @@ pub fn enqueue_refresh_with_limit(
 ///
 /// This is the main entry point from triggers.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if `max_queue_size` would be exceeded.
+/// Raises ERROR if `pg_tviews.max_queue_size` would be exceeded.
 ///
 /// A plain enqueue **poisons** any direct patch for this key: the key
 /// will recompute. Only [`enqueue_refresh_patched`] preserves a fast-path patch.
@@ -60,16 +60,15 @@ pub fn enqueue_refresh_patched(
     // Count the capture once per fresh key: a base table feeding several tviews
     // has several row triggers that each re-record the same key in one statement.
     if super::patch::record(RefreshKey::pk(entity, pk), Vec::new(), fields) {
-        crate::metrics::metrics_api::record_direct_patch_captured(entity);
+        crate::stats::record_direct_patch_captured(entity);
     }
 }
 
 /// Enqueue a refresh of every row of `entity`'s TVIEW. One
 /// entry however many rows the statement changes; the flush absorbs the entity's
-/// per-key entries into it.
+/// per-key entries into it. The caller notes the link change
+/// ([`crate::concurrency::enqueue_refresh_all`]).
 pub fn enqueue_refresh_all(entity: &str) {
-    // Rows rebuilt in full may come and go: a link change.
-    crate::concurrency::note_link_change();
     let key = RefreshKey::all(entity);
     if state::queue_contains(&key) {
         return;
@@ -84,7 +83,7 @@ pub fn enqueue_refresh_all(entity: &str) {
 ///
 /// This is the statement-level trigger entry point.
 /// Deduplication is automatic (`HashSet`).
-/// Raises ERROR if `max_queue_size` would be exceeded.
+/// Raises ERROR if `pg_tviews.max_queue_size` would be exceeded.
 pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
     if let Err(e) = check_queue_backpressure(crate::config::max_queue_size()) {
         e.raise();

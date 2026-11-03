@@ -154,15 +154,15 @@ DO $$ BEGIN
     RAISE EXCEPTION '#96 FAIL: post local path still carries a source database OID';
   END IF;
   -- The mapping query names app.tb_post by its relid: rebound with it.
-  IF tviews.pg_tviews_mapping_query('post', 'tb_author'::regclass) NOT LIKE '%FROM pg_tviews_delta d, app.tb_post o1%' THEN
+  IF tviews.pg_tviews_show_mapping_query('post', 'tb_author'::regclass) NOT LIKE '%FROM pg_tviews_delta d, app.tb_post o1%' THEN
     RAISE EXCEPTION '#96 FAIL: the mapping of tb_author does not name the restored app.tb_post: %',
-      tviews.pg_tviews_mapping_query('post', 'tb_author'::regclass);
+      tviews.pg_tviews_show_mapping_query('post', 'tb_author'::regclass);
   END IF;
   -- So are its read sets (ADR 0207).
-  IF (SELECT query FROM tviews.pg_tviews_read_set_queries('post', 'tb_author'::regclass))
+  IF (SELECT query FROM tviews.pg_tviews_show_read_sets('post', 'tb_author'::regclass))
        NOT LIKE '%FROM app.tb_post o1%' THEN
     RAISE EXCEPTION '#96 FAIL: the read set of tb_author does not name the restored app.tb_post: %',
-      (SELECT array_agg(q) FROM tviews.pg_tviews_read_set_queries('post', 'tb_author'::regclass) q);
+      (SELECT array_agg(q) FROM tviews.pg_tviews_show_read_sets('post', 'tb_author'::regclass) q);
   END IF;
   IF (SELECT count(*) FROM tv_author) <> 2 OR (SELECT count(*) FROM app.tv_post) <> 2 THEN
     RAISE EXCEPTION '#96 FAIL: restored TVIEW rows missing';

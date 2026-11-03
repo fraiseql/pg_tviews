@@ -95,24 +95,23 @@ SELECT step('refresh', $$SELECT tviews.pg_tviews_refresh('csp_post')$$);
 SELECT step('reregister', $$SELECT tviews.pg_tviews_reregister('csp_post')$$);
 SELECT step('show_cascade_path', $$SELECT tviews.pg_tviews_show_cascade_path('csp_post')$$);
 SELECT step('mapping_query',
-            $$SELECT tviews.pg_tviews_mapping_query('csp_post', 'tb_csp_post'::regclass)$$);
+            $$SELECT tviews.pg_tviews_show_mapping_query('csp_post', 'tb_csp_post'::regclass)$$);
 SELECT step('read_set_queries',
-            $$SELECT tviews.pg_tviews_read_set_queries('csp_post', 'tb_csp_post'::regclass)$$);
-SELECT step('entity_of', $$SELECT tviews.pg_tviews_entity_of('tv_csp_post')$$);
-SELECT step('stats_reset', $$SELECT tviews.pg_tviews_stats_reset('csp_post')$$);
+            $$SELECT tviews.pg_tviews_show_read_sets('csp_post', 'tb_csp_post'::regclass)$$);
+SELECT step('entity_of', $$SELECT tviews.pg_tviews_resolve('tv_csp_post')$$);
+SELECT step('stats_reset', $$SELECT tviews.pg_tviews_reset_stats('csp_post')$$);
 
 -- Functions acting on every TVIEW, and the status ones.
-SELECT step('replication_status', $$SELECT tviews.pg_tviews_replication_status()$$);
-SELECT step('health_check', $$SELECT tviews.pg_tviews_health_check()$$);
+SELECT step('replication_status', $$SELECT tviews.pg_tviews_show_replication()$$);
+SELECT step('health_check', $$SELECT tviews.pg_tviews_check_health()$$);
 SELECT step('stats', $$SELECT count(*) FROM tviews.stats$$);
 SELECT step('reregister_all', $$SELECT tviews.pg_tviews_reregister_all()$$);
 SELECT step('rebuild_all', $$SELECT tviews.pg_tviews_rebuild_all()$$);
 SELECT step('refresh_all', $$SELECT tviews.pg_tviews_refresh_all()$$);
 SELECT step('ensure_propagation_indexes',
-            $$SELECT tviews.pg_tviews_ensure_propagation_indexes(NULL, true)$$);
+            $$SELECT tviews.pg_tviews_ensure_propagation_indexes_all(true)$$);
 SELECT step('refresh_time_dependent', $$SELECT tviews.pg_tviews_refresh_time_dependent()$$);
-SELECT step('queue_stats', $$SELECT tviews.pg_tviews_queue_stats()$$);
-SELECT step('debug_queue', $$SELECT tviews.pg_tviews_debug_queue()$$);
+SELECT step('show_queue', $$SELECT tviews.pg_tviews_show_queue()$$);
 
 -- Writes, and statements the hook follows.
 SELECT step('write', $$UPDATE tb_csp_post SET title = 'b' WHERE pk_csp_post = 1$$);

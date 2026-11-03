@@ -13,6 +13,7 @@ step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 ?column?
 --------
@@ -20,7 +21,7 @@ step r_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
-ERROR:  could not serialize access: a concurrent transaction refreshes TVIEW rows from rows this write changes
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step i_commit: COMMIT;
 step r_check: 
@@ -34,10 +35,8 @@ step r_check:
 tv  |pk|author|fresh
 ----+--+------+-----
 note| 1|ADA   |t    
-note| 2|ADA   |t    
 post| 1|ada   |t    
-post| 2|ada   |t    
-(4 rows)
+(2 rows)
 
 
 starting permutation: r_begin r_rename i_begin i_insert r_commit i_commit r_check
@@ -53,6 +52,7 @@ step r_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 ?column?
 --------
@@ -60,7 +60,7 @@ step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
-ERROR:  could not serialize access: a concurrent transaction changes rows this TVIEW refresh reads
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step i_commit: COMMIT;
 step r_check: 
@@ -73,8 +73,8 @@ step r_check:
 
 tv  |pk|author|fresh
 ----+--+------+-----
-note| 1|GRACE |t    
-post| 1|grace |t    
+note| 1|ADA   |t    
+post| 1|ada   |t    
 (2 rows)
 
 
@@ -97,9 +97,10 @@ step r_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
-ERROR:  could not serialize access due to read/write dependencies among transactions
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step i_commit: COMMIT;
 step r_check: 
   SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
@@ -111,8 +112,8 @@ step r_check:
 
 tv  |pk|author|fresh
 ----+--+------+-----
-note| 1|GRACE |t    
-post| 1|grace |t    
+note| 1|ADA   |t    
+post| 1|ada   |t    
 (2 rows)
 
 
@@ -135,9 +136,10 @@ step i_begin: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT 1;
 (1 row)
 
 step i_insert: INSERT INTO tb_post (pk_post, fk_user, title) VALUES (2, 1, 'p2');
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step i_commit: COMMIT;
 step r_rename: UPDATE tb_user SET name = 'grace' WHERE pk_user = 1;
-ERROR:  could not serialize access due to read/write dependencies among transactions
+ERROR:  pg_tviews: a SERIALIZABLE transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step r_commit: COMMIT;
 step r_check: 
   SELECT 'post' AS tv, t.pk_post AS pk, t.data->'author'->>'name' AS author, t.data = v.data AS fresh
@@ -150,8 +152,6 @@ step r_check:
 tv  |pk|author|fresh
 ----+--+------+-----
 note| 1|ADA   |t    
-note| 2|ADA   |t    
 post| 1|ada   |t    
-post| 2|ada   |t    
-(4 rows)
+(2 rows)
 

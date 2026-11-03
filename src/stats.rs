@@ -124,6 +124,13 @@ impl Table {
         None
     }
 
+    /// Free the slots of database `db` (the table has room again if it held any).
+    fn free_database(&mut self, db: u32) {
+        while let Some(i) = self.slots.iter().position(|slot| slot.db == db) {
+            self.free(i);
+        }
+    }
+
     /// Free slot `i`, moving back the slots after it that probed past it.
     fn free(&mut self, mut i: usize) {
         let mut j = i;
@@ -368,9 +375,7 @@ pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
     let (db, now) = unsafe { (pg_sys::MyDatabaseId.to_u32(), pg_sys::GetCurrentTimestamp()) };
     let mut shared = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE).ok_or_else(unavailable)?;
     if whole_database {
-        while let Some(i) = shared.slots.iter().position(|slot| slot.db == db) {
-            shared.free(i);
-        }
+        shared.free_database(db);
         shared.overflowed = false;
     }
     for table in tables {
@@ -413,7 +418,7 @@ pub fn feed_gaps() -> crate::TViewResult<u64> {
     gaps()
         .map(|gaps| gaps.load(Ordering::Acquire))
         .ok_or_else(|| crate::TViewError::WrongState {
-            reason: "pg_tviews_feed_gaps() needs the library preloaded: \
+            reason: "pg_tviews_count_feed_gaps() needs the library preloaded: \
                      shared_preload_libraries = 'pg_tviews', then restart"
                 .to_string(),
         })
@@ -425,6 +430,15 @@ pub fn feed_gaps() -> crate::TViewResult<u64> {
 pub fn started() -> pg_sys::TimestampTz {
     // SAFETY: reads a backend global, set once by the postmaster.
     unsafe { pg_sys::PgStartTime }
+}
+
+/// Forget the TVIEWs of database `db`, dropped: `DROP DATABASE` drops no table
+/// one by one, and the slots of a cluster that creates and drops databases (test
+/// runs) would fill the table for good.
+pub fn forget_database(db: Oid) {
+    if let Some(mut shared) = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE) {
+        shared.free_database(db.to_u32());
+    }
 }
 
 /// Forget `table`, dropped or replaced by a rebuild.
@@ -444,6 +458,45 @@ fn unavailable() -> crate::TViewError {
                  shared_preload_libraries = 'pg_tviews', then restart"
             .to_string(),
     }
+}
+
+/// An eligible direct-patch capture of `entity`'s TVIEW: in the session's
+/// metrics and `tviews.stats`.
+pub fn record_direct_patch_captured(entity: &str) {
+    crate::metrics::metrics_api::record_direct_patch_captured();
+    add(entity, Counter::PatchCaptured, 1);
+}
+
+/// `n` rows of `entity`'s TVIEW updated directly by a patch.
+pub fn record_direct_patches_applied(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_direct_patches_applied(n);
+    add(entity, Counter::PatchApplied, n);
+}
+
+/// `n` patched keys of `entity`'s TVIEW that fell back to recompute.
+pub fn record_direct_patch_fallbacks(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_direct_patch_fallbacks(n);
+    add(entity, Counter::PatchFallbacks, n);
+}
+
+/// `n` rows of `entity`'s TVIEW recomputed from the backing view.
+pub fn record_view_recomputes(entity: &str, n: u64) {
+    crate::metrics::metrics_api::record_view_recomputes(n);
+    add(entity, Counter::ViewRecomputes, n);
+}
+
+/// `n` refresh writes to `entity`'s TVIEW skipped because nothing changed.
+pub fn record_noop_skipped(entity: &str, n: u64) {
+    if n > 0 {
+        crate::metrics::metrics_api::record_noop_skipped(n);
+        add(entity, Counter::NoopSkipped, n);
+    }
+}
+
+/// One propagation edge into `parent`'s TVIEW skipped at an unchanged child row.
+pub fn record_propagation_pruned(parent: &str) {
+    crate::metrics::metrics_api::record_propagation_pruned();
+    add(parent, Counter::PropagationPruned, 1);
 }
 
 #[cfg(test)]
@@ -489,6 +542,20 @@ mod tests {
         for (n, &k) in keys.iter().enumerate() {
             assert_eq!(t.find(7, k).is_some(), n % 2 == 1, "key {k}");
         }
+    }
+
+    #[test]
+    fn a_dropped_database_frees_its_slots() {
+        let mut t = table();
+        for k in 0..u32::try_from(CAPACITY).unwrap() {
+            t.find_or_take(1 + k % 2, k + 1, 0).unwrap();
+        }
+        assert!(t.find_or_take(3, 1, 0).is_none(), "full");
+        t.free_database(1);
+        assert!(t.slots.iter().all(|s: &Slot| s.db != 1));
+        assert_eq!(t.slots.iter().filter(|s| s.db == 2).count(), CAPACITY / 2);
+        assert!(t.find(2, 2).is_some(), "the other database keeps its slots");
+        assert!(t.find_or_take(3, 1, 0).is_some(), "room again");
     }
 
     #[test]

@@ -115,7 +115,7 @@ END $$;
 CREATE FUNCTION _version(k bigint) RETURNS text LANGUAGE sql AS
     $$ SELECT xmin::text || ctid::text FROM tv_item WHERE pk_item = k $$;
 CREATE FUNCTION _skipped() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>'refresh_noop_skipped')::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>'refresh_noop_skipped')::bigint $$;
 
 -- ── 1. the issue's repro: UPDATE of a non-key column (upsert path) ──────────
 SET pg_tviews.direct_patch_enabled = off;

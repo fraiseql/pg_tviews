@@ -9,8 +9,7 @@
 -- replace would miss the entity's own-column changes), so array element
 -- update/insert/delete AND own-column changes all refresh correctly.
 --
--- Part B exercises the availability-latch invalidation (Cycle 3): DROP/CREATE
--- EXTENSION jsonb_delta within one backend must be observed immediately.
+-- Part B: jsonb_delta, which pg_tviews requires, cannot be dropped from under it.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/arrays/regress_array_dependencies.sql
 -- expect-output: array_dependencies: PASS
@@ -101,25 +100,14 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Part B — availability-latch invalidation on extension DDL (Cycle 3).
+-- Part B — jsonb_delta is required: it cannot be dropped from under pg_tviews,
+-- and the refresh keeps patching through it.
 DO $$ BEGIN
-  IF NOT pg_tviews_check_jsonb_delta() THEN
-    RAISE EXCEPTION '#50 FAIL: jsonb_delta should be reported available';
-  END IF;
-END $$;
-
-DROP EXTENSION jsonb_delta;   -- ProcessUtility hook must invalidate the latch
-DO $$ BEGIN
-  IF pg_tviews_check_jsonb_delta() THEN
-    RAISE EXCEPTION '#50 FAIL: availability latch stale-true after DROP EXTENSION jsonb_delta';
-  END IF;
-END $$;
-
-CREATE EXTENSION jsonb_delta; -- hook must invalidate again
-DO $$ BEGIN
-  IF NOT pg_tviews_check_jsonb_delta() THEN
-    RAISE EXCEPTION '#50 FAIL: availability latch stale-false after re-CREATE EXTENSION jsonb_delta';
-  END IF;
+  BEGIN
+    DROP EXTENSION jsonb_delta;
+    RAISE EXCEPTION '#50 FAIL: jsonb_delta was dropped from under pg_tviews';
+  EXCEPTION WHEN dependent_objects_still_exist THEN NULL;
+  END;
 END $$;
 
 \echo 'array_dependencies: PASS'

@@ -7,15 +7,29 @@
 -- cascade skipped updates to a renamed joined column, and a renamed FK stopped
 -- the cascade altogether.
 --
--- Correct behaviour: after ALTER TABLE ... RENAME COLUMN, the definition is the
--- author's text with the renamed references rewritten (a bare select item keeps
--- its output name via AS), and the TVIEW keeps propagating.
+-- Correct behaviour: after ALTER TABLE ... RENAME COLUMN, the definition is
+-- PostgreSQL's rendering of the renamed backing view (pg_get_viewdef: the output
+-- columns keep their names), the plan is the one registering that text derives,
+-- and the TVIEW keeps propagating.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/ddl/regress_rename_column.sql
 -- expect-output: rename_column: PASS
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
+
+-- Whether entity's stored definition is its backing view's text (rendered, as the
+-- extension renders it, under a search_path of pg_catalog only), and its plan the
+-- one re-registering that text derives.
+CREATE FUNCTION follows_view(e text) RETURNS boolean LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp AS $$
+DECLARE before jsonb; same_text boolean;
+BEGIN
+    SELECT m.plan, m.definition = rtrim(btrim(pg_get_viewdef(m.view_oid), E' \n\t'), ';')
+      INTO before, same_text FROM tviews.pg_tview_meta m WHERE m.entity = e;
+    PERFORM tviews.pg_tviews_reregister('tv_' || e);
+    RETURN same_text AND before = (SELECT m.plan FROM tviews.pg_tview_meta m WHERE m.entity = e);
+END $$;
 
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
@@ -42,13 +56,13 @@ SELECT p.pk_post, p.id, p.fk_author,
 FROM tb_post p JOIN tb_author a ON a.pk_author = p.fk_author;
 
 -- ========================================================================
--- Cycle 1: renaming an own column rewrites the definition; updates propagate
+-- Cycle 1: renaming an own column re-derives the definition; updates propagate
 -- ========================================================================
 ALTER TABLE tb_post RENAME COLUMN title TO headline;
 
 DO $$ BEGIN
-  IF (SELECT definition FROM pg_tview_meta WHERE entity = 'post') IS DISTINCT FROM
-     E'SELECT p.pk_post, p.id, p.fk_author,\n       jsonb_build_object(''title'', p.headline, ''author'', a.name) AS data\nFROM tb_post p JOIN tb_author a ON a.pk_author = p.fk_author' THEN
+  IF NOT follows_view('post')
+     OR (SELECT definition NOT LIKE '%p.headline%' FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION '#81 FAIL: definition after renaming title: %',
       (SELECT definition FROM pg_tview_meta WHERE entity = 'post');
   END IF;
@@ -83,8 +97,8 @@ END $$;
 ALTER TABLE tb_post RENAME COLUMN fk_author TO fk_writer;
 
 DO $$ BEGIN
-  IF (SELECT definition FROM pg_tview_meta WHERE entity = 'post') IS DISTINCT FROM
-     E'SELECT p.pk_post, p.id, p.fk_writer AS fk_author,\n       jsonb_build_object(''title'', p.headline, ''author'', a.full_name) AS data\nFROM tb_post p JOIN tb_author a ON a.pk_author = p.fk_writer' THEN
+  IF NOT follows_view('post')
+     OR (SELECT definition NOT LIKE '%p.fk_writer AS fk_author%' FROM pg_tview_meta WHERE entity = 'post') THEN
     RAISE EXCEPTION '#81 FAIL: definition after renaming fk_author: %',
       (SELECT definition FROM pg_tview_meta WHERE entity = 'post');
   END IF;
@@ -103,7 +117,7 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
--- Cycle 4: a rename the text rewrite cannot follow falls back to the view text
+-- Cycle 4: a rename through a subquery: the view text names the new column
 -- ========================================================================
 CREATE TABLE tb_tag (
     pk_tag BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -118,7 +132,7 @@ FROM (SELECT pk_tag, id, label FROM tb_tag) s;
 ALTER TABLE tb_tag RENAME COLUMN label TO caption;
 
 DO $$ BEGIN
-  IF (SELECT definition FROM pg_tview_meta WHERE entity = 'tag') LIKE '%label AS label%'
+  IF NOT follows_view('tag')
      OR (SELECT definition FROM pg_tview_meta WHERE entity = 'tag') NOT LIKE '%caption%' THEN
     RAISE EXCEPTION '#81 FAIL: definition after renaming label: %',
       (SELECT definition FROM pg_tview_meta WHERE entity = 'tag');

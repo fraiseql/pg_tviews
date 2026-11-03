@@ -1,9 +1,9 @@
 # A parent row inserted under SERIALIZABLE while a READ COMMITTED transaction
 # renames the child it reads. Serializable snapshot isolation orders serializable
-# transactions among themselves only: the rename is invisible to it. The insert
-# locks what its rows read, as under REPEATABLE READ, so the rename waits for it,
-# then finds the new post; or the insert fails with 40001 when the rename came
-# first. tv_post embeds the user's TVIEW, tv_note joins its base table.
+# transactions among themselves only: the rename would be invisible to it. The
+# SERIALIZABLE insert is refused with 0A000 before it writes, the rename goes
+# through, and every TVIEW row is fresh. tv_post embeds the user's TVIEW, tv_note
+# joins its base table.
 
 setup
 {

@@ -14,6 +14,7 @@
 
 mod internal;
 mod maintenance;
+mod removed;
 mod session;
 mod status;
 mod tview;

@@ -14,7 +14,7 @@ posts
 
 step o_rename: UPDATE tb_user SET name = 'amy' WHERE pk_user = 1;
 step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
-ERROR:  could not serialize access due to concurrent update
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step s_commit: COMMIT;
 step s_check: 
   SELECT t.pk_post, t.data->>'title' AS title, t.data->'author'->>'name' AS author,
@@ -40,7 +40,9 @@ posts
 (1 row)
 
 step s_title: UPDATE tb_post SET title = 'p1!' WHERE pk_post = 1;
+ERROR:  pg_tviews: a REPEATABLE READ transaction cannot write to a table TVIEWs read, nor refresh TVIEWs
 step s_again: UPDATE tb_post SET title = 'p1!!' WHERE pk_post = 1;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
 step s_commit: COMMIT;
 step s_check: 
   SELECT t.pk_post, t.data->>'title' AS title, t.data->'author'->>'name' AS author,
@@ -49,6 +51,6 @@ step s_check:
 
 pk_post|title|author|fresh
 -------+-----+------+-----
-      1|p1!! |ann   |t    
+      1|p1   |ann   |t    
 (1 row)
 

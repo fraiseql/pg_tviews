@@ -1,0 +1,17 @@
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Item":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custfirst":["U"],"Custline":["U"],"Custstat":["U"]},"d":{"Lastline":["U"],"Line":["U","U"],"Ordcount":["U"],"Order":["U"],"Ordsum":["U"],"Purchase":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custline":["U"],"Line":["U"],"Order":["U"],"Ordsum":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Vnote":["U","U","U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Doc":["U"],"Note":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custfirst":["U","U"],"Custline":["U","U"],"Custstat":["U"],"Ordcount":["U"],"Order":["U","U","U"],"Ordsum":["U"],"Purchase":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Contract":["U","U","U"],"Deal":["U","U","U"],"Desk":["U","U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custline":["U"],"Line":["U","U"],"Order":["U","U"],"Ordsum":["U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Ordcount":["U","U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custfirst":["U"],"Custline":["U"],"Order":["U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custbadge":["U","U"],"Vnote":["U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Desk":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Note":["U","U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Vnote":["U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custline":["U"],"Lastline":["U","U"],"Line":["U","U"],"Order":["U","U"],"Ordsum":["U","U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custfirst":["U"],"Custline":["U"],"Custstat":["U"],"Ordcount":["U","U"]},"d":{"Lastline":["U"],"Line":["U","U"],"Ordcount":["U"],"Order":["U"],"Ordsum":["U"],"Purchase":["U"]}}" received from server process.
+Asynchronous notification "tviews_changes" with payload "{"v":2,"u":{"Custbadge":["U"],"Nbadge":["U"]}}" received from server process.

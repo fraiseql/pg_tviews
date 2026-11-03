@@ -70,20 +70,9 @@ pub fn split(name: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Whether a word of SQL text names `name`, with PostgreSQL's folding: a quoted
-/// word compares exactly, an unquoted one in lower case.
-#[must_use]
-pub fn names(word: &str, quoted: bool, name: &str) -> bool {
-    if quoted {
-        word == name
-    } else {
-        word.to_lowercase() == name
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{names, quoted, split};
+    use super::{quoted, split};
 
     #[test]
     fn quoted_doubles_quotes() {
@@ -105,12 +94,5 @@ mod tests {
         for bad in ["", "app..tv_post", "\"app.tv_post", "\"app\"x.tv_post"] {
             assert_eq!(split(bad), None, "{bad}");
         }
-    }
-
-    #[test]
-    fn names_folds_unquoted_words() {
-        assert!(names("TV_POST", false, "tv_post"));
-        assert!(!names("TV_POST", true, "tv_post"));
-        assert!(names("TV_POST", true, "TV_POST"));
     }
 }

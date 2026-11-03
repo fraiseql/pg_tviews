@@ -1,0 +1,87 @@
+{
+  "direct": [],
+  "embeds": [],
+  "key": {
+    "column": "pk_custbadge",
+    "type": "integer"
+  },
+  "paths": [
+    {
+      "entity_name": "custbadge",
+      "initial_attnum": "public.tb_customer.pk_customer",
+      "initial_col": "pk_customer",
+      "root": true,
+      "source_columns": [
+        "pk_customer",
+        "id"
+      ],
+      "source_oid": "public.tb_customer",
+      "source_table": "tb_customer"
+    },
+    {
+      "entity_name": "custbadge",
+      "initial_attnum": "public.tb_vnote.fk_customer",
+      "initial_col": "fk_customer",
+      "root": false,
+      "source_columns": [
+        "pk_vnote",
+        "fk_customer"
+      ],
+      "source_oid": "public.tb_vnote",
+      "source_table": "tb_vnote"
+    }
+  ],
+  "references": [],
+  "set_operation": false,
+  "tables": [
+    {
+      "attnums": [
+        "public.tb_customer.pk_customer",
+        "public.tb_customer.id"
+      ],
+      "column": "pk_customer",
+      "columns": [
+        "pk_customer",
+        "id"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_customer.pk_customer"
+      ],
+      "relid": "public.tb_customer",
+      "table": "public.tb_customer"
+    },
+    {
+      "attnums": [
+        "public.tb_vnote.pk_vnote",
+        "public.tb_vnote.fk_customer"
+      ],
+      "column": "fk_customer",
+      "columns": [
+        "pk_vnote",
+        "fk_customer"
+      ],
+      "kind": "local",
+      "links": [
+        "public.tb_vnote.fk_customer"
+      ],
+      "relid": "public.tb_vnote",
+      "table": "public.tb_vnote"
+    },
+    {
+      "attnums": [
+        "public.tb_badge.code",
+        "public.tb_badge.label"
+      ],
+      "columns": [
+        "code",
+        "label"
+      ],
+      "kind": "all_keys",
+      "reason": "with no condition linking it to the TVIEW key; read inside public.harness_badge_count(integer)",
+      "relid": "public.tb_badge",
+      "table": "public.tb_badge"
+    }
+  ],
+  "version": 3
+}

@@ -23,7 +23,7 @@ CREATE FUNCTION must(ok boolean, what text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'lineage analysis FAIL: %', what; END IF; END $$;
 -- Direct patches applied so far in this session.
 CREATE FUNCTION patches() RETURNS bigint LANGUAGE sql AS
-    $$ SELECT (pg_tviews_queue_stats()->>'direct_patches_applied')::bigint $$;
+    $$ SELECT (pg_tviews_show_queue()->>'direct_patches_applied')::bigint $$;
 
 -- (a) tag is copied into data and joined on.
 CREATE TABLE tb_tag (pk_tag int PRIMARY KEY, norm text);

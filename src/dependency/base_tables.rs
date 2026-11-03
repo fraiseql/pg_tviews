@@ -2,29 +2,38 @@ use crate::error::{TViewError, TViewResult};
 use pgrx::prelude::*;
 use std::collections::HashSet;
 
+/// Views a backing view may read through, nested.
+const MAX_VIEW_NESTING: usize = 64;
+
 /// Find all base tables that a view depends on (transitively).
 ///
 /// `schema` is the schema where the view was created: the lookup is constrained
 /// to it, so the right view is found whatever `search_path` says.
 ///
 /// The view's rewrite rule is followed through `pg_depend`, through views, at most
-/// `pg_tviews.max_dependency_depth` views deep.
+/// [`MAX_VIEW_NESTING`] views deep.
 ///
 /// # Errors
 /// Returns error if circular dependency detected, depth limit exceeded, or OID lookup fails
 pub fn find_base_tables(view_name: &str, schema: &str) -> TViewResult<Vec<pg_sys::Oid>> {
-    let view_oid = get_view_oid(view_name, schema)?;
-    let max_depth = crate::config::max_dependency_depth();
-    let depth = crate::catalog::reads::view_nesting(view_oid)?;
-    if depth > max_depth {
+    base_tables_of(get_view_oid(view_name, schema)?)
+}
+
+/// [`find_base_tables`] of the view `view_oid`.
+///
+/// # Errors
+/// Returns error if the views nest too deep or a catalog read fails.
+pub fn base_tables_of(view_oid: pg_sys::Oid) -> TViewResult<Vec<pg_sys::Oid>> {
+    let depth = crate::lineage::reads::view_nesting(view_oid)?;
+    if depth > MAX_VIEW_NESTING {
         return Err(TViewError::DepthExceeded {
             what: "dependency",
             depth,
-            max_depth,
+            max_depth: MAX_VIEW_NESTING,
         });
     }
     let tview_tables = load_tview_table_oids()?;
-    Ok(crate::catalog::reads::view_relations_read(view_oid)?
+    Ok(crate::lineage::reads::view_relations_read(view_oid)?
         .into_iter()
         .filter_map(|(oid, relkind)| match relkind {
             // A TVIEW's table is followed through the TVIEW's own refresh.
@@ -49,7 +58,7 @@ fn get_view_oid(view_name: &str, schema: &str) -> TViewResult<pg_sys::Oid> {
         crate::utils::spi::text(view_name),
         crate::utils::spi::text(schema),
     ];
-    Spi::get_one_with_args::<pg_sys::Oid>(
+    crate::utils::spi::one::<pg_sys::Oid>(
         "SELECT c.oid FROM pg_class c \
          JOIN pg_namespace n ON c.relnamespace = n.oid \
          WHERE c.relname = $1 \

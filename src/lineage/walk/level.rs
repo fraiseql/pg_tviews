@@ -586,7 +586,9 @@ impl Walker<'_> {
                 let outputs = unsafe { self.level(query, &inner, Link::From)? };
                 if let Some(entity) = self.ctx.tview_views.get(&relid) {
                     // SAFETY: the target list of a valid Query.
-                    let key = unsafe { output_position(query, &format!("pk_{entity}")) };
+                    let key = unsafe {
+                        output_position(query, &crate::lineage::plan::key_column(entity))
+                    };
                     let columns = match key.and_then(|i| outputs.get(i)) {
                         Some(Resolved::Col(c)) => vec![c.clone()],
                         Some(Resolved::Alt(terms, _)) => terms

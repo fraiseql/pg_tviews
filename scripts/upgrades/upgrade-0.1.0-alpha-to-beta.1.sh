@@ -62,7 +62,7 @@ if [ "$NEW_VERSION" = "0.1.0-beta.1" ]; then
 
     # Run health check
     echo "Running health check..."
-    psql -d "$DB_NAME" -c "SELECT * FROM pg_tviews_health_check();" || echo "Health check failed - please verify manually"
+    psql -d "$DB_NAME" -c "SELECT * FROM pg_tviews_check_health();" || echo "Health check failed - please verify manually"
 
 else
     echo "❌ Upgrade verification failed"

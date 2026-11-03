@@ -6,7 +6,7 @@
 # per product):
 #
 #   A. pg_tviews + jsonb_delta   (incremental refresh, surgical JSONB patch)
-#   B. pg_tviews + native        (incremental refresh, no jsonb_delta — fallback)
+#   B. pg_tviews, recompute      (incremental refresh, the patch path off)
 #   C. full REFRESH MATERIALIZED VIEW  (traditional O(n) rebuild)
 #
 # Only tb_product mutations are timed — the operation pg_tviews refreshes
@@ -20,7 +20,7 @@
 #
 # Physical cost: every op group is wrapped in bench.snapshot() calls
 # (lib/stats.sql) and each arm's bench.physical lands in
-# $RUN_DIR/physical.csv as scenario product_<scale>_<delta|native|matview>.
+# $RUN_DIR/physical.csv as scenario product_<scale>_<delta|recompute|matview>.
 # Arms A/B run once per TVIEW persistence mode (--modes); arm C (a matview) is
 # always logged. With EXPLAIN=1 (default) a separate auto_explain pass captures
 # the flush statements of one update_single per arm.
@@ -174,7 +174,7 @@ parse_log() {  # $1=logfile $2=scale $3=arm $4=mode
   ' "$1" >> "$raw"
 }
 
-arm_label() { case "$1" in a) echo delta ;; b) echo native ;; c) echo matview ;; esac; }
+arm_label() { case "$1" in a) echo delta ;; b) echo recompute ;; c) echo matview ;; esac; }
 
 run_arm() {  # $1=scale $2=arm(a|b|c) $3=mode $4=scriptfile
   local scale="$1" arm="$2" mode="$3" script="$4"
@@ -186,7 +186,8 @@ run_arm() {  # $1=scale $2=arm(a|b|c) $3=mode $4=scriptfile
   db "ALTER DATABASE $dbn SET search_path = \"\$user\", public, tviews"
   case "$arm" in
     a) bench_install "$dbn" "jsonb_delta pg_tviews" ;;
-    b) bench_install "$dbn" "pg_tviews" ;;
+    b) bench_install "$dbn" "jsonb_delta pg_tviews"
+       db "ALTER DATABASE $dbn SET pg_tviews.direct_patch_enabled = off" ;;
     c) bench_install "$dbn" "" ;;
   esac
   local log="$outdir/${scale}_${arm}_${mode}.log"

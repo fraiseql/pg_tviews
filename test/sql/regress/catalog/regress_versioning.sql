@@ -94,13 +94,23 @@ EXCEPTION WHEN OTHERS THEN
     RETURN msg || ' / ' || hint;
 END $f$;
 
--- An older catalog: update the extension.
+-- The previous release's catalog: update the extension.
+SELECT set_revision(10);
+\c
+SET client_min_messages TO WARNING;
+DO $$ BEGIN
+    IF coalesce(write_error(), '') NOT LIKE
+       '%library catalog revision%does not match the installed extension (10)%ALTER EXTENSION pg_tviews UPDATE%' THEN
+        RAISE EXCEPTION '#137 FAIL: previous catalog not refused: %', write_error();
+    END IF;
+END $$;
+-- An older catalog: no update reaches this release; drop and recreate.
 SELECT set_revision(0);
 \c
 SET client_min_messages TO WARNING;
 DO $$ BEGIN
     IF coalesce(write_error(), '') NOT LIKE
-       '%library catalog revision%does not match the installed extension (0)%ALTER EXTENSION pg_tviews UPDATE%' THEN
+       '%library catalog revision%does not match the installed extension (0)%DROP EXTENSION pg_tviews CASCADE%' THEN
         RAISE EXCEPTION '#137 FAIL: older catalog not refused: %', write_error();
     END IF;
 END $$;
@@ -123,7 +133,7 @@ END $$;
 UPDATE tb_user SET name = 'alicia' WHERE pk_user = 1;
 SELECT assert_137('revision restored');
 
--- A catalog without a revision (a 0.1.0 install) points to the migration script.
+-- A catalog without a revision (a 0.1.0 install) is dropped and recreated.
 ALTER EXTENSION pg_tviews DROP FUNCTION tviews.pg_tviews_catalog_revision();
 ALTER FUNCTION tviews.pg_tviews_catalog_revision() RENAME TO saved_catalog_revision;
 \c
@@ -136,14 +146,14 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
     END;
-    IF msg IS NULL OR hint NOT LIKE '%scripts/migrate-from-0.1.0.sql%' THEN
+    IF msg IS NULL OR hint NOT LIKE '%DROP EXTENSION pg_tviews CASCADE%' THEN
         RAISE EXCEPTION '#137 FAIL: catalog without a revision not refused: % / %', msg, hint;
     END IF;
 END $$;
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE component = 'catalog' AND status = 'ERROR'
-                     AND message LIKE '%migrate-from-0.1.0.sql%') THEN
+                     AND message LIKE '%DROP EXTENSION pg_tviews CASCADE%') THEN
         RAISE EXCEPTION '#137 FAIL: health check does not report a 0.1.0 catalog';
     END IF;
 END $$;
@@ -175,40 +185,42 @@ ALTER EXTENSION pg_tviews ADD FUNCTION tviews.pg_tviews_catalog_revision();
 \c
 SET client_min_messages TO WARNING;
 
--- 3. A TVIEW registered by an older release: derived metadata missing and base-table
---    triggers gone (as after the 0.1.0 migration), plus a stray trigger. It does not
---    follow its base tables until it is re-registered.
+-- 3. A TVIEW registered by an older release: derived metadata missing and the
+--    triggers of the tables it reads gone (a catalog edited by hand), plus a stray
+--    per-TVIEW trigger of an older release. It does not follow its base tables
+--    until it is re-registered.
 CREATE TABLE meta_at_create AS
     SELECT entity, plan FROM tviews.pg_tview_meta;
 CREATE TABLE triggers_at_create AS
     SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger
     WHERE tgfoid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'tviews'::regnamespace);
-UPDATE tviews.pg_tview_meta
-   SET plan = '{"version": 2}', needs_reregister = true
- WHERE entity IN ('post', 'user_orders');
 DO $$
 DECLARE t record;
 BEGIN
     FOR t IN SELECT tr.tgname, tr.tgrelid::regclass AS rel
              FROM pg_trigger tr JOIN pg_proc p ON p.oid = tr.tgfoid
-             WHERE p.pronamespace = 'tviews'::regnamespace
-               AND tr.tgargs IN (convert_to('post', 'UTF8') || '\x00'::bytea,
-                                 convert_to('user_orders', 'UTF8') || '\x00'::bytea)
+             WHERE p.pronamespace = 'tviews'::regnamespace AND tr.tgparentid = 0
+               AND tr.tgrelid IN (SELECT e.relid FROM tviews.pg_tview_meta m,
+                                         tviews.pg_tviews_plan_tables(m.plan) e
+                                  WHERE m.entity IN ('post', 'user_orders'))
     LOOP
         EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
     END LOOP;
 END $$;
+UPDATE tviews.pg_tview_meta
+   SET plan = '{"version": 3}', needs_reregister = true
+ WHERE entity IN ('post', 'user_orders');
 CREATE TABLE unrelated (x int);
 CREATE TRIGGER trg_tview_stray AFTER INSERT ON unrelated
     FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");
 
 DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF NOT EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                    WHERE component = 'reregister' AND status = 'WARNING'
                      AND message LIKE '2 TVIEWs%pg_tviews_reregister_all()%') THEN
         RAISE EXCEPTION '#137 FAIL: health check does not report needs_reregister: %',
             (SELECT string_agg(component || '=' || message, '; ')
-             FROM tviews.pg_tviews_health_check());
+             FROM tviews.pg_tviews_check_health());
     END IF;
 END $$;
 
@@ -262,7 +274,7 @@ DO $$ BEGIN
                 EXCEPT SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger)) THEN
         RAISE EXCEPTION '#137 FAIL: triggers after reregister_all differ from creation';
     END IF;
-    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_health_check()
+    IF EXISTS (SELECT 1 FROM tviews.pg_tviews_check_health()
                WHERE component IN ('triggers', 'reregister') AND status <> 'OK') THEN
         RAISE EXCEPTION '#137 FAIL: health check not clean after reregister_all';
     END IF;

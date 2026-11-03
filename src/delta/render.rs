@@ -10,6 +10,27 @@ use crate::queue::key::KeyValue;
 use pgrx::pg_sys::Oid;
 use pgrx::prelude::*;
 
+thread_local! {
+    /// `(table, attnums)` → how its old and new transition rows pair up, and the
+    /// names of those columns (`None`: they can't be paired).
+    static PAIRINGS: crate::cache::Memo<(Oid, Vec<i16>), Option<RowPairing>> =
+        crate::cache::Memo::new();
+    /// Table → its primary key columns, each with whether the equality operator
+    /// of its type is in `pg_catalog`.
+    static PRIMARY_KEYS: crate::cache::Memo<Oid, std::rc::Rc<[(String, bool)]>> =
+        crate::cache::Memo::new();
+    /// `(relid, event, attnums)` → the query of the changed rows.
+    static DELTAS: crate::cache::Memo<(u32, crate::queue::Event, Vec<i16>), String> =
+        crate::cache::Memo::new();
+    /// Table → the select list computing its virtual generated columns (`None`:
+    /// it has none).
+    static COMPUTED: crate::cache::Memo<Oid, Option<String>> = crate::cache::Memo::new();
+}
+
+/// The condition pairing an updated row's two images in a mapped table's
+/// transition tables, and the names of the columns the TVIEW reads.
+type RowPairing = (String, Vec<String>);
+
 /// The changed rows of a statement: the new rows of an INSERT, the old rows of a
 /// DELETE, both images of an UPDATE. An UPDATE row whose columns the TVIEW reads
 /// (`attnums`) are unchanged, matched to its other image by primary key, is left
@@ -21,7 +42,7 @@ pub(super) fn delta_sql(
     attnums: &[i16],
 ) -> TViewResult<String> {
     let key = (table_oid.to_u32(), event, attnums.to_vec());
-    if let Some(sql) = crate::cache::DELTAS.with(|m| m.get(&key)) {
+    if let Some(sql) = DELTAS.with(|m| m.get(&key)) {
         return Ok(sql);
     }
     let (new, old) = match computed_columns(entity, table_oid)? {
@@ -45,7 +66,7 @@ pub(super) fn delta_sql(
             None => format!("SELECT * FROM {old} UNION ALL SELECT * FROM {new}"),
         },
     };
-    crate::cache::DELTAS.with(|m| m.insert(key, sql.clone()));
+    DELTAS.with(|m| m.insert(key, sql.clone()));
     Ok(sql)
 }
 
@@ -54,7 +75,7 @@ pub(super) fn delta_sql(
 /// `None` when it has none (always before PostgreSQL 18). The expressions are
 /// written as `entity`'s owner sees them, so they resolve under its `search_path`.
 pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Option<String>> {
-    if let Some(columns) = crate::cache::COMPUTED.with(|m| m.get(&table_oid)) {
+    if let Some(columns) = COMPUTED.with(|m| m.get(&table_oid)) {
         return Ok(columns);
     }
     let _owner = crate::owner::AsOwner::of_entity(entity)?;
@@ -77,7 +98,7 @@ pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Opti
     .unwrap_or_default();
     let columns = columns.filter(|_| any_virtual == Some(true));
     crate::cache::watch(&[table_oid]);
-    crate::cache::COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
+    COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
     Ok(columns)
 }
 
@@ -109,14 +130,11 @@ fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>>
 /// primary key, and the names of the columns `attnums` the TVIEW reads. `None`
 /// without a primary key whose types have a `pg_catalog` equality, or without a
 /// known column list.
-pub(super) fn row_pairing(
-    table_oid: Oid,
-    attnums: &[i16],
-) -> TViewResult<Option<crate::cache::RowPairing>> {
+pub(super) fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<RowPairing>> {
     if attnums.is_empty() {
         return Ok(None);
     }
-    crate::cache::PAIRINGS.with(|m| {
+    PAIRINGS.with(|m| {
         m.get_or_load((table_oid, attnums.to_vec()), || {
             crate::cache::watch(&[table_oid]);
             read_row_pairing(table_oid, attnums)
@@ -162,7 +180,7 @@ fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(Stri
 /// The primary key columns of `table_oid`, each with whether the equality operator
 /// of its type is in `pg_catalog` (cached).
 fn primary_key(table_oid: Oid) -> TViewResult<std::rc::Rc<[(String, bool)]>> {
-    crate::cache::PRIMARY_KEYS.with(|m| {
+    PRIMARY_KEYS.with(|m| {
         m.get_or_load(table_oid, || {
             crate::cache::watch(&[table_oid]);
             Ok(read_primary_key(table_oid)?.into())
