@@ -311,8 +311,8 @@ pub(crate) fn report(tview: &str, uncascaded: &Uncascaded) {
     }
 }
 
-/// Add the tables the declared functions read to `lineage`, and return
-/// them with the functions the definition calls that are not declared.
+/// Add the tables the declared functions read to `lineage`, and return the
+/// functions the definition calls that are not declared.
 ///
 /// # Errors
 /// Returns an error naming a declared function the definition does not call.
@@ -320,7 +320,7 @@ pub(crate) fn apply_function_reads(
     entity: &str,
     declarations: &Declarations,
     lineage: &mut crate::lineage::Lineage,
-) -> TViewResult<(Vec<Oid>, Vec<String>)> {
+) -> TViewResult<Vec<String>> {
     let mut reads = Vec::new();
     for (function, tables) in &declarations.function_reads {
         if !lineage.functions.iter().any(|(_, f)| f == function) {
@@ -337,18 +337,13 @@ pub(crate) fn apply_function_reads(
         }
     }
     lineage.add_function_reads(&reads);
-    let tables = reads
-        .iter()
-        .filter(|r| r.tview.is_none())
-        .map(|r| Oid::from(r.relid))
-        .collect();
     let undeclared = lineage
         .functions
         .iter()
         .filter(|(_, f)| !declarations.function_reads.iter().any(|(d, _)| d == f))
         .map(|(_, f)| f.clone())
         .collect();
-    Ok((tables, undeclared))
+    Ok(undeclared)
 }
 
 /// Table `table`, read inside `function`, as the lineage records it.

@@ -10,8 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone)]
 pub struct Lineage {
     pub tables: Vec<TableLineage>,
-    /// Tables the view reads only where its output cannot depend on them.
-    pub unread: Vec<u32>,
     pub identity: Identity,
     /// The backing view's own SELECT is a set operation (UNION, INTERSECT,
     /// EXCEPT), or its key comes from the branches of one: its rows are
@@ -435,15 +433,8 @@ pub fn analyze(
         }
         _ => Vec::new(),
     };
-    let unread = graph
-        .unread_tables
-        .iter()
-        .copied()
-        .filter(|relid| tables.iter().all(|t| t.relid != *relid))
-        .collect();
     Ok(Lineage {
         tables,
-        unread,
         identity,
         // A UNION read through a view or subquery gives the key one root per
         // branch too: its rows are recomputed, and two rows for one key refused.

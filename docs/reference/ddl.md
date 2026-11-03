@@ -472,7 +472,7 @@ NOTICE:  writes to public.tb_node map to tv_node keys with a sequential scan of 
 
 The triggers follow the kind of each table:
 
-| Kind | Triggers on the base table (per TVIEW) | What a write does |
+| Kind | Triggers on the base table | What a write does |
 |---|---|---|
 | `local` | row trigger | the key is read off each changed row (and its old image) |
 | `mapped`, `all_keys` | three statement triggers with transition tables (`INSERT`, `UPDATE`, `DELETE`) | one mapping query over the statement's changed rows; under `full_refresh` an `all_keys` write refreshes the whole TVIEW |
@@ -871,10 +871,22 @@ refresh](#how-a-write-finds-the-tview-rows-to-refresh)):
 
 Every table but a `propagated` one also gets a statement-level flush trigger
 (`tviews.pg_tview_flush_trigger`), which refreshes the queued keys at the end of each
-statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`). They
-are named `trg_tview_<role>_<entity>_on_<schema>_<table>`, one set per TVIEW. Nothing
-needs installing by hand: `tviews.pg_tviews_check_health()` reports missing or orphaned
-triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()` re-installs them.
+statement, and an `AFTER TRUNCATE` trigger (`tviews.pg_tview_truncate_trigger`).
+
+A table carries one set of these, however many TVIEWs read it: the union of what its
+readers need, named `trg_tview_<role>_on_<schema>_<table>`, without arguments. Each
+trigger serves every TVIEW of its kind on the table. Creating a second TVIEW over a
+table adds no trigger unless it needs a kind the table lacks, and dropping one removes
+none until the last reader of the table goes. Each partition of a partitioned table
+gets one flush and one truncate trigger. Creating a TVIEW still needs the `TRIGGER`
+privilege on every table it reads, whether or not the set is already there.
+
+A pg_tviews trigger is disabled for every TVIEW of its table at once: `ALTER TABLE …
+DISABLE TRIGGER` cannot stop one TVIEW alone. Use
+[`pg_tviews_suspend_triggers()`](api.md#suspending-refresh) to defer refreshes. Nothing
+needs installing by hand: `tviews.pg_tviews_check_health()` reports missing, orphaned
+or disabled triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()`
+re-installs them.
 
 ### Firing order
 
@@ -884,10 +896,10 @@ order of pg_tviews' triggers relative to yours is part of its contract:
 
 | Trigger | Level | Fires |
 |---|---|---|
-| `trg_tview_row_*` | `AFTER INSERT OR UPDATE OR DELETE`, row | queues the keys of the row |
-| `trg_tview_delta_i_*`, `trg_tview_delta_u_*`, `trg_tview_delta_d_*` | `AFTER INSERT`, `UPDATE`, `DELETE`, statement, with transition tables | queue the keys the statement's changed rows map to |
-| `trg_tview_flush_*` | `AFTER INSERT OR UPDATE OR DELETE`, statement | refreshes everything queued (the first of a table's flush triggers does it; the others find nothing) |
-| `trg_tview_truncate_*` | `AFTER TRUNCATE`, statement | refreshes the whole TVIEW |
+| `trg_tview_row_on_*` | `AFTER INSERT OR UPDATE OR DELETE`, row | queues the keys of the row, for every TVIEW reading it by key |
+| `trg_tview_delta_i_on_*`, `trg_tview_delta_u_on_*`, `trg_tview_delta_d_on_*` | `AFTER INSERT`, `UPDATE`, `DELETE`, statement, with transition tables | queue the keys the statement's changed rows map to, for every TVIEW mapping the table |
+| `trg_tview_flush_on_*` | `AFTER INSERT OR UPDATE OR DELETE`, statement | refreshes everything queued |
+| `trg_tview_truncate_on_*` | `AFTER TRUNCATE`, statement | refreshes the TVIEWs over the table whole |
 
 What a user trigger on a base table sees:
 
@@ -896,8 +908,8 @@ What a user trigger on a base table sees:
 - An `AFTER … FOR EACH STATEMENT` trigger whose name sorts before `trg_tview_flush_`
   (`audit_post`, `a_check`) fires before the flush: the TVIEWs are not refreshed for
   this statement yet.
-- One whose name sorts after every `trg_tview_flush_*` name (`zz_notify`, `u_sync`)
-  fires after it: the TVIEWs are refreshed.
+- One whose name sorts after `trg_tview_flush_on_<schema>_<table>` (`zz_notify`,
+  `u_sync`) fires after it: the TVIEWs are refreshed.
 - A write such a trigger makes to a base table (a nested statement) is not flushed on
   its own: the enclosing statement refreshes it, at its flush when the write comes
   before it, or when the statement finishes when it comes after. Each TVIEW row is then

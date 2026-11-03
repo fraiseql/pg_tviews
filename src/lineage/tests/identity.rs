@@ -536,7 +536,6 @@ fn a_function_read_is_all_keys_and_keeps_the_traced_reads() {
             table(1, TableKind::Local("pk_a".into()), None),
             table(2, TableKind::Mapped, Some("SELECT 1")),
         ],
-        unread: vec![],
         identity: Identity {
             name: "pk_a".into(),
             type_oid: 20,

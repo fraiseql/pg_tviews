@@ -2,12 +2,13 @@
 # Golden files of the differential shapes: what the oracle (run.sh) cannot see.
 # For every shape of schema.sql, expected/<shape>/ holds
 #   plan.json      its stored plan (pg_tview_meta.plan), keys sorted, relation OIDs
-#                  and attribute numbers written as names (golden_normalize.py);
-#   triggers.txt   pg_tviews' triggers carrying its entity: table, name, function,
-#                  tgtype, enabled state, sorted (topology and firing order).
-# expected/_extension/triggers.txt holds the triggers that carry no entity, and
-# expected/_feed/feed.txt the messages a fixed script of writes publishes on
-# tviews_changes (publish_changes = rows), ids and PIDs masked.
+#                  and attribute numbers written as names (golden_normalize.py).
+# expected/_tables/triggers.txt holds the one set of pg_tviews triggers each table
+# the shapes read carries: table, name, function, tgtype, enabled state, sorted
+# (topology and firing order); expected/_extension/triggers.txt the extension's
+# triggers on its own catalog; and expected/_feed/feed.txt the messages a fixed
+# script of writes publishes on tviews_changes (publish_changes = rows), ids and
+# PIDs masked.
 #
 # Usage:
 #   PGHOST=localhost PGPORT=28818 PGUSER=postgres ./test/sql/differential/golden.sh [--bless]
@@ -38,7 +39,7 @@ fi
 
 q() { psql -d "$db" -X -At -v ON_ERROR_STOP=1 "$@"; }
 out="$work/out"
-mkdir -p "$out/_extension" "$out/_feed"
+mkdir -p "$out/_tables" "$out/_extension" "$out/_feed"
 
 # Every user relation's name and columns, for golden_normalize.py.
 q -c "SELECT jsonb_object_agg(c.oid::text, jsonb_build_object(
@@ -48,7 +49,7 @@ q -c "SELECT jsonb_object_agg(c.oid::text, jsonb_build_object(
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')" >"$work/rels.json"
 
-trigger_list() { # <tgargs filter>
+trigger_list() { # <filter>
   q -F' | ' -c "SELECT t.tgrelid::regclass, t.tgname, t.tgfoid::regproc, t.tgtype, t.tgenabled
                 FROM pg_trigger t
                 WHERE NOT t.tgisinternal AND $1
@@ -62,10 +63,11 @@ while IFS='|' read -r shape entity; do
   mkdir -p "$out/$shape"
   q -c "SELECT plan FROM tviews.pg_tview_meta WHERE entity = '$entity'" |
     python3 "$here/golden_normalize.py" "$work/rels.json" >"$out/$shape/plan.json"
-  trigger_list "t.tgnargs = 1 AND encode(t.tgargs, 'escape') = '$entity\\000'" >"$out/$shape/triggers.txt"
 done < <(q -c "SELECT h.tv::regclass::text, m.entity FROM harness_shape h
                JOIN tviews.pg_tview_meta m ON m.table_oid = h.tv ORDER BY 1")
-trigger_list "t.tgnargs = 0" >"$out/_extension/triggers.txt"
+handlers="'pg_tview_trigger_handler', 'pg_tview_flush_trigger', 'pg_tview_delta_trigger', 'pg_tview_truncate_trigger'"
+trigger_list "t.tgfoid::regproc::text IN ($handlers)" >"$out/_tables/triggers.txt"
+trigger_list "t.tgfoid::regproc::text NOT IN ($handlers)" >"$out/_extension/triggers.txt"
 
 # The feed of a fixed script: the differential harness's first 40 statements of
 # seed 1, each published when its transaction commits.

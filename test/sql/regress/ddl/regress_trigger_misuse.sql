@@ -35,12 +35,12 @@ SELECT must(sqlstate_of('UPDATE tb_thing SET name = ''b''') = '39P01',
             || coalesce(sqlstate_of('UPDATE tb_thing SET name = ''b'''), 'no error'));
 DROP TRIGGER as_statement ON tb_thing;
 
--- a trigger naming no TVIEW
-CREATE TRIGGER no_entity AFTER UPDATE ON tb_thing
-    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler();
+-- a trigger naming a TVIEW, as older releases installed one per TVIEW
+CREATE TRIGGER per_tview AFTER UPDATE ON tb_thing
+    FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler('thing');
 SELECT must(sqlstate_of('UPDATE tb_thing SET name = ''c''') = '39P01',
-            'a trigger naming no TVIEW: '
+            'a trigger naming a TVIEW: '
             || coalesce(sqlstate_of('UPDATE tb_thing SET name = ''c'''), 'no error'));
-DROP TRIGGER no_entity ON tb_thing;
+DROP TRIGGER per_tview ON tb_thing;
 
 \echo 'trigger misuse: PASS'

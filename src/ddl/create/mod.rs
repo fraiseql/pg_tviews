@@ -315,10 +315,9 @@ fn finish(
     crate::lifecycle::validity::mark(entity, table_oid)?;
     // Triggers on the tables it reads, as their lineage needs them: base tables,
     // and other TVIEWs' tables it maps like them.
-    crate::dependency::install_triggers(
-        &crate::dependency::trigger_plan(&derivation.base_tables, &derivation.lineage),
-        entity,
-    )?;
+    let plan = crate::dependency::trigger_plan(&derivation.lineage);
+    crate::dependency::check_installable(&plan, &[], entity)?;
+    crate::dependency::sync_tables(&plan.iter().map(|&(table, _)| table).collect::<Vec<_>>())?;
     crate::cache::invalidate_all();
     crate::audit::log_create(entity, definition)
 }
@@ -381,10 +380,7 @@ pub fn reregister_metadata(
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();
-    Ok(crate::dependency::trigger_plan(
-        &derivation.base_tables,
-        &derivation.lineage,
-    ))
+    Ok(crate::dependency::trigger_plan(&derivation.lineage))
 }
 
 /// Re-derive `entity`'s metadata from its stored definition and make its
@@ -408,8 +404,9 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
             name: entity.to_string(),
         });
     };
+    let read_before = crate::catalog::readers::tables_of(entity)?;
     let plan = reregister_metadata(entity, &schema_name, &definition)?;
-    crate::dependency::sync_entity_triggers(&plan, entity)?;
+    crate::dependency::sync_read_tables(&plan, &read_before, entity)?;
     crate::catalog::row::clear_needs_reregister(entity)
 }
 

@@ -1,8 +1,0 @@
-tb_category | trg_tview_delta_d_item_on_public_tb_category | pg_tview_delta_trigger | 8 | O
-tb_category | trg_tview_delta_i_item_on_public_tb_category | pg_tview_delta_trigger | 4 | O
-tb_category | trg_tview_delta_u_item_on_public_tb_category | pg_tview_delta_trigger | 16 | O
-tb_category | trg_tview_flush_item_on_public_tb_category | pg_tview_flush_trigger | 28 | O
-tb_category | trg_tview_truncate_item_on_public_tb_category | pg_tview_truncate_trigger | 32 | O
-tb_item | trg_tview_flush_item_on_public_tb_item | pg_tview_flush_trigger | 28 | O
-tb_item | trg_tview_row_item_on_public_tb_item | pg_tview_trigger_handler | 29 | O
-tb_item | trg_tview_truncate_item_on_public_tb_item | pg_tview_truncate_trigger | 32 | O

@@ -41,6 +41,9 @@ Do it in each database that has the extension.
    owner, inside the update; the rows are not touched. A TVIEW that no longer analyses
    fails the whole update, named with its error, and nothing is changed: fix or drop it
    and update again. `tviews.registry.needs_reregister` is false for every TVIEW after it.
+   0.1.0-beta.35 also replaces every per-TVIEW trigger on the base tables by one set per
+   table (`trg_tview_<role>_on_<schema>_<table>`); a per-TVIEW trigger restored later from
+   an older dump fails the writes to its table until `pg_tviews_reregister_all()`.
 5. **Restore grants** that name a function the release replaced (the release notes list
    them; 0.1.0-beta.35: `pg_tviews_ensure_propagation_indexes_all(boolean)` and
    `pg_tviews_reset_stats_all()` for the operator role).

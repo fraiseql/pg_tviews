@@ -331,9 +331,7 @@ impl PartitionDdl {
         let parents = resolve(self.changed_rows_of.into_iter().collect());
         // Partition roots are cached per backend.
         crate::cache::invalidate_all();
-        for oid in tables {
-            crate::dependency::triggers::ensure_partition_triggers(oid)?;
-        }
+        crate::dependency::sync_tables(&tables)?;
         // The rows of an attached partition enter the tree with no row written:
         // mapped to the keys they reach, as their INSERT would be.
         let mapped = !attached.is_empty();

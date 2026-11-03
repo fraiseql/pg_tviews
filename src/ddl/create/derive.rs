@@ -12,9 +12,6 @@ use pgrx::pg_sys;
 pub(crate) struct Derivation {
     pub(crate) lineage: crate::lineage::Lineage,
     pub(crate) plan: TviewPlan,
-    /// The base tables the view reads (`pg_depend`), and those the functions it
-    /// calls read: the tables its triggers go on.
-    pub(crate) base_tables: Vec<pg_sys::Oid>,
     /// The functions it calls that may read tables and are not declared.
     pub(crate) undeclared_functions: Vec<String>,
 }
@@ -65,14 +62,8 @@ pub(crate) fn derive(
     let others = crate::catalog::registered::all()?;
     let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &others)?;
     aggregate_embeds(&lineage, entity_name)?;
-    let (function_tables, undeclared_functions) =
+    let undeclared_functions =
         crate::ddl::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;
-    let mut all_base_tables = base_tables.to_vec();
-    for table in function_tables {
-        if !all_base_tables.contains(&table) {
-            all_base_tables.push(table);
-        }
-    }
     let mut paths = local_paths(entity_name, &lineage);
     if let Some(keys) = group_keys {
         crate::ddl::aggregate::check_group_keys(entity_name, keys, &paths)?;
@@ -86,7 +77,6 @@ pub(crate) fn derive(
     Ok(Derivation {
         lineage,
         plan,
-        base_tables: all_base_tables,
         undeclared_functions,
     })
 }

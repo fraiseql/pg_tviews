@@ -51,7 +51,6 @@ fn post_lineage(kind: IdentityKind) -> Lineage {
     }];
     Lineage {
         tables: vec![post, user],
-        unread: Vec::new(),
         identity: Identity {
             name: "pk_post".into(),
             type_oid: 20,

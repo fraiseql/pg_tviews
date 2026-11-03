@@ -1,3 +1,0 @@
-tb_contract | trg_tview_flush_contract_on_public_tb_contract | pg_tview_flush_trigger | 28 | O
-tb_contract | trg_tview_row_contract_on_public_tb_contract | pg_tview_trigger_handler | 29 | O
-tb_contract | trg_tview_truncate_contract_on_public_tb_contract | pg_tview_truncate_trigger | 32 | O

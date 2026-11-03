@@ -1,6 +1,0 @@
-tb_task | trg_tview_flush_task_on_public_tb_task | pg_tview_flush_trigger | 28 | O
-tb_task | trg_tview_row_task_on_public_tb_task | pg_tview_trigger_handler | 29 | O
-tb_task | trg_tview_truncate_task_on_public_tb_task | pg_tview_truncate_trigger | 32 | O
-tb_task_archive | trg_tview_flush_task_on_public_tb_task_archive | pg_tview_flush_trigger | 28 | O
-tb_task_archive | trg_tview_row_task_on_public_tb_task_archive | pg_tview_trigger_handler | 29 | O
-tb_task_archive | trg_tview_truncate_task_on_public_tb_task_archive | pg_tview_truncate_trigger | 32 | O

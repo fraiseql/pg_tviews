@@ -1,8 +1,8 @@
 -- A TVIEW whose stored plan does not decode can still be dropped, cleanly.
 --
 -- DROP TABLE tv_* and pg_tviews_drop() need only the TVIEW's relations, not its
--- plan: they remove the catalog row, the backing view and the base-table
--- triggers. The DROP once took the table for a plain one when its plan did not
+-- plan: they remove the catalog row, the backing view and the triggers of the
+-- tables no other TVIEW reads, even while another TVIEW's plan does not decode. The DROP once took the table for a plain one when its plan did not
 -- decode, and left the rest behind, so every write to another TVIEW's base table
 -- kept failing.
 --
@@ -31,7 +31,8 @@ CREATE FUNCTION check_gone(entity text, label text) RETURNS void LANGUAGE plpgsq
 BEGIN
     IF EXISTS (SELECT 1 FROM tviews.pg_tview_meta m WHERE m.entity = check_gone.entity)
        OR to_regclass('tviews.public__tv_' || entity) IS NOT NULL
-       OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgname LIKE 'trg_tview_%_' || entity || '_on_%') THEN
+       OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = ('tb_' || entity)::regclass
+                                             AND tgname LIKE 'trg_tview\_%') THEN
         RAISE EXCEPTION 'FAIL (%): tv_% left its catalog row, backing view or triggers', label, entity;
     END IF;
 END $$;

@@ -185,29 +185,31 @@ ALTER EXTENSION pg_tviews ADD FUNCTION tviews.pg_tviews_catalog_revision();
 \c
 SET client_min_messages TO WARNING;
 
--- 3. A TVIEW registered by an older release: derived metadata missing and base-table
---    triggers gone (a catalog edited by hand), plus a stray trigger. It does not
---    follow its base tables until it is re-registered.
+-- 3. A TVIEW registered by an older release: derived metadata missing and the
+--    triggers of the tables it reads gone (a catalog edited by hand), plus a stray
+--    per-TVIEW trigger of an older release. It does not follow its base tables
+--    until it is re-registered.
 CREATE TABLE meta_at_create AS
     SELECT entity, plan FROM tviews.pg_tview_meta;
 CREATE TABLE triggers_at_create AS
     SELECT tgrelid, tgname, tgfoid, tgargs FROM pg_trigger
     WHERE tgfoid IN (SELECT oid FROM pg_proc WHERE pronamespace = 'tviews'::regnamespace);
-UPDATE tviews.pg_tview_meta
-   SET plan = '{"version": 3}', needs_reregister = true
- WHERE entity IN ('post', 'user_orders');
 DO $$
 DECLARE t record;
 BEGIN
     FOR t IN SELECT tr.tgname, tr.tgrelid::regclass AS rel
              FROM pg_trigger tr JOIN pg_proc p ON p.oid = tr.tgfoid
-             WHERE p.pronamespace = 'tviews'::regnamespace
-               AND tr.tgargs IN (convert_to('post', 'UTF8') || '\x00'::bytea,
-                                 convert_to('user_orders', 'UTF8') || '\x00'::bytea)
+             WHERE p.pronamespace = 'tviews'::regnamespace AND tr.tgparentid = 0
+               AND tr.tgrelid IN (SELECT e.relid FROM tviews.pg_tview_meta m,
+                                         tviews.pg_tviews_plan_tables(m.plan) e
+                                  WHERE m.entity IN ('post', 'user_orders'))
     LOOP
         EXECUTE format('DROP TRIGGER %I ON %s', t.tgname, t.rel);
     END LOOP;
 END $$;
+UPDATE tviews.pg_tview_meta
+   SET plan = '{"version": 3}', needs_reregister = true
+ WHERE entity IN ('post', 'user_orders');
 CREATE TABLE unrelated (x int);
 CREATE TRIGGER trg_tview_stray AFTER INSERT ON unrelated
     FOR EACH ROW EXECUTE FUNCTION tviews.pg_tview_trigger_handler("post");

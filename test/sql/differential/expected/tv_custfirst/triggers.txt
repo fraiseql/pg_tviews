@@ -1,6 +1,0 @@
-tb_customer | trg_tview_flush_custfirst_on_public_tb_customer | pg_tview_flush_trigger | 28 | O
-tb_customer | trg_tview_row_custfirst_on_public_tb_customer | pg_tview_trigger_handler | 29 | O
-tb_customer | trg_tview_truncate_custfirst_on_public_tb_customer | pg_tview_truncate_trigger | 32 | O
-tb_order | trg_tview_flush_custfirst_on_public_tb_order | pg_tview_flush_trigger | 28 | O
-tb_order | trg_tview_row_custfirst_on_public_tb_order | pg_tview_trigger_handler | 29 | O
-tb_order | trg_tview_truncate_custfirst_on_public_tb_order | pg_tview_truncate_trigger | 32 | O
