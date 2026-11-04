@@ -183,9 +183,8 @@ fn build_report(
     };
     // A TVIEW dropped since its rows were journaled has nothing left to read.
     let readable = |entity: &str| info.get(entity).is_none_or(|i| i.readable);
-    let asked = |entity: &str| {
-        readable(entity) && wanted.is_none_or(|w| w.contains(&typename(entity)))
-    };
+    let asked =
+        |entity: &str| readable(entity) && wanted.is_none_or(|w| w.contains(&typename(entity)));
 
     // Rows of the types not asked for, or not readable, are left out before the
     // limit applies.
