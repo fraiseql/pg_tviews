@@ -31,6 +31,11 @@ use std::collections::{BTreeSet, HashMap};
 /// left out and their types listed in `omitted_types` (#230). `reset` clears them
 /// too: they were seen, just not asked for.
 ///
+/// Rows of a TVIEW the caller may not `SELECT` are left out the same way, asked
+/// for or not, and its type listed in `omitted_types` (#270): the report tells no
+/// more than reading the TVIEW would. A collection is listed only when the caller
+/// may read both its child and its parent TVIEW.
+///
 /// When the rows were written with `pg_tviews.publish_changes = 'rows'`,
 /// `collections` names the parents whose child lists they left or joined (#244),
 /// as the change feed does ([`collections`]); absent otherwise, nothing having
@@ -90,18 +95,42 @@ fn requested_types(types: Vec<String>) -> TViewResult<BTreeSet<String>> {
     Ok(types.into_iter().collect())
 }
 
-/// Per-entity type name and qualified TVIEW table.
+/// Per-entity type name, qualified TVIEW table, and whether the caller may read it.
 struct EntityInfo {
     typename: String,
     table: String,
+    readable: bool,
 }
 
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
     Ok(crate::catalog::queries::typenames_and_tables(names)?
         .into_iter()
-        .map(|(entity, typename, table)| (entity, EntityInfo { typename, table }))
+        .map(|(entity, typename, table, oid)| {
+            let readable = may_select(oid);
+            (
+                entity,
+                EntityInfo {
+                    typename,
+                    table,
+                    readable,
+                },
+            )
+        })
         .collect())
+}
+
+/// Whether the current user holds `SELECT` on the table `relid`.
+fn may_select(relid: pgrx::pg_sys::Oid) -> bool {
+    use pgrx::pg_sys;
+    // SAFETY: an ACL check by OID for the current user.
+    unsafe {
+        pg_sys::pg_class_aclcheck(
+            relid,
+            pg_sys::GetUserId(),
+            pg_sys::AclMode::from(pg_sys::ACL_SELECT),
+        ) == pg_sys::AclResult::ACLCHECK_OK
+    }
 }
 
 /// The current `data` of `entity`'s rows `pks`, by `pk_<entity>`.
@@ -152,9 +181,14 @@ fn build_report(
             |i| i.typename.clone(),
         )
     };
-    let asked = |entity: &str| wanted.is_none_or(|w| w.contains(&typename(entity)));
+    // A TVIEW dropped since its rows were journaled has nothing left to read.
+    let readable = |entity: &str| info.get(entity).is_none_or(|i| i.readable);
+    let asked = |entity: &str| {
+        readable(entity) && wanted.is_none_or(|w| w.contains(&typename(entity)))
+    };
 
-    // Rows of the types not asked for are left out before the limit applies.
+    // Rows of the types not asked for, or not readable, are left out before the
+    // limit applies.
     let omitted: BTreeSet<String> = changes
         .iter()
         .map(|c| c.entity.as_str())
@@ -232,10 +266,15 @@ fn build_report(
         .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
         .collect();
+    let hidden: BTreeSet<String> = entities
+        .iter()
+        .filter(|entity| !readable(entity))
+        .map(|entity| typename(entity))
+        .collect();
     let collections = summary
         .parents
         .as_deref()
-        .map(|parents| collections(parents, wanted, &mut invalidated))
+        .map(|parents| collections(parents, wanted, &hidden, &mut invalidated))
         .transpose()?;
     let mut report = json!({
         "updated": updated,
@@ -246,7 +285,7 @@ fn build_report(
     if let Some(collections) = collections {
         report["collections"] = collections;
     }
-    if wanted.is_some() {
+    if wanted.is_some() || !hidden.is_empty() {
         report["omitted_types"] = json!(omitted.into_iter().collect::<Vec<_>>());
     }
     Ok(report)
@@ -259,7 +298,8 @@ fn build_report(
 /// child type in `invalidated`; one no row holds any more names nothing. A child
 /// type in `invalidated` (rows left out past `max_entities`, an overflowed
 /// journal, an unlistable parent) stands for all its collections, as a type in
-/// the feed's `t` does: they are not listed.
+/// the feed's `t` does: they are not listed. A collection whose child type is
+/// `hidden`, or whose parent TVIEW the caller may not read, is left out.
 ///
 /// # Errors
 /// A captured id that is not JSON.
@@ -269,11 +309,19 @@ fn collections(
         crate::catalog::collections::ParentRef,
     )],
     wanted: Option<&BTreeSet<String>>,
+    hidden: &BTreeSet<String>,
     invalidated: &mut BTreeSet<String>,
 ) -> TViewResult<Value> {
+    let mut parent_readable: HashMap<pgrx::pg_sys::Oid, bool> = HashMap::new();
     let asked: Vec<_> = parents
         .iter()
         .filter(|(c, _)| wanted.is_none_or(|w| w.contains(&*c.child_type)))
+        .filter(|(c, _)| !hidden.contains(&*c.child_type))
+        .filter(|(c, _)| {
+            *parent_readable
+                .entry(c.parent_table_oid)
+                .or_insert_with(|| may_select(c.parent_table_oid))
+        })
         .cloned()
         .collect();
     let mut ids: std::collections::BTreeMap<&str, (&str, BTreeSet<String>)> =

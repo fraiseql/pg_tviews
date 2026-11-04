@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The change report shows only the TVIEWs the caller may read** (#270).
+  `pg_tviews_flush_and_report()` leaves out the rows of a TVIEW the caller has no
+  table-level `SELECT` on, ids included, and lists its type in `omitted_types`; a
+  collection is listed only when the caller may read its child and parent TVIEWs. A
+  writer without `SELECT` on a TVIEW its write refreshed no longer fails 42501 (which
+  aborted the transaction) on the default call, nor learns that TVIEW's ids with
+  `include_data => false`.
+
 ## [0.1.0-beta.35] - 2026-11-03
 
 ### Changed (breaking)

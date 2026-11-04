@@ -703,18 +703,20 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
     })
 }
 
-/// The GraphQL type name ([`super::typename`]) and quoted, schema-qualified
-/// table of each of `entities`, as `(entity, typename, table)`.
+/// The GraphQL type name ([`super::typename`]), quoted, schema-qualified table
+/// and table OID of each of `entities`, as `(entity, typename, table, oid)`.
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
-pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, String, String)>> {
+pub fn typenames_and_tables(
+    entities: Vec<String>,
+) -> TViewResult<Vec<(String, String, String, Oid)>> {
     crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text_array(entities)];
         let mut out = Vec::new();
         for row in client.select(
             &format!(
-                "SELECT m.entity, m.graphql_typename, \
+                "SELECT m.entity, m.graphql_typename, m.table_oid, \
                         quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
                  FROM {} m \
                  JOIN pg_class c ON c.oid = m.table_oid \
@@ -728,8 +730,9 @@ pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, S
             let entity: String = row["entity"].value()?.unwrap_or_default();
             let typename: Option<String> = row["graphql_typename"].value()?;
             let table: String = row["tbl"].value()?.unwrap_or_default();
+            let oid: Oid = row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid);
             let typename = super::typename(&entity, typename);
-            out.push((entity, typename, table));
+            out.push((entity, typename, table, oid));
         }
         Ok::<_, spi::Error>(out)
     })

@@ -453,9 +453,13 @@ now. With `reset`, the next call reports only
 later changes; a reset made in a subtransaction that rolls back is undone. With `types`
 (type names), only rows of those types are reported and counted against
 `max_entities`; the other changed types are listed in `omitted_types`; an unknown name
-fails with `22023`. When the rows were written with `pg_tviews.publish_changes =
+fails with `22023`. Rows of a TVIEW the caller has no table-level `SELECT` on are left
+out the same way, asked for or not, and its type listed in `omitted_types`: the report
+discloses no more than reading the TVIEWs would, and never fails on one the caller may not
+read. When the rows were written with `pg_tviews.publish_changes =
 'rows'`, `collections` names the collections they left or joined, as the change feed's
-`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order. A child type in
+`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order, for the collections
+whose child and parent TVIEWs the caller may both read. A child type in
 `invalidated_types` (rows left out, or a parent the feed cannot list) stands for all its
 collections, which are then not listed. Otherwise the key is absent: nothing was
 captured. See [GraphQL cascade](../user-guides/graphql-cascade.md).
