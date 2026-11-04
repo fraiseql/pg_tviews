@@ -23,6 +23,8 @@ jobs:
         run: scripts/check-layers.sh
       - name: Check no catalog SQL resolves an object name
         run: scripts/check-name-resolution.sh
+      - name: Check the name check flags every form it should
+        run: test/scripts/check-name-resolution-test.sh
       - name: Check every PL/pgSQL handler of all errors keeps its SQLSTATE
         run: scripts/check-plpgsql-handlers.sh
       - name: Check plans are read through the typed plan and the SQL decoders only
