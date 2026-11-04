@@ -681,6 +681,7 @@ impl Walker<'_> {
                     }
                     for qual in conjuncts((*from).quals) {
                         self.predicate(qual, Origin::Required);
+                        self.guard(qual, None);
                     }
                     // A positive EXISTS / IN conjunct of WHERE must hold for every row.
                     for qual in conjuncts((*from).quals) {
@@ -701,6 +702,12 @@ impl Walker<'_> {
                             _ => Origin::None,
                         };
                         self.predicate(qual, origin);
+                        match (*join).jointype {
+                            pg_sys::JoinType::JOIN_INNER => self.guard(qual, None),
+                            pg_sys::JoinType::JOIN_LEFT => self.guard(qual, Some(&right)),
+                            pg_sys::JoinType::JOIN_RIGHT => self.guard(qual, Some(&left)),
+                            _ => {}
+                        }
                     }
                     self.sublinks((*join).quals, flags, false)?;
                     // Above this join, its nullable side may be NULL-extended.

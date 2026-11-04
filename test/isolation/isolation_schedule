@@ -50,3 +50,4 @@ test: prepared-holds-value-locks
 test: mixed-plan-versions
 test: deferred-mutations
 test: deferred-savepoint-rollback
+test: guarded-lookup-vs-insert

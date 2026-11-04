@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SECURITY_AUDIT.md`, out of date, are removed; the security guide lists the
   0.1.0-beta.34 review's findings and their fixes.
 
+### Changed
+
+- **A lookup filtered by constants no longer refreshes the whole TVIEW on every write**
+  (#284). A table read with no link to the key, filtered by equalities, `IN` lists or
+  `IS NULL` of its columns against constants (`(SELECT c.name FROM tb_category c WHERE
+  c.name = 'default')`), is still `all_keys`, but under `full_refresh` a write refreshes
+  the TVIEW in full only when an old or new row meets those conditions; otherwise the
+  rows the table's other reads reach are mapped as usual. On the issue's 2,000 orders,
+  inserting an unrelated category went from a full refresh to no refresh. The create
+  NOTICE says so; `tviews.registry` is unchanged (ADR 0157, amendment).
+
 ## [0.1.0-beta.35] - 2026-11-03
 
 ### Changed (breaking)

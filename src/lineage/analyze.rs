@@ -199,6 +199,7 @@ impl Lineage {
                     table.fanout = None;
                     // What the function reads of it is unknown.
                     table.links = None;
+                    table.guard = None;
                 }
                 None => self.tables.push(TableLineage {
                     relid: read.relid,
@@ -219,6 +220,7 @@ impl Lineage {
                     unwatched: read.unwatched,
                     tview: read.tview.clone(),
                     links: None,
+                    guard: None,
                 }),
             }
         }
@@ -236,10 +238,18 @@ impl Lineage {
                 TableKind::AllKeys(reason) => Some((
                     t.relid,
                     t.qualified.clone(),
-                    if t.sql.is_some() {
-                        format!("{reason}; the rows its other reads reach are still refreshed")
-                    } else {
-                        reason.clone()
+                    {
+                        let mut reason = reason.clone();
+                        if t.guard.is_some() {
+                            reason.push_str(
+                                "; only a write of a row meeting that read's conditions on \
+                                 constants takes the policy",
+                            );
+                        }
+                        if t.sql.is_some() {
+                            reason.push_str("; the rows its other reads reach are still refreshed");
+                        }
+                        reason
                     },
                     t.unwatched.is_none_or(super::Unwatched::followed),
                 )),

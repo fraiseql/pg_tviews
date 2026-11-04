@@ -355,6 +355,7 @@ mod collect;
 mod data;
 mod deparse;
 mod expr;
+mod guard;
 mod level;
 mod links;
 mod nodes;

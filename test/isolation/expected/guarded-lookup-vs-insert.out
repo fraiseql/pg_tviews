@@ -1,0 +1,95 @@
+Parsed test spec with 2 sessions
+
+starting permutation: i_begin i_insert w_begin w_default i_commit w_commit w_check
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
+step w_begin: BEGIN;
+step w_default: UPDATE tb_category SET label = 'Everything' WHERE name = 'default'; <waiting ...>
+step i_commit: COMMIT;
+step w_default: <... completed>
+step w_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'category' AS category, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|category  |fresh
+-------+----------+-----
+      1|Everything|t    
+      2|Everything|t    
+(2 rows)
+
+
+starting permutation: w_begin w_default i_begin i_insert w_commit i_commit w_check
+step w_begin: BEGIN;
+step w_default: UPDATE tb_category SET label = 'Everything' WHERE name = 'default';
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2'); <waiting ...>
+step w_commit: COMMIT;
+step i_insert: <... completed>
+step i_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'category' AS category, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|category  |fresh
+-------+----------+-----
+      1|Everything|t    
+      2|Everything|t    
+(2 rows)
+
+
+starting permutation: i_begin i_insert w_begin w_other i_commit w_commit w_check
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
+step w_begin: BEGIN;
+step w_other: UPDATE tb_category SET label = 'Other' WHERE name = 'other';
+step i_commit: COMMIT;
+step w_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'category' AS category, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|category|fresh
+-------+--------+-----
+      1|General |t    
+      2|General |t    
+(2 rows)
+
+
+starting permutation: w_begin w_other i_begin i_insert w_commit i_commit w_check
+step w_begin: BEGIN;
+step w_other: UPDATE tb_category SET label = 'Other' WHERE name = 'other';
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2');
+step w_commit: COMMIT;
+step i_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'category' AS category, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|category|fresh
+-------+--------+-----
+      1|General |t    
+      2|General |t    
+(2 rows)
+
+
+starting permutation: w_begin w_rename i_begin i_insert w_commit i_commit w_check
+step w_begin: BEGIN;
+step w_rename: UPDATE tb_category
+                 SET name = CASE pk_category WHEN 1 THEN 'old' ELSE 'default' END;
+step i_begin: BEGIN;
+step i_insert: INSERT INTO tb_post (pk_post, title) VALUES (2, 'p2'); <waiting ...>
+step w_commit: COMMIT;
+step i_insert: <... completed>
+step i_commit: COMMIT;
+step w_check: 
+  SELECT t.pk_post, t.data->>'category' AS category, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|category|fresh
+-------+--------+-----
+      1|Misc    |t    
+      2|Misc    |t    
+(2 rows)
+

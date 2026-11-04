@@ -23,6 +23,9 @@ thread_local! {
     /// between (`None`: a relation is gone).
     static FANOUT_VIAS: crate::cache::Memo<(String, u32), Option<String>> =
         crate::cache::Memo::new();
+    /// `(entity, relid)` → the rendered guard of an `all_keys` table (`None`: a
+    /// relation is gone).
+    static GUARDS: crate::cache::Memo<(String, u32), Option<String>> = crate::cache::Memo::new();
 }
 
 /// The query that maps changed rows of `base_table`, read from a relation named
@@ -97,7 +100,7 @@ pub(super) enum Route {
     /// They map to no key.
     Nothing,
     /// An `all_keys` table under `full_refresh`: the whole TVIEW, if any row
-    /// changed.
+    /// changed (and met the table's guard, when it has one).
     FullRefresh,
     /// A mapping query over the changed rows (`delta`, see [`delta_sql`]).
     Mapped { delta: String },
@@ -132,15 +135,53 @@ fn route(
     if reads_same {
         return Ok(Route::Nothing);
     }
+    let delta = || delta_sql(entity, table_oid, event, &mapping.attnums);
     Ok(match mapping.kind {
+        // A guarded table's rows that meet none of its unlinked reads' conditions
+        // change only what its linked reads reach (#284).
+        MappingKind::AllKeys
+            if full_refresh && !guard_met(trigger, entity, mapping, &delta()?)? =>
+        {
+            if mapping.sql.is_some() {
+                Route::Mapped { delta: delta()? }
+            } else {
+                Route::Nothing
+            }
+        }
         MappingKind::AllKeys if full_refresh => Route::FullRefresh,
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
-        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => Route::Mapped {
-            delta: delta_sql(entity, table_oid, event, &mapping.attnums)?,
-        },
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            Route::Mapped { delta: delta()? }
+        }
         _ => Route::Nothing,
     })
+}
+
+/// Whether a changed row (`delta`) of an `all_keys` table meets the conditions of
+/// one of the reads that leave it unmapped: true without a guard, or when a
+/// relation the guard reads is gone.
+fn guard_met(
+    trigger: &PgTrigger<'_>,
+    entity: &str,
+    mapping: &KeyMapping,
+    delta: &str,
+) -> TViewResult<bool> {
+    if mapping.guard.is_none() {
+        return Ok(true);
+    }
+    let key = (entity.to_string(), mapping.relid);
+    let guard = if let Some(guard) = GUARDS.with(|m| m.get(&key)) {
+        guard
+    } else {
+        let guard = render_watched(mapping.guard.as_deref().unwrap_or_default())?;
+        GUARDS.with(|m| m.insert(key, guard.clone()));
+        guard
+    };
+    let Some(guard) = guard else {
+        return Ok(true);
+    };
+    Ok(!lookup(trigger, entity, &KeyType::Int, delta, &guard)?.is_empty())
 }
 
 /// A TVIEW a statement's rows reach: its entity, catalog row and route.

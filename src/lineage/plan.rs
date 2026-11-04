@@ -175,6 +175,11 @@ pub struct KeyMapping {
     /// row, changes no link (#263). `None` when unknown: every write does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<Vec<i16>>,
+    /// `all_keys` through reads that only read rows meeting conditions against
+    /// constants: the query template over the changed rows returning a row when
+    /// one meets them. The uncascaded policy applies only then (#284).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
 }
 
 /// The row key of `entity`'s backing view `view_oid`: `pk_<entity>` with the
@@ -275,6 +280,10 @@ fn key_mappings(lineage: &Lineage) -> Vec<KeyMapping> {
                 tview: t.tview.clone(),
                 reads: t.reads.clone(),
                 links: t.links.clone(),
+                guard: match t.kind {
+                    TableKind::AllKeys(_) => t.guard.clone(),
+                    _ => None,
+                },
             }
         })
         .collect()
@@ -352,8 +361,9 @@ impl TviewPlan {
 
     /// The plan with its relations and column numbers rebound: `relid` gives a
     /// table's new relid, `attnum` a column's new number from its old relid and
-    /// number. Templates (`{r:…}`, `{c:…:…}`), `attnums`, `links`, the read sets'
-    /// `attnum` (0, the table itself, stays) and the paths are rewritten.
+    /// number. Templates (`{r:…}`, `{c:…:…}`, guards included), `attnums`,
+    /// `links`, the read sets' `attnum` (0, the table itself, stays) and the paths
+    /// are rewritten.
     ///
     /// # Errors
     /// What has no new value: a column number the plan does not name, a path
@@ -396,6 +406,9 @@ impl TviewPlan {
             }
             if let Some(sql) = &table.sql {
                 table.sql = Some(template(sql)?);
+            }
+            if let Some(guard) = &table.guard {
+                table.guard = Some(template(guard)?);
             }
             if let Some(fanout) = &mut table.fanout
                 && let Some(via) = &fanout.via

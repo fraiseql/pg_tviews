@@ -59,6 +59,7 @@ fn graph(occurrences: Vec<Occurrence>, conjuncts: Vec<Conjunct>, key: Column) ->
         data: None,
         outputs: vec![],
         links: std::collections::BTreeSet::new(),
+        guards: std::collections::BTreeMap::new(),
         links_unknown: false,
         inherited_reads: std::collections::BTreeSet::new(),
     }
@@ -193,6 +194,7 @@ fn an_opaque_top_level_without_a_root_is_all_keys_with_the_reason() {
         data: None,
         outputs: vec![],
         links: std::collections::BTreeSet::new(),
+        guards: std::collections::BTreeMap::new(),
         links_unknown: false,
         inherited_reads: std::collections::BTreeSet::new(),
     };
@@ -572,6 +574,7 @@ fn an_all_keys_table_keeps_the_mapping_of_its_traceable_reads() {
     assert!(tables[0].sql.is_some());
 }
 
+mod guards;
 mod identity;
 mod plan;
 mod read_sets;
