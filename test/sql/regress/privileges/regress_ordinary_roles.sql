@@ -6,8 +6,9 @@
 -- DROP ... CASCADE that took a TVIEW's backing view ran the cleanup as the dropper.
 -- Now the refresh runs as each TVIEW's owner (as REFRESH MATERIALIZED VIEW does,
 -- with a safe search_path), the catalog is readable by everyone, and the drop
--- handler and audit writer are SECURITY DEFINER. The writer below only has DML on
--- the tb_* tables; the TVIEWs belong to another role.
+-- handler and the audit writer switch to the extension owner (`owner::AsOwner`);
+-- no function is SECURITY DEFINER. The writer below only has DML on the tb_*
+-- tables; the TVIEWs belong to another role.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_ordinary_roles.sql
 

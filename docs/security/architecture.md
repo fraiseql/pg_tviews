@@ -19,9 +19,9 @@ controls exist today. How the extension works is in
 | Data leakage | A role reading a TVIEW or its backing view without a grant | Backing view privileges follow the table's |
 | SQL injection | Identifiers and definitions passed to pg_tviews functions | Identifiers quoted with `quote_identifier`, values bound as parameters or quoted with `quote_literal`; a definition must be exactly one SELECT (42601) |
 | Denial of service | Unbounded queues or recursion | `pg_tviews.max_queue_size` (54000), at most 1,000 entity batches per flush and 64 nested views (54001), stack-depth checks in the query-tree walkers |
-| Supply chain | Compromised crates or CI | `cargo deny check` (`deny.toml`) and `cargo audit` on every pull request and daily (`security-audit.yml`), pinned toolchain and pgrx |
+| Supply chain | Compromised crates or CI | `cargo deny check` (`deny.toml`) and `cargo audit` on every pull request and daily (`security-audit.yml`), pinned toolchain and pgrx, every workflow action pinned by commit and every installed tool by version |
 | Build tampering | Modified release tarball | Sigstore keyless signatures, GitHub build provenance, reproducible build script |
-| Memory corruption | `unsafe` FFI into PostgreSQL | `unsafe` confined to pgrx FFI, audited in [UNSAFE_AUDIT.md](UNSAFE_AUDIT.md) |
+| Memory corruption | `unsafe` FFI into PostgreSQL | `unsafe` only around pgrx FFI calls, each block with a `SAFETY:` comment; every PostgreSQL callback `#[pg_guard]`ed (`scripts/check-ffi-guards.sh`) |
 
 ## Trust boundaries
 

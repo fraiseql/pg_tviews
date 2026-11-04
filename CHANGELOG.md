@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writer without `SELECT` on a TVIEW its write refreshed no longer fails 42501 (which
   aborted the transaction) on the default call, nor learns that TVIEW's ids with
   `include_data => false`.
+- **Hardening** (#271). `scripts/check-name-resolution.sh` reads whole SQL literals and
+  flags every form of a name resolved to an object (a fixture of each runs in CI); a new
+  regression test runs every entry point under a `search_path` whose first schema
+  shadows the operators and functions pg_tviews' SQL uses. Every workflow action is
+  pinned by commit and every installed tool by version. `UNSAFE_AUDIT.md` and
+  `SECURITY_AUDIT.md`, out of date, are removed; the security guide lists the
+  0.1.0-beta.34 review's findings and their fixes.
 
 ## [0.1.0-beta.35] - 2026-11-03
 
