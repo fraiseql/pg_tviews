@@ -9,15 +9,15 @@ jobs:
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Install SBOM tools
         run: |
-          cargo install --locked cargo-sbom
-          cargo install --locked cargo-cyclonedx
+          cargo install --locked cargo-sbom --version 0.10.0
+          cargo install --locked cargo-cyclonedx --version 0.5.9
 
       - name: Install pgrx
         run: cargo install --locked cargo-pgrx --version 0.17.0
@@ -29,7 +29,7 @@ jobs:
         run: ./scripts/generate-sbom.sh "${{ github.ref_name }}"
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom/*
@@ -44,7 +44,7 @@ jobs:
           output: 'sbom-trivy-results.sarif'
 
       - name: Upload SBOM vulnerability scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@a3d1b77a1ba1550fbb5c74db1dc3a11f4a481126 # v3.39.2
         if: always()
         with:
           sarif_file: 'sbom-trivy-results.sarif'

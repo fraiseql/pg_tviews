@@ -30,7 +30,7 @@ jobs:
       id-token: write       # Sigstore keyless signing
       attestations: write   # actions/attest-build-provenance
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -50,7 +50,7 @@ jobs:
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Check the tag matches the release
         run: |
@@ -91,8 +91,8 @@ jobs:
         # release job (unlike sbom.yml) did not install them, so the SBOM step
         # failed with "no such command: sbom" before "Create release" ran.
         run: |
-          cargo install --locked cargo-sbom
-          cargo install --locked cargo-cyclonedx
+          cargo install --locked cargo-sbom --version 0.10.0
+          cargo install --locked cargo-cyclonedx --version 0.5.9
 
       - name: Generate SBOM
         run: ./scripts/generate-sbom.sh ${{ github.ref_name }}
@@ -115,12 +115,12 @@ jobs:
 
       # Provenance of the tarball users download, attested where it is built.
       - name: Generate provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: pg_tviews-${{ github.ref_name }}.tar.gz
 
       - name: Create release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             pg_tviews-${{ github.ref_name }}.tar.gz
@@ -142,7 +142,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
