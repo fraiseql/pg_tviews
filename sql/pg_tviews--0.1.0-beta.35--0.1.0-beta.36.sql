@@ -9,6 +9,13 @@ RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS 'SELECT 12';
 
+-- Recompute what given rows of a base table reach, as an UPDATE of them would (#280).
+CREATE FUNCTION @extschema@.pg_tviews_resync(source regclass, keys bigint[])
+RETURNS TABLE (tview text, rows_changed bigint)
+STRICT
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'pg_tviews_resync_wrapper';
+
 -- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
 -- on an older plan.
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

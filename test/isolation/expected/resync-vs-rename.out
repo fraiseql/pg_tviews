@@ -1,0 +1,76 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s_begin s_resync r_begin r_rename s_commit r_commit s_check
+step s_begin: BEGIN;
+step s_resync: SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]);
+tview         |rows_changed
+--------------+------------
+public.tv_post|           2
+(1 row)
+
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'annie' WHERE pk_user = 1; <waiting ...>
+step s_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step s_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|annie |t    
+      2|annie |t    
+      3|bob   |t    
+(3 rows)
+
+
+starting permutation: r_begin r_rename s_begin s_resync r_commit s_commit s_check
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'annie' WHERE pk_user = 1;
+step s_begin: BEGIN;
+step s_resync: SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]); <waiting ...>
+step r_commit: COMMIT;
+step s_resync: <... completed>
+tview         |rows_changed
+--------------+------------
+public.tv_post|           0
+(1 row)
+
+step s_commit: COMMIT;
+step s_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|annie |t    
+      2|annie |t    
+      3|bob   |t    
+(3 rows)
+
+
+starting permutation: s_begin r_begin r_rename s_resync r_commit s_commit s_check
+step s_begin: BEGIN;
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_user SET name = 'annie' WHERE pk_user = 1;
+step s_resync: SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]); <waiting ...>
+step r_commit: COMMIT;
+step s_resync: <... completed>
+tview         |rows_changed
+--------------+------------
+public.tv_post|           0
+(1 row)
+
+step s_commit: COMMIT;
+step s_check: 
+  SELECT t.pk_post, t.data->>'author' AS author, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|author|fresh
+-------+------+-----
+      1|annie |t    
+      2|annie |t    
+      3|bob   |t    
+(3 rows)
+

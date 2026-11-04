@@ -133,6 +133,18 @@ pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
     FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
 }
 
+/// How many rows of each TVIEW the last flush inserted, updated or deleted, by
+/// entity.
+pub fn changed_in_flush_by_entity() -> std::collections::HashMap<String, i64> {
+    FLUSH_CHANGED.with(|c| {
+        let mut counts = std::collections::HashMap::new();
+        for (entity, _) in c.borrow().iter() {
+            *counts.entry(entity.clone()).or_insert(0) += 1;
+        }
+        counts
+    })
+}
+
 /// Note a refresh write in the flush's changed rows.
 pub(super) fn note_flush_change(recorded: &Recorded) {
     FLUSH_CHANGED.with(|c| {

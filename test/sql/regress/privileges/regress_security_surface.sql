@@ -122,6 +122,8 @@ BEGIN
            'tviews.pg_tviews_show_mapping_query(text,oid)',
            'tviews.pg_tviews_show_read_sets(text,oid)',
            'tviews.pg_tviews_handle_dropped(text)',
+           -- a base table's rows, UPDATE on the table checked
+           'tviews.pg_tviews_resync(regclass,bigint[])',
            -- triggers and event triggers
            'tviews.pg_tview_trigger_handler()', 'tviews.pg_tview_delta_trigger()',
            'tviews.pg_tview_flush_trigger()', 'tviews.pg_tview_truncate_trigger()',

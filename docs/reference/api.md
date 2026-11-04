@@ -40,6 +40,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reregister_all(strict boolean DEFAULT false)`](#pg_tviews_reregister_all) | `TABLE(entity text, status text)` | operator, and owner of each TVIEW |
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
+| [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` on `source` |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
 | [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
 | [`pg_tviews_show_mapping_query(tview text, base_table oid)`](#pg_tviews_show_mapping_query) | `text` | owner |
@@ -276,6 +277,36 @@ transaction ends, run as the TVIEW's owner. Requires owning the TVIEW (`42501`).
 
 ```sql
 SELECT tviews.pg_tviews_refresh('user');   -- tv_user, then tv_post, which embeds it
+```
+
+### pg_tviews_resync
+
+```text
+tviews.pg_tviews_resync(source regclass, keys bigint[])
+    RETURNS TABLE(tview text, rows_changed bigint)
+```
+
+Recomputes the TVIEW rows that the rows of base table `source` with primary keys `keys`
+reach, as an `UPDATE` of those rows would, without writing them: no source row changes
+and no trigger fires. For writes made while pg_tviews' triggers did not fire
+(`session_replication_role = replica`, triggers disabled, one table restored on its
+own). The rows' current images are mapped through every TVIEW that reads `source`, as a
+write's are, and one flush recomputes the rows they reach and the TVIEWs embedding
+those; only documents that changed are written. A key whose row is gone deletes the
+row of each TVIEW keyed by `source`'s key. A TVIEW that maps `source` through a row's
+links cannot find the rows a deleted or moved row left: rebuild it with
+`pg_tviews_refresh` after such writes. An `all_keys` table under `full_refresh`
+rebuilds the TVIEW. `source` needs a single-column integer primary key (`22023`).
+
+The caller needs `UPDATE` on `source`, what the write itself would need (`42501`); each
+TVIEW refreshes as its owner. Returns each TVIEW reading `source`, and each other TVIEW
+the flush changed, with the rows changed (`NULL`: rebuilt whole).
+
+```sql
+SET session_replication_role = replica;
+UPDATE tb_user SET name = 'Alice B.' WHERE pk_user = 1;
+RESET session_replication_role;
+SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]);
 ```
 
 ### pg_tviews_refresh_time_dependent

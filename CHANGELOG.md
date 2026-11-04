@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SECURITY_AUDIT.md`, out of date, are removed; the security guide lists the
   0.1.0-beta.34 review's findings and their fixes.
 
+### Added
+
+- **`pg_tviews_resync(source regclass, keys bigint[])`** (#280): recomputes the TVIEW
+  rows that given rows of a base table reach, as an `UPDATE` of them would, without
+  writing them or firing a trigger, for writes made while pg_tviews' triggers did not
+  fire. A key whose row is gone deletes the row of each TVIEW keyed by it. Needs `UPDATE`
+  on the table; returns the rows changed per TVIEW.
+
 ### Changed
 
 - **A lookup filtered by constants no longer refreshes the whole TVIEW on every write**

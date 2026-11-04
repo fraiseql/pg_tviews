@@ -4,8 +4,8 @@
 -- A schema first on the caller's path, before pg_catalog, shadows what pg_tviews'
 -- SQL is made of: `=` and `||` on text, oid and name, `jsonb_build_object`,
 -- `format_type`, `quote_ident`. Every shadow raises. Creating, writing, refreshing,
--- reporting and checking health under that path touch none of them, and leave the
--- same TVIEW rows as the views compute.
+-- reporting, resyncing and checking health under that path touch none of them,
+-- and leave the same TVIEW rows as the views compute.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_hostile_search_path.sql
 
@@ -121,7 +121,16 @@ SELECT must(jsonb_array_length((:'r3'::jsonb)->'updated') = 2, 'report types: ' 
 SELECT must(in_sync(), 'after the report');
 SET search_path = hostile, pg_catalog, public;
 
--- 5. Health, profile, read sets: the read-only entry points.
+-- 5. Resync, after a write no trigger saw.
+RESET search_path;
+SET session_replication_role = replica;
+UPDATE tb_user SET name = 'resynced' WHERE pk_user = 1;
+RESET session_replication_role;
+SET search_path = hostile, pg_catalog, public;
+SELECT count(*) AS resynced FROM tviews.pg_tviews_resync('public.tb_user', ARRAY[1]) \gset
+SELECT must(in_sync(), 'after resync');
+
+-- 6. Health, profile, read sets: the read-only entry points.
 SELECT count(*) AS health FROM tviews.pg_tviews_check_health() \gset
 SELECT count(*) AS profiled FROM tviews.pg_tviews_profile() \gset
 SELECT count(*) AS shown FROM tviews.pg_tviews_show_queue() \gset
@@ -130,7 +139,7 @@ SELECT must(:health > 0, 'health returned nothing');
 SELECT must(NOT EXISTS (SELECT FROM tviews.pg_tviews_check_health() WHERE status = 'ERROR'),
             'health reports an error');
 
--- 6. Drop.
+-- 7. Drop.
 SET search_path = hostile, pg_catalog, public;
 SELECT tviews.pg_tviews_drop('public.tv_post');
 SELECT tviews.pg_tviews_drop('public.tv_user');

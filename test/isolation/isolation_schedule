@@ -51,3 +51,4 @@ test: mixed-plan-versions
 test: deferred-mutations
 test: deferred-savepoint-rollback
 test: guarded-lookup-vs-insert
+test: resync-vs-rename

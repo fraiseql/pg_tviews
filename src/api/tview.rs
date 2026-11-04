@@ -98,6 +98,32 @@ fn pg_tviews_refresh(tview: &str) -> Result<(), ErrorReport> {
     Ok(())
 }
 
+/// Recompute the TVIEW rows that the rows of `source` with the primary keys
+/// `keys` reach, as an UPDATE of them would, without writing them (#280). For
+/// writes made while `pg_tviews`' triggers did not fire. The caller needs `UPDATE`
+/// on `source`; each TVIEW refreshes as its owner. Returns each TVIEW reached and
+/// the rows the resync changed in it (`NULL`: rebuilt whole).
+#[pg_extern]
+#[allow(clippy::type_complexity)] // Reason: pgrx TableIterator row type spells out the columns
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx passes SQL arguments by value
+fn pg_tviews_resync(
+    source: pgrx::PgRelation,
+    keys: Vec<i64>,
+) -> Result<
+    TableIterator<'static, (name!(tview, String), name!(rows_changed, Option<i64>))>,
+    ErrorReport,
+> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    crate::concurrency::require_read_committed();
+    let resynced = crate::delta::resync::resync(source.oid(), &keys)?;
+    let mut rows = Vec::with_capacity(resynced.len());
+    for r in resynced {
+        rows.push((crate::delta::resync::qualified(r.table)?, r.changed));
+    }
+    Ok(TableIterator::new(rows))
+}
+
 /// Bring the TVIEWs whose definitions read the current time up to date: `tview`,
 /// or every such TVIEW the caller owns. Returns the TVIEWs refreshed,
 /// dependencies first.
