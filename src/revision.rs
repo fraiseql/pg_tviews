@@ -15,7 +15,7 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 11;
+pub const CATALOG_REVISION: i32 = 12;
 
 /// Whether the library was loaded from `shared_preload_libraries`, the only
 /// supported mode: set by `_PG_init` in the postmaster, inherited by its backends.

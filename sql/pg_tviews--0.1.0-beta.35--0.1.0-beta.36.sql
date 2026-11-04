@@ -4,6 +4,11 @@
 -- statements above the re-derivation (docs/development/extension-versioning.md).
 -- Released scripts are never edited.
 
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
+RETURNS integer
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS 'SELECT 12';
+
 -- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
 -- on an older plan.
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

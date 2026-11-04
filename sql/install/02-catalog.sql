@@ -98,4 +98,4 @@
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 11';
+    AS 'SELECT 12';
