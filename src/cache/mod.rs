@@ -128,6 +128,21 @@ thread_local! {
     static CHANGED_IN_XACT: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// Full relcache invalidations received: a shared invalidation queue reset,
+    /// or a change to every relation (`CREATE PUBLICATION … FOR ALL TABLES`).
+    static RESETS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The full relcache invalidations this backend received: each drops every
+/// memo, so the next write reads the catalog again. Tests counting catalog
+/// lookups read it to tell a reset from a regression.
+#[cfg(feature = "test-hooks")]
+pub fn resets() -> u64 {
+    RESETS.with(Cell::get)
+}
+
 /// At the abort of a transaction, or of a subtransaction: forget the caches if
 /// the transaction may have memoized a catalog change being rolled back. A change
 /// of its own came through the utility hook ([`mark_changed`]), as a relation
@@ -196,6 +211,10 @@ unsafe extern "C-unwind" fn relcache_callback(_arg: pg_sys::Datum, relid: Oid) {
     // Any relation's: what the caches memoized of one they don't watch may be rolled
     // back too. Plain writes send none.
     CHANGED_IN_XACT.with(|c| c.set(true));
+    #[cfg(feature = "test-hooks")]
+    if relid == pg_sys::InvalidOid {
+        RESETS.with(|r| r.set(r.get() + 1));
+    }
     let relevant = relid == pg_sys::InvalidOid
         || WATCHED.with(|w| w.try_borrow().map_or(true, |w| w.contains(&relid)));
     if relevant {

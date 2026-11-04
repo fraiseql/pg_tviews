@@ -6,7 +6,9 @@
 -- invalidation, which PostgreSQL's plan cache revalidates on its own.
 --
 -- pg_tviews_show_queue() counts the backend's catalog lookups and kept plans; each
--- measured write runs in a new backend (\c) or reads them before and after.
+-- measured write runs in a new backend (\c) or reads them before and after. Tables
+-- are analyzed first: an auto-analyze of a TVIEW just filled would invalidate it
+-- mid-measure, and rightly drop the caches.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_cold_write.sql
 -- expect-output: cold write: PASS
@@ -39,6 +41,21 @@ CREATE FUNCTION plans() RETURNS int LANGUAGE sql AS
 $$ SELECT (tviews.pg_tviews_show_queue()->>'plans_prepared')::int $$;
 CREATE FUNCTION must(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'cold write FAIL: %', msg; END IF; END $$;
+-- Full relcache invalidations this backend received (test-hooks builds; 0
+-- otherwise). DDL anywhere in the cluster can make PostgreSQL reset a backend
+-- that fell behind its shared invalidation queue: the caches are dropped and the
+-- next write reads the catalog again (regress_cache_resets.sql). An exact count is
+-- checked only when no reset arrived while it was measured.
+CREATE FUNCTION resets() RETURNS int LANGUAGE sql AS
+$$ SELECT coalesce((tviews.pg_tviews_show_queue()->>'cache_resets')::int, 0) $$;
+CREATE FUNCTION exact(ok boolean, reset boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF reset AND ok IS NOT TRUE THEN
+        RAISE WARNING 'exact count not checked, a relcache reset arrived: %', msg;
+    ELSE
+        PERFORM must(ok, msg || format(' (resets: %s)', resets()));
+    END IF;
+END $$;
 
 -- tv_comment maps a write to tb_author through its mapping query.
 SELECT tviews.pg_tviews_create('tv_comment', $$
@@ -47,10 +64,11 @@ SELECT tviews.pg_tviews_create('tv_comment', $$
     FROM tb_comment c JOIN tb_author ca ON ca.pk_author = c.fk_author $$);
 
 -- ── the names in a template cost no lookup ───────────────────────────────────
+ANALYZE;
 \c
 BEGIN;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
-SELECT lookups() AS narrow \gset
+SELECT lookups() AS narrow, resets() AS narrow_resets \gset
 COMMIT;
 
 SELECT tviews.pg_tviews_create_or_replace('tv_comment', $$
@@ -64,11 +82,12 @@ SELECT tviews.pg_tviews_create_or_replace('tv_comment', $$
     JOIN tb_author ca ON ca.pk_author = c.fk_author
     JOIN tb_post p ON p.pk_post = c.fk_post
     JOIN tb_author pa ON pa.pk_author = p.fk_author $$);
+ANALYZE;
 \c
 BEGIN;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
-SELECT lookups() AS wide \gset
-SELECT must(lookups() = :narrow,
+SELECT lookups() AS wide, :narrow_resets + resets() AS wide_resets \gset
+SELECT exact(lookups() = :narrow, :wide_resets > 0,
             format('a cold write through a template of more names made %s catalog lookups, %s with fewer',
                    lookups(), :narrow));
 COMMIT;
@@ -88,10 +107,11 @@ SELECT tviews.pg_tviews_create('tv_author', $$
            jsonb_build_object('name', a.name,
                               'n_posts', (SELECT count(*) FROM tb_post p WHERE p.fk_author = a.pk_author)) AS data
     FROM tb_author a $$);
+ANALYZE;
 \c
 BEGIN;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 2;
-SELECT must(lookups() <= :wide + 2,
+SELECT exact(lookups() <= :wide + 2, :wide_resets + resets() > 0,
             format('a cold write reaching 3 TVIEWs made %s catalog lookups, one reaching 1 made %s',
                    lookups(), :wide));
 COMMIT;
@@ -101,13 +121,15 @@ SELECT must(in_sync(), 'a TVIEW out of sync');
 -- But the statements over a trigger's transition tables, which PostgreSQL does not
 -- revalidate: tb_author's, two for each TVIEW mapping it through a query
 -- (tv_comment, tv_post).
+ANALYZE;
 \c
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 1;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
-SELECT plans() AS cold \gset
+SELECT plans() AS cold, resets() AS cold_resets \gset
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 1;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
-SELECT must(plans() = :cold, format('a warm write prepared %s plans', plans() - :cold));
+SELECT exact(plans() = :cold, resets() > :cold_resets,
+             format('a warm write prepared %s plans', plans() - :cold));
 SELECT tviews.pg_tviews_invalidate_caches('tviews.pg_tview_meta'::regclass);
 UPDATE tb_comment SET body = body || '!' WHERE pk_comment = 2;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 2;

@@ -368,7 +368,8 @@ fn count_check() -> Check {
 pub(crate) fn queue_stats() -> serde_json::Value {
     let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
-    let json_value = serde_json::json!({
+    #[allow(unused_mut)] // Reason: only test-hooks builds add to it
+    let mut json_value = serde_json::json!({
         "queue_size": stats.queue_size,
         "flushes": stats.flushes,
         "total_refreshes": stats.total_refreshes,
@@ -396,6 +397,10 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "propagation_pruned": stats.propagation_pruned,
         "queued": queued(),
     });
+    #[cfg(feature = "test-hooks")]
+    {
+        json_value["cache_resets"] = crate::cache::resets().into();
+    }
 
     json_value
 }

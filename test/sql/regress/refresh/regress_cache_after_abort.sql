@@ -37,11 +37,27 @@ CREATE FUNCTION lookups() RETURNS int LANGUAGE sql AS
 $$ SELECT (tviews.pg_tviews_show_queue()->>'catalog_lookups')::int $$;
 CREATE FUNCTION must(ok boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN IF ok IS NOT TRUE THEN RAISE EXCEPTION 'cache after abort FAIL: %', msg; END IF; END $$;
+-- Full relcache invalidations this backend received (test-hooks builds; 0
+-- otherwise). DDL anywhere in the cluster can make PostgreSQL reset a backend
+-- that fell behind its shared invalidation queue: the caches are dropped and the
+-- next write reads the catalog again (regress_cache_resets.sql). An exact count is
+-- checked only when no reset arrived while it was measured.
+CREATE FUNCTION resets() RETURNS int LANGUAGE sql AS
+$$ SELECT coalesce((tviews.pg_tviews_show_queue()->>'cache_resets')::int, 0) $$;
+CREATE FUNCTION exact(ok boolean, reset boolean, msg text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    IF reset AND ok IS NOT TRUE THEN
+        RAISE WARNING 'exact count not checked, a relcache reset arrived: %', msg;
+    ELSE
+        PERFORM must(ok, msg || format(' (resets: %s)', resets()));
+    END IF;
+END $$;
 CREATE FUNCTION in_sync() RETURNS boolean LANGUAGE sql AS $$
     SELECT NOT EXISTS (SELECT 1 FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
                        WHERE t.data IS DISTINCT FROM v.data) $$;
 
 -- Warm, then what a warm write reads of the catalog when nothing rolled back.
+SELECT resets() AS r0 \gset
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
 BEGIN;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 1;
@@ -54,7 +70,7 @@ UPDATE tb_author SET name = name || '?' WHERE pk_author = 2;
 ROLLBACK;
 BEGIN;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 3;
-SELECT must(lookups() = :warm, format('a warm write after ROLLBACK made %s catalog lookups, %s without it',
+SELECT exact(lookups() = :warm, resets() > :r0, format('a warm write after ROLLBACK made %s catalog lookups, %s without it',
                                      lookups(), :warm));
 COMMIT;
 
@@ -69,7 +85,7 @@ DO $$ BEGIN
 EXCEPTION WHEN raise_exception THEN NULL;
 END $$;
 UPDATE tb_author SET name = name || '!' WHERE pk_author = 4;
-SELECT must(lookups() = :warm, format('a warm write after rolled-back subtransactions made %s catalog lookups, %s without them',
+SELECT exact(lookups() = :warm, resets() > :r0, format('a warm write after rolled-back subtransactions made %s catalog lookups, %s without them',
                                      lookups(), :warm));
 COMMIT;
 SELECT must(in_sync(), 'tv_post out of sync after the rolled-back writes');
