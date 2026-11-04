@@ -127,8 +127,11 @@ pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
 /// How the statements of a refresh are planned: as each says when it is kept
 /// (`crate::utils::spi::Plan`). A session's `force_generic_plan` would plan a
 /// lookup by an array parameter for ten keys (#235), and `force_custom_plan`
-/// would plan every lookup again at each call.
-pub const PLAN_SETTINGS: [(&CStr, &CStr); 1] = [(c"plan_cache_mode", c"auto")];
+/// would plan every lookup again at each call. Never JIT-compiled (#283): a
+/// refresh reads a few rows by key, or rebuilds a TVIEW once, and compiling its
+/// statements cost more than it saved whenever a cost estimate crossed
+/// `jit_above_cost`.
+pub const PLAN_SETTINGS: [(&CStr, &CStr); 2] = [(c"plan_cache_mode", c"auto"), (c"jit", c"off")];
 
 /// While alive, the [`RENDER_SETTINGS`] (and [`PLAN_SETTINGS`]) are in force; dropping it restores the
 /// session's values (an error's (sub)transaction abort restores them instead).

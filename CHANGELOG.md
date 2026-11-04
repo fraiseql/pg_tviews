@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows the table's other reads reach are mapped as usual. On the issue's 2,000 orders,
   inserting an unrelated category went from a full refresh to no refresh. The create
   NOTICE says so; `tviews.registry` is unchanged (ADR 0157, amendment).
+- **Refresh statements never JIT-compile** (#283). pg_tviews pins `jit = off` for its
+  refresh statements, beside `plan_cache_mode = auto`, whatever the session or the
+  server says; the session's own setting is untouched. A refresh reads a few rows by key
+  or rebuilds a TVIEW once, and JIT compilation added its cost whenever an estimate
+  crossed `jit_above_cost`.
 
 ## [0.1.0-beta.35] - 2026-11-03
 

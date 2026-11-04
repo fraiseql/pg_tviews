@@ -136,7 +136,8 @@ MATERIALIZED VIEW` does (`src/owner.rs`):
 - with the rendering settings pinned (`TimeZone` `UTC`, `DateStyle` `ISO, YMD`,
   `IntervalStyle` `postgres`, `extra_float_digits` `1`, `bytea_output` `hex`), so a
   TVIEW's rows do not depend on the session that wrote last;
-- with `plan_cache_mode = auto`.
+- with `plan_cache_mode = auto` and `jit = off`: a refresh reads a few rows by key or
+  rebuilds a TVIEW once, which JIT compilation slows down (#283).
 
 The writer therefore needs only what the write needs without pg_tviews: the DML
 privilege on the base table and `USAGE` on its schema (and `USAGE` on `tviews`,
