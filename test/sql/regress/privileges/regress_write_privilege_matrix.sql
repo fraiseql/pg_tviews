@@ -242,13 +242,19 @@ SET SESSION AUTHORIZATION regress_pm_writer;
 BEGIN;
 UPDATE pw.tb_book SET title = 'b1 edited' WHERE pk_book = 1;
 DELETE FROM pw.tb_book WHERE pk_book = 2;
-SELECT tviews.pg_tviews_flush_and_report(include_data => false, reset => false) AS report \gset
--- The data is read as the caller: without SELECT on tv_book it is refused.
+-- The report runs as the caller: without SELECT on tv_book its rows are left out,
+-- ids too, and Book is listed in omitted_types (#270).
 DO $$
+DECLARE r jsonb;
 BEGIN
-    PERFORM tviews.pg_tviews_flush_and_report(reset => false);
-    RAISE EXCEPTION 'matrix FAIL: the report read tv_book data without SELECT on it';
-EXCEPTION WHEN insufficient_privilege THEN NULL;
+    FOREACH r IN ARRAY ARRAY[tviews.pg_tviews_flush_and_report(include_data => false, reset => false),
+                             tviews.pg_tviews_flush_and_report(reset => false)] LOOP
+        IF EXISTS (SELECT FROM jsonb_array_elements((r->'updated') || (r->'deleted')) e
+                   WHERE e->>'__typename' = 'Book')
+           OR NOT (r->'omitted_types') ? 'Book' THEN
+            RAISE EXCEPTION 'matrix FAIL: the report disclosed tv_book: %', r;
+        END IF;
+    END LOOP;
 END $$;
 UPDATE pw.tb_doc SET body = 'd1 again' WHERE pk_doc = 1;
 COMMIT;
