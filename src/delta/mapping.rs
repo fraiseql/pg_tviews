@@ -126,10 +126,12 @@ fn route(
         && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
         && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) };
-    // The links are columns it reads: unchanged when those are.
+    // The links are columns it reads: unchanged when those are. A virtual
+    // generated column is NULL in the transition tables, so one among the links
+    // counts as changed; the stored ones compare as they are.
     crate::concurrency::note_write(Some(mapping), event, |links| {
-        // SAFETY: an AFTER statement trigger's TriggerData.
-        computed.is_some()
+        (computed.is_some() && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
+            // SAFETY: an AFTER statement trigger's TriggerData.
             || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
     });
     if reads_same {
@@ -182,6 +184,12 @@ fn guard_met(
         return Ok(true);
     };
     Ok(!lookup(trigger, entity, &KeyType::Int, delta, &guard)?.is_empty())
+}
+
+/// Whether column `attnum` of table `relid` is a virtual generated column.
+fn is_virtual(relid: Oid, attnum: i16) -> bool {
+    // SAFETY: a catalog lookup by OID and attribute number.
+    unsafe { pg_sys::get_attgenerated(relid, attnum).cast_unsigned() == b'v' }
 }
 
 /// A TVIEW a statement's rows reach: its entity, catalog row and route.
