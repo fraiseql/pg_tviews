@@ -441,6 +441,18 @@ pub fn forget_database(db: Oid) {
     }
 }
 
+/// The slots each database holds, by database OID (test builds: #290).
+#[cfg(feature = "test-hooks")]
+pub fn slots_by_database() -> std::collections::BTreeMap<u32, usize> {
+    let mut out = std::collections::BTreeMap::new();
+    if let Some(shared) = Locked::acquire(pg_sys::LWLockMode::LW_SHARED) {
+        for slot in shared.slots.iter().filter(|slot| slot.db != 0) {
+            *out.entry(slot.db).or_insert(0) += 1;
+        }
+    }
+    out
+}
+
 /// Forget `table`, dropped or replaced by a rebuild.
 pub fn forget(table: Oid) {
     // SAFETY: reads a backend global.
