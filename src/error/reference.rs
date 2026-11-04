@@ -149,6 +149,14 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
          was written. Reads of TVIEWs work at any level.",
     ),
     (
+        "src/refresh/diag.rs",
+        PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
+        "PostgreSQL's `ON CONFLICT DO UPDATE command cannot affect row a second time` from a \
+         refresh's upsert: seen once under the concurrency fuzzer, never reproduced (#278). \
+         Retry the transaction, and report it: test builds log what conflicted \
+         (`pg_tviews.test_diag_21000`).",
+    ),
+    (
         "src/flush/xact.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "A transaction commits with refresh work still queued (a missing or disabled flush \
