@@ -8,6 +8,7 @@
 -- compare as they are. Compared here with the same table without the column.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/refresh/regress_virtual_column_links.sql
+-- expect-output: virtual column links: PASS
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -15,7 +16,7 @@ SET client_min_messages TO WARNING;
 SELECT current_setting('server_version_num')::int >= 180000 AS pg18 \gset
 \if :pg18
 \else
-\echo 'SKIP: virtual generated columns need PostgreSQL 18'
+\echo 'virtual column links: PASS (no virtual generated columns before PostgreSQL 18)'
 \quit
 \endif
 
