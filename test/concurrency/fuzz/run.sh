@@ -23,7 +23,8 @@
 # for the patch and cache switches off.
 #
 # PG_CONFIG names pgbench's pg_config (default the one on PATH). KEEP=1 keeps the
-# database of a failed seed (named in the output) for inspection.
+# database of a failed seed (named in the output) for inspection. EXTRA_PGOPTIONS
+# is added to every client's PGOPTIONS (e.g. "-c pg_tviews.test_diag_21000=on").
 
 set -u
 PGHOST="${PGHOST:-localhost}"
@@ -52,7 +53,7 @@ trap 'rm -rf "$work"' EXIT
 
 failed=0
 for mode in $MODES; do
-  PGOPTIONS="$(mode_options "$mode")"
+  PGOPTIONS="$(mode_options "$mode") ${EXTRA_PGOPTIONS:-}"
   export PGOPTIONS
   for seed in $seeds; do
     psql -d postgres -qc "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db" >/dev/null || exit 2
