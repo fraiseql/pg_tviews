@@ -2,7 +2,7 @@
 
 ## Scope
 Updating pg_tviews to the next release on the same PostgreSQL major version. A release
-updates only from the release before it (`0.1.0-beta.34` to `0.1.0-beta.35`), with one
+updates only from the release before it (`0.1.0-beta.35` to `0.1.0-beta.36`), with one
 script, `pg_tviews--<previous>--<current>.sql`. An install of an older release, `0.1.0`
 installs included, is dropped and its TVIEWs created again:
 [Upgrading pg_tviews](../../upgrade.md#from-an-older-release). How releases and the
