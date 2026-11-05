@@ -126,7 +126,7 @@ impl Walker<'_> {
                 }
                 sql.push_sql(self.deparse(element, term_of, &mut || {})?);
             }
-            let ty = self.type_name((*array).array_typeid);
+            let ty = self.type_name((*array).array_typeid, pg_sys::exprTypmod(array.cast()));
             sql.push_text(&format!("]::{ty}))"));
             Some(sql)
         }

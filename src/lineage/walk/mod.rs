@@ -249,7 +249,7 @@ struct Operand {
 struct CatalogNames {
     operators: HashMap<u32, String>,
     functions: HashMap<u32, (String, bool)>,
-    types: HashMap<u32, String>,
+    types: HashMap<(u32, i32), String>,
 }
 
 struct Walker<'c> {

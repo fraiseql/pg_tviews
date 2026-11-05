@@ -164,7 +164,7 @@ impl Walker<'_> {
             }
             let mut sql = Sql::text("(");
             sql.push_sql(element.sql);
-            sql.push_text(&format!(")::{}", self.type_name(array_type)));
+            sql.push_text(&format!(")::{}", self.type_name(array_type, cast.type_mod)));
             element = Computed {
                 sql,
                 element: true,
