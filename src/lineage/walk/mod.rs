@@ -45,6 +45,8 @@ pub struct Context<'a> {
 /// Returns an error if the view cannot be opened, nests deeper than
 /// [`MAX_DEPTH`] levels, or reads a view the current user may not read.
 pub fn analyze(view_oid: Oid, ctx: &Context<'_>) -> TViewResult<QueryGraph> {
+    // The constants it renders are parsed back under these settings.
+    let _pin = crate::owner::RenderPin::new();
     let mut walker = Walker {
         ctx,
         graph: QueryGraph::default(),
