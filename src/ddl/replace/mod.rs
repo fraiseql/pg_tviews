@@ -478,8 +478,10 @@ fn replace_in_place(
 
     // A TVIEW reading this one is re-derived and recomputed as its own owner,
     // whose triggers on the tables it reads they are.
-    for (dependent, table) in &dependents {
-        crate::owner::AsOwner::run(crate::owner::Owner::of_table(*table)?, |frame| {
+    for (dependent, _) in &dependents {
+        // Its own owner, with its own text search configuration.
+        let owner = crate::owner::Owner::of_entity(dependent)?;
+        crate::owner::AsOwner::run(owner, |frame| {
             create::rederive(dependent)?;
             let meta =
                 TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
