@@ -188,6 +188,32 @@ impl LookupKeys {
         }
     }
 
+    /// `SELECT {columns} FROM {relation}` for the rows whose `column` holds one of
+    /// the keys, bound from parameter `$first` on, where `relation` joins (a view).
+    /// Many keys drive the lookup: the relation is planned for one key and probed
+    /// once per key, whatever its statistics say. An array condition would sit on
+    /// the inner side of the relation's join, evaluated on every rescan.
+    #[must_use]
+    pub fn select_joined(
+        &self,
+        columns: &str,
+        relation: &str,
+        column: &str,
+        first: usize,
+    ) -> String {
+        match self {
+            Self::Shaped(_) => format!(
+                "SELECT {columns} FROM {relation} WHERE {}",
+                self.predicate(column, first)
+            ),
+            Self::Many(_) => format!(
+                "SELECT probed.* FROM pg_catalog.unnest(${first}::pg_catalog.int8[]) AS lookup(key) \
+                 CROSS JOIN LATERAL (SELECT {columns} FROM {relation} \
+                 WHERE {column} = lookup.key OFFSET 0) AS probed"
+            ),
+        }
+    }
+
     /// The keys, as the parameters [`Self::predicate`] reads.
     #[must_use]
     pub fn args<'a>(&self) -> Vec<DatumWithOid<'a>> {
@@ -989,5 +1015,20 @@ mod tests {
             "\"fk_cat\" = ANY ($2::pg_catalog.int8[])"
         );
         assert_eq!((keys.width(), keys.plan()), (1, Plan::PerExecution));
+    }
+
+    #[test]
+    fn many_keys_drive_a_lookup_in_a_join() {
+        let keys = LookupKeys::of((0..129).collect()).expect("keys");
+        assert_eq!(
+            keys.select_joined("a, b", "v", "\"fk_cat\"", 2),
+            "SELECT probed.* FROM pg_catalog.unnest($2::pg_catalog.int8[]) AS lookup(key) \
+             CROSS JOIN LATERAL (SELECT a, b FROM v WHERE \"fk_cat\" = lookup.key OFFSET 0) AS probed"
+        );
+        let few = LookupKeys::of(vec![7]).expect("a key");
+        assert_eq!(
+            few.select_joined("a", "v", "c", 1),
+            format!("SELECT a FROM v WHERE {}", few.predicate("c", 1))
+        );
     }
 }

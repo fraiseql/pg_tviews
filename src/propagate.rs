@@ -140,20 +140,19 @@ fn find_affected_keys_batch(
     };
     // The lookup column can be the parent's own key (an embedded aggregate keyed by
     // it), so the two outputs are aliased.
-    let select = |relation: &str, keys: &LookupKeys, param: usize| {
-        format!(
-            "SELECT {qi_fk}::pg_catalog.int8 AS child_key, {qi_key}::{key_type} AS parent_key \
-             FROM {relation} WHERE {}",
-            keys.predicate(&qi_fk, param)
-        )
-    };
-    let mut query = select(&qi_parent, &children, 1);
+    let columns =
+        format!("{qi_fk}::pg_catalog.int8 AS child_key, {qi_key}::{key_type} AS parent_key");
+    let mut query = format!(
+        "SELECT {columns} FROM {qi_parent} WHERE {}",
+        children.predicate(&qi_fk, 1)
+    );
     let mut args = children.args();
     if let Some(appeared) = LookupKeys::of_with(in_view.to_vec(), child_pks.len()) {
+        // The backing view joins: the keys drive its lookup.
         let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
         query = format!(
             "{query} UNION {}",
-            select(&qi_view, &appeared, 1 + children.width())
+            appeared.select_joined(&columns, &qi_view, &qi_fk, 1 + children.width())
         );
         args.extend(appeared.args());
     }
