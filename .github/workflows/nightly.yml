@@ -12,10 +12,13 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
 
 jobs:
   cassert:
@@ -50,7 +53,7 @@ jobs:
       - name: Build and install pg_tviews and jsonb_delta
         run: |
           cargo pgrx install --release --no-default-features --features "pg18 test-hooks" --pg-config "$PG_CONFIG"
-          git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+          git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
           (cd /tmp/jsonb_delta && cargo pgrx install --release --no-default-features \
              --features pg18 --pg-config "$PG_CONFIG")
 

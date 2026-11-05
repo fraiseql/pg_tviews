@@ -15,7 +15,7 @@ permissions:
 
 env:
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
   SQL_COVERAGE_FLOOR: "91"
 
 jobs:
@@ -91,7 +91,7 @@ jobs:
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Fetch jsonb_delta
-        run: git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+        run: git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
 
       # A throwaway cluster of its own: the regression and isolation suites against
       # an instrumented build, then the unit tests, one report.

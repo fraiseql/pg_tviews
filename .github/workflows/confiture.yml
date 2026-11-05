@@ -13,11 +13,14 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
   CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
   # The confiture commit whose suites this release must pass (a full SHA: fetching
   # by commit needs all 40 characters). A release cannot be tagged while it is empty.

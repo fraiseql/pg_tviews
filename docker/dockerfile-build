@@ -39,6 +39,11 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
+# The dependency tree Cargo.lock pins, fetched once; the build runs offline on it
+# (`cargo pgrx package` has no --locked).
+RUN cargo fetch --locked
+ENV CARGO_NET_OFFLINE=true
+
 # Default command for reproducible builds: stage the packaged extension tree
 # into /out (mount a host directory there to collect the artifacts).
 CMD ["cargo", "pgrx", "package", \

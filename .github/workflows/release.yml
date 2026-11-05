@@ -31,6 +31,8 @@ jobs:
       attestations: write   # actions/attest-build-provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -66,7 +68,14 @@ jobs:
             exit 1
           fi
 
+      - name: Fetch the locked dependency tree
+        run: cargo fetch --locked
+
       - name: Build extension
+        env:
+          # `cargo pgrx package` has no --locked: offline, it builds only what
+          # the locked fetch above brought.
+          CARGO_NET_OFFLINE: "true"
         run: |
           # default features already target pg18 (see Cargo.toml [features]).
           PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config
@@ -143,6 +152,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -160,6 +171,6 @@ jobs:
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Publish to crates.io
-        run: cargo publish --no-default-features --features pg18
+        run: cargo publish --locked --no-default-features --features pg18
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

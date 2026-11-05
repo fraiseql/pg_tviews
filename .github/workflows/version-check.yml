@@ -6,6 +6,9 @@ on:
       - 'Cargo.toml'
       - 'CHANGELOG.md'
 
+permissions:
+  contents: read
+
 jobs:
   version-check:
     name: Version Check

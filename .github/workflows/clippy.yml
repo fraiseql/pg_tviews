@@ -8,6 +8,9 @@ on:
   # The release runs it before building anything.
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -33,6 +36,8 @@ jobs:
         run: scripts/check-module-layers.sh
       - name: Check SPI is reached through src/utils/spi.rs only
         run: scripts/check-spi-facade.sh
+      - name: Check the lock is tracked, tokens are least-privilege and refs are commits
+        run: scripts/check-ci-hardening.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})

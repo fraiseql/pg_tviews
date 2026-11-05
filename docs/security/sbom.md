@@ -165,7 +165,7 @@ pyspdxtools -i pg_tviews-0.1.0-beta.1.spdx.json
 ## SBOM Contents
 
 ### Rust Dependencies
-- All crates from Cargo.lock
+- All crates from Cargo.lock (tracked; the release builds exactly that tree)
 - Transitive dependencies
 - Version pinning information
 - License information
@@ -213,7 +213,8 @@ cat pg_tviews-0.1.0-beta.1.sbom.txt
 
 All dependencies are:
 - ✅ Sourced from crates.io (official Rust registry)
-- ✅ Version-pinned in Cargo.lock
+- ✅ Version-pinned in Cargo.lock, which is tracked; the release fetches it `--locked`
+  and builds offline, and `cargo publish` runs `--locked`
 - ✅ Audited with cargo-audit
 - ✅ Scanned for vulnerabilities
 

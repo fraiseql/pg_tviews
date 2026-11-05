@@ -8,12 +8,14 @@ on:
     - cron: '0 0 * * *'  # Daily at midnight UTC
 
 permissions:
-  security-events: write
   contents: read
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload the Trivy SARIF
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
