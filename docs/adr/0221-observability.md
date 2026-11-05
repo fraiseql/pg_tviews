@@ -65,7 +65,9 @@ maintenance functions. The view is readable by `PUBLIC`: it holds counts, no dat
   is an empty table, so the startup hook zeroes it instead of building a value on the stack.
 - Each backend adds to a local map during the transaction. At commit, abort or prepare, the
   map is merged into shared memory: one lock acquisition per transaction, no SPI.
-- Dropping a TVIEW, or rebuilding it (a new table), frees its entry; a reset of the database
+- Dropping a TVIEW however it goes (`pg_tviews_drop`, `DROP TABLE`, `DROP SCHEMA … CASCADE`,
+  `DROP OWNED`, even in the transaction that wrote it), or rebuilding it (a new table), frees
+  its entry; a reset of the database
   frees all of its entries. A TVIEW that finds the table full is untracked: `tviews.stats`
   shows it with NULL counters, and its `untracked` column is true. Nothing is silently missing.
 - Without `shared_preload_libraries = 'pg_tviews'`, reading `tviews.stats` fails with a hint;

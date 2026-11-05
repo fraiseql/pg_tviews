@@ -67,7 +67,6 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
     if let Some(ref m) = meta {
         drop_by_oid(m.tview_oid, "TABLE", cascade)?;
-        crate::stats::forget(m.tview_oid);
     }
 
     // Drop the backing view (schema-resolved via OID)
@@ -258,7 +257,10 @@ fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
-    crate::catalog::queries::delete(entity_name)?;
+    // However the TVIEW went, its statistics slot is free.
+    if let Some(table) = crate::catalog::queries::delete(entity_name)? {
+        crate::stats::forget(table);
+    }
     // A TVIEW created later under the same entity starts untrusted.
     crate::lifecycle::validity::forget(entity_name)
 }

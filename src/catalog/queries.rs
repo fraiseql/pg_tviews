@@ -181,15 +181,28 @@ pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TV
     })
 }
 
-/// Delete `entity`'s row, as the extension's owner.
+/// Delete `entity`'s row, as the extension's owner: the OID its table had, `None`
+/// when no row was registered.
 ///
 /// # Errors
 /// Returns the statement's error.
-pub fn delete(entity: &str) -> TViewResult<()> {
+pub fn delete(entity: &str) -> TViewResult<Option<Oid>> {
     let args = [crate::utils::spi::text(entity)];
-    let sql = format!("DELETE FROM {} WHERE entity = $1", super::meta_table());
+    let sql = format!(
+        "DELETE FROM {} WHERE entity = $1 RETURNING table_oid::pg_catalog.oid",
+        super::meta_table()
+    );
     // The catalog is written as the extension's owner.
-    crate::owner::as_extension_owner(|| crate::utils::spi::run(&sql, &args))
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::connect_mut(|client| {
+            let deleted = client.update(&sql, None, &args)?;
+            if deleted.is_empty() {
+                return Ok(None);
+            }
+            deleted.first().get::<Oid>(1)
+        })
+        .map_err(|e| crate::utils::spi::error(&sql, &e))
+    })
 }
 
 // --- Drops -------------------------------------------------------------------

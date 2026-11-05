@@ -446,8 +446,10 @@ pub fn slots_by_database() -> std::collections::BTreeMap<u32, usize> {
     out
 }
 
-/// Forget `table`, dropped or replaced by a rebuild.
+/// Forget `table`, dropped or replaced by a rebuild: its slot, and what this
+/// transaction counted for it, which would take the slot again at its end.
 pub fn forget(table: Oid) {
+    LOCAL.with_borrow_mut(|local| local.retain(|_, (oid, _)| *oid != table));
     // SAFETY: reads a backend global.
     let db = unsafe { pg_sys::MyDatabaseId.to_u32() };
     if let Some(mut shared) = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE)
