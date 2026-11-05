@@ -207,18 +207,20 @@ pub const fn registration_tag(database: u32, hash: u32) -> pg_sys::LOCKTAG {
     tag(database, hash, 0, REGISTRATION_TAG)
 }
 
+/// The registration lock's hash of `entity`, keyed with the server's secret
+/// `key` as value tags are: no role can find, offline, a name of its own whose
+/// tag is another entity's.
+#[must_use]
+fn registration_hash(key: &key::Key, entity: &str) -> u32 {
+    value_hash(key, &[], entity)
+}
+
 /// Hold the registration lock of `entity` until the transaction ends: calls
 /// registering, changing or dropping one entity run one after the other. The
 /// tag is private to `pg_tviews` (`pg_advisory_lock()` never takes it), so no
-/// other role can hold it.
+/// other role can hold it; two entities sharing a hash only take turns.
 pub fn lock_registration(entity: &str) {
-    use std::hash::{Hash, Hasher};
-    // Every backend runs the same library, so they agree on the hash; two
-    // entities sharing one only take turns.
-    let mut hasher = std::hash::DefaultHasher::new();
-    entity.hash(&mut hasher);
-    #[allow(clippy::cast_possible_truncation)] // Reason: a lock tag field holds 32 bits
-    let hash = hasher.finish() as u32;
+    let hash = registration_hash(&lock_key(), entity);
     // SAFETY: a transaction is in progress (DDL runs in one) and the tag is a
     // well-formed advisory tag; the lock belongs to the current resource owner
     // and ends with the transaction. Waiting honours lock_timeout and deadlock
@@ -644,6 +646,19 @@ mod tests {
             value_hash(&KEY, &[1], "42")
         );
         assert_ne!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[1], "43"));
+    }
+
+    #[test]
+    fn a_registration_hash_depends_on_the_server_key() {
+        let (one, other) = ([1; 16], [2; 16]);
+        assert_eq!(
+            super::registration_hash(&one, "post"),
+            super::registration_hash(&one, "post")
+        );
+        assert_ne!(
+            super::registration_hash(&one, "post"),
+            super::registration_hash(&other, "post")
+        );
     }
 
     #[test]

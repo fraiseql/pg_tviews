@@ -136,7 +136,7 @@ own: `objsubid` is 21622 for a value (or the key of a row being created) and 216
 a relation's intent and escalated locks, `classid` is the relation, `objid` a hash of
 the value keyed with a secret the server makes at start: no role can tell from it which
 value is locked, and a superuser computes the tag of a value with
-[`pg_tviews_value_lock_tag`](reference/api.md#pg_tviews_value_lock_tag). A registration lock has `objsubid` 21624 and a hash of the entity as
+[`pg_tviews_value_lock_tag`](reference/api.md#pg_tviews_value_lock_tag). A registration lock has `objsubid` 21624 and a hash of the entity, keyed with the same server secret, as
 `classid`. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
 nor block any of them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
 released by `ROLLBACK TO SAVEPOINT` when taken after the savepoint; a link changed
