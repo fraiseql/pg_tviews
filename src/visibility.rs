@@ -7,6 +7,43 @@
 use crate::error::TViewResult;
 use pgrx::pg_sys::{self, Oid};
 
+/// Whether the caller may read `relid`: `SELECT` on it and `USAGE` on its
+/// schema. False for a relation that is gone, and inside an owner frame, where
+/// the current user is not the caller.
+#[must_use]
+pub fn may_read_relation(relid: Oid) -> bool {
+    let Ok(caller) = crate::owner::Owner::current_user() else {
+        return false;
+    };
+    let user = caller.oid();
+    let mut missing = false;
+    // SAFETY: catalog lookups and ACL checks by OID; the `_ext` checks report a
+    // missing object instead of raising.
+    unsafe {
+        let schema = pg_sys::get_rel_namespace(relid);
+        if schema == pg_sys::InvalidOid {
+            return false;
+        }
+        let usage = pg_sys::object_aclcheck_ext(
+            pg_sys::NamespaceRelationId,
+            schema,
+            user,
+            pg_sys::AclMode::from(pg_sys::ACL_USAGE),
+            &raw mut missing,
+        );
+        if missing || usage != pg_sys::AclResult::ACLCHECK_OK {
+            return false;
+        }
+        let select = pg_sys::pg_class_aclcheck_ext(
+            relid,
+            user,
+            pg_sys::AclMode::from(pg_sys::ACL_SELECT),
+            &raw mut missing,
+        );
+        !missing && select == pg_sys::AclResult::ACLCHECK_OK
+    }
+}
+
 /// Whether row-level security applies to the caller's reads of `relid`: then a
 /// read as the caller sees only the rows its policies allow.
 ///

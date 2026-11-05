@@ -6,7 +6,8 @@
 -- caller learns nothing of its rows. Its type goes to `omitted_types`, as a type not
 -- asked for does (#230), and its rows are neither listed nor read, so the call no
 -- longer fails 42501. A collection is listed only when the caller may read both
--- the child and the parent TVIEW. The rule is table-level SELECT.
+-- the child and the parent TVIEW. The rule is table-level SELECT and USAGE on
+-- the TVIEW's schema.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_report_privileges.sql
 
@@ -123,7 +124,28 @@ SELECT must(NOT (:'r'::jsonb) ? 'omitted_types', 'readable, omitted_types: ' || 
 COMMIT;
 RESET ROLE;
 
+-- 6. A TVIEW in a schema the caller has no USAGE on is not readable: omitted,
+--    without an error.
+CREATE SCHEMA hidden_270;
+CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+                      fk_user int NOT NULL REFERENCES tb_user, body text);
+INSERT INTO tb_note (pk_note, fk_user, body) VALUES (1, 1, 'n1');
+SELECT tviews.pg_tviews_create('hidden_270.tv_note', $$
+    SELECT n.pk_note, n.id, n.fk_user, jsonb_build_object('id', n.id, 'body', n.body) AS data
+    FROM public.tb_note n $$);
+GRANT SELECT, UPDATE ON tb_note TO report_writer_270;
+GRANT SELECT ON hidden_270.tv_note TO report_writer_270;
+SET ROLE report_writer_270;
+BEGIN;
+UPDATE tb_note SET body = 'n1!';
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(reported(:'r', 'Note') = 0, 'no schema USAGE, notes listed: ' || :'r');
+SELECT must((:'r'::jsonb)->'omitted_types' ? 'Note', 'no schema USAGE, omitted: ' || :'r');
+COMMIT;
+RESET ROLE;
+
 DROP EXTENSION pg_tviews CASCADE;
+DROP SCHEMA hidden_270 CASCADE;
 DROP OWNED BY report_writer_270;
 DROP ROLE report_writer_270;
 \echo 'regress_report_privileges: PASS'

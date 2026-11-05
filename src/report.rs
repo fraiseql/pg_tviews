@@ -107,7 +107,7 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
     Ok(crate::catalog::queries::typenames_and_tables(names)?
         .into_iter()
         .map(|(entity, typename, table, oid)| {
-            let readable = may_select(oid);
+            let readable = crate::visibility::may_read_relation(oid);
             (
                 entity,
                 EntityInfo {
@@ -118,19 +118,6 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
             )
         })
         .collect())
-}
-
-/// Whether the current user holds `SELECT` on the table `relid`.
-fn may_select(relid: pgrx::pg_sys::Oid) -> bool {
-    use pgrx::pg_sys;
-    // SAFETY: an ACL check by OID for the current user.
-    unsafe {
-        pg_sys::pg_class_aclcheck(
-            relid,
-            pg_sys::GetUserId(),
-            pg_sys::AclMode::from(pg_sys::ACL_SELECT),
-        ) == pg_sys::AclResult::ACLCHECK_OK
-    }
 }
 
 /// The current `data` of `entity`'s rows `pks`, by `pk_<entity>`.
@@ -319,7 +306,7 @@ fn collections(
         .filter(|(c, _)| {
             *parent_readable
                 .entry(c.parent_table_oid)
-                .or_insert_with(|| may_select(c.parent_table_oid))
+                .or_insert_with(|| crate::visibility::may_read_relation(c.parent_table_oid))
         })
         .cloned()
         .collect();

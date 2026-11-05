@@ -557,6 +557,8 @@ impl Walker<'_> {
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))
             }
             b'v' => {
+                // The owner's privilege, not a caller's: registration analyzes
+                // the view in the owner's frame, as every refresh reads it.
                 // SAFETY: an ACL check by OID for the current user.
                 let readable = unsafe {
                     pg_sys::pg_class_aclcheck(
