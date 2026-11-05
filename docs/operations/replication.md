@@ -72,6 +72,8 @@ SELECT entity, options->'logged' AS logged FROM tviews.registry;
 
 Both are read-only and work on a standby. There, `is_empty` is NULL for UNLOGGED
 TVIEWs (their table cannot be read) and `needs_rebuild` is NULL for all of them.
+Anywhere, `is_empty` is NULL for a TVIEW the caller may not read, or reads under
+row security.
 A client that routes reads to replicas (FraiseQL's `read_replica_urls`) can call
 `pg_tviews_show_replication()` once at startup and keep every type backed by a
 `replica_readable = false` TVIEW on the primary.

@@ -519,7 +519,9 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
 - TVIEWs are LOGGED unless declared `logged: false`. Switch one with the `logged`
   option or `ALTER TABLE tv_<entity> SET [UN]LOGGED`.
 - `pg_tviews_show_replication` reports every TVIEW, `replica_readable` true for a
-  LOGGED one, and is safe on a standby.
+  LOGGED one, and is safe on a standby. `is_empty` is answered as the caller reads
+  the `tv_*` table: it is NULL unless the caller has `SELECT` on the table and
+  `USAGE` on its schema, and no row security applies to its reads.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
   dependencies first, each as its owner, and reports the rows each one inserted

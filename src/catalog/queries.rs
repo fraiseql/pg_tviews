@@ -663,8 +663,6 @@ pub fn view_column_type(table: Oid, column: &str) -> TViewResult<Option<Oid>> {
 /// A TVIEW's table, as [`tables`] lists it.
 pub struct Table {
     pub entity: String,
-    pub schema: String,
-    pub name: String,
     pub unlogged: bool,
     pub oid: Oid,
 }
@@ -675,12 +673,10 @@ pub struct Table {
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
     let query = format!(
-        "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
-                t.relpersistence = 'u' AS unlogged, \
+        "SELECT m.entity, t.relpersistence = 'u' AS unlogged, \
                 m.table_oid::oid AS table_oid \
          FROM {} m \
          JOIN pg_class t ON t.oid = m.table_oid \
-         JOIN pg_namespace n ON n.oid = t.relnamespace \
          WHERE $1::text IS NULL OR m.entity = $1 \
          ORDER BY m.entity",
         super::meta_table()
@@ -691,8 +687,6 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
         for row in client.select(&query, None, &args)? {
             out.push(Table {
                 entity: row["entity"].value()?.unwrap_or_default(),
-                schema: row["schema"].value()?.unwrap_or_default(),
-                name: row["tbl"].value()?.unwrap_or_default(),
                 unlogged: row["unlogged"].value()?.unwrap_or(false),
                 oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
             });
