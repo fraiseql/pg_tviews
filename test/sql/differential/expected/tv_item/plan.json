@@ -64,5 +64,6 @@
       "table": "public.tb_category"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

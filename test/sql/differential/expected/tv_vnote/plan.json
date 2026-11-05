@@ -105,5 +105,6 @@
       "table": "public.tb_vtag"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }
