@@ -89,9 +89,11 @@ TVIEW's owner: its creation (the creating role, its owner-to-be),
 `pg_tviews_reregister_all`, `ALTER EXTENSION pg_tviews UPDATE`), the follow-up of a
 column rename, the health check's plans, `pg_tviews_resync`'s mappings, and every
 refresh and rebuild. One function opens frames, `AsOwner::run` in `src/owner.rs`, and
-the functions that plan or run such SQL take the token it hands to its work, which
-nothing else can make. The token names its owner: SQL of a TVIEW checks it against the
-owner of the TVIEW's table and fails with an internal error on a mismatch. A frame
+hands its work a token nothing else can make. The analysis of a definition
+(`lineage::analyze`, its `EXPLAIN`s), the recompute and rebuild statements of
+`refresh/` and the mappings of `pg_tviews_resync` take that token and check that it
+names the owner of the TVIEW's table, failing with an internal error on a mismatch;
+the other statements of a refresh run inside the same frame without taking it. A frame
 opened inside another (the extension's owner's, for a catalog write) makes the outer
 token unusable until it closes, so no TVIEW's SQL runs as the inner frame's role.
 
@@ -147,7 +149,8 @@ owner frame, by one module, `src/visibility.rs`:
 | `pg_tviews_flush_and_report()` | the rows of readable TVIEWs only, the others' types in `omitted_types`; under row security, only the changed rows a read as the caller returns (deleted rows not listed, the type in `invalidated_types`); collections only when the child and parent TVIEWs are readable, and only parents a read as the caller returns |
 | `pg_tviews_show_queue()` | queued keys of readable TVIEWs without row security; the others' types in `omitted_types`; `queue_size` counts every key |
 | `pg_tviews_show_replication()` | `is_empty` read as the caller from the `tv_*` table, by OID; NULL unless readable without row security |
-| `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source` |
+| `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source`; a TVIEW's count of changed rows is NULL unless the caller reads it without row security |
+| Change feed (`pg_tviews.publish_changes`, a superuser setting) | listeners on `tviews_changes` receive the ids of changed rows of every TVIEW, readable by them or not ([ADR 0231](../adr/0231-publish-changes.md) §7): a channel is not a relation, and the setting is off by default |
 
 The health check plans or reads a TVIEW as its owner (`seq_scans`, `contents`) only for
 a caller with the owner's privileges; the other TVIEWs are counted in the message.
