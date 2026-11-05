@@ -120,7 +120,7 @@ of a TVIEW, defaults included.
 | `uncascaded_tables` | object | `{}` | a policy per table, `{"public.tb_locale": "full_refresh"}`; a table the definition does not read, or whose writes are traced, is refused ([details](ddl.md#a-policy-per-table)) |
 | `function_reads` | object | `{}` | the tables each non-immutable function reads, `{"public.label_suffix()": ["public.tb_setting"]}` (`[]` for none); functions are named with their argument types ([details](ddl.md#functions-that-read-tables)) |
 | `time_refresh` | `"external"` or `null` | `null` | accept a definition reading the current time; `pg_tviews_refresh_time_dependent()` is called at the boundary ([details](ddl.md#time-dependent-tviews)) |
-| `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports |
+| `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports; one TVIEW per name: a name another TVIEW's rows have is refused (`42710`) |
 
 ### pg_tviews_create
 
@@ -785,6 +785,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 |---|---|---|
 | `42704` | `undefined_object` | a `tview` argument names no TVIEW (`pg_tviews_drop` without `if_exists`, …) |
 | `42P07` | `duplicate_table` | the TVIEW already exists (`pg_tviews_create`, `CREATE TABLE tv_* AS`) |
+| `42710` | `duplicate_object` | another TVIEW's rows already have the GraphQL type name (`pg_tviews_create`, `pg_tviews_create_or_replace`) |
 | `42601` | `syntax_error` | the definition does not parse, or is more than one `SELECT` |
 | `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
 | `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |

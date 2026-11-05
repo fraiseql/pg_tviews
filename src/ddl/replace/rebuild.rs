@@ -193,6 +193,7 @@ pub(super) fn rebuild(
             declared.group_keys.as_ref(),
             declared.storage,
             Some(declared.declarations),
+            declared.typename.as_deref(),
         )
     })?;
 
@@ -205,9 +206,6 @@ pub(super) fn rebuild(
     );
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
-    if declared.typename.is_some() {
-        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
-    }
     recreate_user_indexes(&tv_name, user_indexes)?;
     create::apply_json_indexes(entity, schema, rebuilt.tview_oid, &declared.indexes)?;
     // Filled as its owner, now that the owner is back.

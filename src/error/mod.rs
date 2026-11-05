@@ -52,6 +52,9 @@ pub enum TViewError {
     /// The table or backing view a TVIEW needs is already taken.
     RelationExists { name: String },
 
+    /// Another TVIEW's rows already have this GraphQL type name.
+    TypenameTaken { typename: String, holder: String },
+
     /// A function argument is invalid.
     InvalidInput { parameter: String, reason: String },
 
@@ -137,6 +140,7 @@ impl TViewError {
         match self {
             Self::TviewNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
+            Self::TypenameTaken { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_OBJECT,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
             Self::TriggerMisused { .. } => {
@@ -195,6 +199,10 @@ impl TViewError {
             Self::RelationExists { .. } => {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
+            Self::TypenameTaken { .. } => Some(
+                "Name this TVIEW's type with the typename option, or rename the other one's."
+                    .into(),
+            ),
             Self::KeyTypeRefused { .. } => Some(
                 "Key the rows on an integer column, and keep a uuid key in the id column.".into(),
             ),
@@ -363,6 +371,10 @@ impl fmt::Display for TViewError {
         match self {
             Self::TviewNotFound { name } => write!(f, "TVIEW {name} does not exist"),
             Self::RelationExists { name } => write!(f, "TVIEW {name} already exists"),
+            Self::TypenameTaken { typename, holder } => write!(
+                f,
+                "GraphQL type name \"{typename}\" is already the type of tv_{holder}'s rows"
+            ),
             Self::InvalidInput { parameter, reason } => {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
             }
@@ -501,6 +513,10 @@ mod tests {
         let all = vec![
             TViewError::TviewNotFound { name: s() },
             TViewError::RelationExists { name: s() },
+            TViewError::TypenameTaken {
+                typename: s(),
+                holder: s(),
+            },
             TViewError::InvalidInput {
                 parameter: s(),
                 reason: s(),
@@ -566,6 +582,7 @@ mod tests {
             match e {
                 TViewError::TviewNotFound { .. }
                 | TViewError::RelationExists { .. }
+                | TViewError::TypenameTaken { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
                 | TViewError::TriggerMisused { .. }
@@ -698,6 +715,13 @@ mod tests {
                 name: "tv_post".into()
             }),
             "42P07"
+        );
+        assert_eq!(
+            code(TViewError::TypenameTaken {
+                typename: "Post".into(),
+                holder: "post".into()
+            }),
+            "42710"
         );
         assert_eq!(
             code(TViewError::DependencyCycle { entities: vec![] }),

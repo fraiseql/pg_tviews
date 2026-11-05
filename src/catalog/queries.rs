@@ -33,14 +33,17 @@ pub struct Registration<'a> {
     pub identity_column: &'a str,
     pub identity_type: Oid,
     pub time_dependent: bool,
+    /// The declared GraphQL type name; `None` for `PascalCase(entity)`.
+    pub typename: Option<&'a str>,
 }
 
 /// Insert `row`, or with `replace` overwrite what registration derives of an
-/// existing one (keeping `created_at`, `graphql_typename` and
+/// existing one (keeping `created_at`, the GraphQL type name and
 /// `needs_reregister`), as the extension's owner.
 ///
 /// # Errors
-/// A [`TViewError::SpiError`] when the row cannot be written.
+/// [`TViewError::TypenameTaken`] when a new row's type name is another TVIEW's,
+/// a [`TViewError::SpiError`] when the row cannot be written.
 pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<()> {
     let on_conflict = if replace {
         "ON CONFLICT (entity) DO UPDATE SET \
@@ -58,7 +61,8 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
             entity, view_oid, table_oid, definition, plan, group_keys,
             uncascaded_oids, uncascaded_policy, identity,
             uncascaded_table_oids, uncascaded_table_policies,
-            function_read_functions, function_read_tables, time_refresh, time_dependent
+            function_read_functions, function_read_tables, time_refresh, time_dependent,
+            graphql_typename, typename
         ) VALUES (
             $1, $2::pg_catalog.oid::pg_catalog.regclass, $3::pg_catalog.oid::pg_catalog.regclass,
             $4, $5, $6, $7::pg_catalog.oid[]::pg_catalog.regclass[], $8,
@@ -67,7 +71,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
                     'name', $10::pg_catalog.text,
                     'type', pg_catalog.format_type($11::pg_catalog.oid, NULL)))),
             $12::pg_catalog.oid[]::pg_catalog.regclass[], $13,
-            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17)
+            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19)
         {on_conflict}",
         super::meta_table()
     );
@@ -84,7 +88,12 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         identity_column,
         identity_type,
         time_dependent,
+        typename: declared_typename,
     } = row;
+    let typename = super::typename(entity, declared_typename.map(str::to_string));
+    if !replace {
+        super::row::require_typename_free(entity, &typename)?;
+    }
     let args = [
         crate::utils::spi::text(entity),
         crate::utils::spi::oid(view_oid),
@@ -103,6 +112,8 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::oid_array(declared.function_read_tables),
         crate::utils::spi::text(declared.time_refresh),
         crate::utils::spi::boolean(time_dependent),
+        crate::utils::spi::text(declared_typename),
+        crate::utils::spi::text(typename.as_str()),
     ];
     crate::owner::as_extension_owner(|| {
         crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
@@ -712,7 +723,7 @@ pub fn typenames_and_tables(
         let mut out = Vec::new();
         for row in client.select(
             &format!(
-                "SELECT m.entity, m.graphql_typename, m.table_oid, \
+                "SELECT m.entity, m.typename, m.table_oid, \
                         quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
                  FROM {} m \
                  JOIN pg_class c ON c.oid = m.table_oid \
@@ -724,10 +735,9 @@ pub fn typenames_and_tables(
             &args,
         )? {
             let entity: String = row["entity"].value()?.unwrap_or_default();
-            let typename: Option<String> = row["graphql_typename"].value()?;
+            let typename: String = row["typename"].value()?.unwrap_or_default();
             let table: String = row["tbl"].value()?.unwrap_or_default();
             let oid: Oid = row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid);
-            let typename = super::typename(&entity, typename);
             out.push((entity, typename, table, oid));
         }
         Ok::<_, spi::Error>(out)

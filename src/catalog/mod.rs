@@ -187,7 +187,7 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent, graphql_typename, \
+         time_dependent, typename, \
          EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id, \
          (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
@@ -550,8 +550,7 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
-        let typename: Rc<str> =
-            typename(&entity_name, row.named::<String>("graphql_typename")?).into();
+        let typename: Rc<str> = row.named::<String>("typename")?.unwrap_or_default().into();
         let collections = collections::decode(
             &typename,
             row.named::<pgrx::JsonB>("collections")?

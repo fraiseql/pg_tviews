@@ -59,7 +59,11 @@
         managed_index_names TEXT[] NOT NULL DEFAULT '{}',
         -- The indexes option as declared (#226): an array of indexes, each an
         -- array of keys. pg_tviews creates them under managed_index_names.
-        declared_indexes JSONB NOT NULL DEFAULT '[]'
+        declared_indexes JSONB NOT NULL DEFAULT '[]',
+        -- The GraphQL type name of the TVIEW's rows: graphql_typename when set,
+        -- else PascalCase(entity), as crate::catalog::typename derives it. One
+        -- TVIEW per name: the report and the change feed key entries by it.
+        typename TEXT NOT NULL CONSTRAINT pg_tview_meta_typename_key UNIQUE
     );
 
     COMMENT ON TABLE @extschema@.pg_tview_meta IS

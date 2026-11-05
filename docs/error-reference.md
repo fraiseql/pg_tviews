@@ -16,6 +16,7 @@ Placeholders stand for the values each message carries.
 |---|---|---|---|---|
 | `42704` | `undefined_object` | `TviewNotFound` | TVIEW &lt;tview&gt; does not exist | SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by its entity, tv_&lt;entity&gt; or schema.tv_&lt;entity&gt;. |
 | `42P07` | `duplicate_table` | `RelationExists` | TVIEW &lt;name&gt; already exists | pg_tviews_create_or_replace() changes an existing TVIEW. |
+| `42710` | `duplicate_object` | `TypenameTaken` | GraphQL type name "&lt;typename&gt;" is already the type of tv_&lt;entity&gt;'s rows | Name this TVIEW's type with the typename option, or rename the other one's. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
 | `39P01` | `e_r_i_e_trigger_protocol_violated` | `TriggerMisused` | &lt;reason&gt; |  |

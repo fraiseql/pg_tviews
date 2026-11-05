@@ -289,10 +289,8 @@ fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> T
         declared.group_keys.as_ref(),
         declared.storage,
         Some(declared.declarations.clone()),
+        declared.typename.as_deref(),
     )?;
-    if declared.typename.is_some() {
-        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
-    }
     if !declared.indexes.is_empty() {
         let table = TviewMeta::load_by_entity(entity)?
             .ok_or_else(|| crate::error::TViewError::TviewNotFound {

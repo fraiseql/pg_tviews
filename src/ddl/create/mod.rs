@@ -75,7 +75,9 @@ pub(crate) fn current_schema() -> TViewResult<String> {
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
 /// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
-/// own); `None` stores the defaults.
+/// own); `None` stores the defaults. `typename` is the declared GraphQL type
+/// name, `None` for `PascalCase(entity)`: refused when another TVIEW's rows have
+/// the name it makes.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
@@ -83,6 +85,7 @@ pub(crate) fn create_tview_in(
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
     declarations: Option<Declarations>,
+    typename: Option<&str>,
 ) -> TViewResult<u64> {
     create_tview_inner(
         tview_name,
@@ -91,6 +94,7 @@ pub(crate) fn create_tview_in(
         group_keys,
         storage,
         declarations.unwrap_or_else(Declarations::defaults),
+        typename,
     )
 }
 
@@ -172,6 +176,7 @@ fn create_tview_inner(
     group_keys: Option<&super::aggregate::GroupKeys>,
     storage: Storage,
     declarations: Declarations,
+    typename: Option<&str>,
 ) -> TViewResult<u64> {
     crate::revision::check();
     log_debug!(
@@ -194,6 +199,11 @@ fn create_tview_inner(
     let (entity_name, final_select_sql, final_schema) =
         checked_definition(tview_name, select_sql, group_keys.is_some())?;
     let entity_name = entity_name.as_str();
+    // Refused before anything is created or filled.
+    crate::catalog::row::require_typename_free(
+        entity_name,
+        &crate::catalog::typename(entity_name, typename.map(str::to_string)),
+    )?;
 
     // Derive the canonical materialized-table name: always tv_<entity>.
     // This normalises both calling conventions:
@@ -276,6 +286,7 @@ fn create_tview_inner(
         columns: &final_schema,
         group_keys,
         derivation: &derivation,
+        typename,
     }
     .write(declarations, false)?;
 
@@ -405,6 +416,7 @@ pub fn reregister_metadata(
         columns: &schema,
         group_keys: group_keys.as_ref(),
         derivation: &derivation,
+        typename: crate::catalog::row::typename(entity_name)?.as_deref(),
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();

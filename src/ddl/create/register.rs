@@ -22,6 +22,9 @@ pub(crate) struct Registration<'a> {
     pub(crate) columns: &'a ViewColumns,
     pub(crate) group_keys: Option<&'a crate::ddl::aggregate::GroupKeys>,
     pub(crate) derivation: &'a Derivation,
+    /// The declared GraphQL type name; `None` for `PascalCase(entity)`. A new
+    /// row takes it; an existing one keeps its own.
+    pub(crate) typename: Option<&'a str>,
 }
 
 impl Registration<'_> {
@@ -73,6 +76,7 @@ impl Registration<'_> {
             group_keys: self.group_keys,
             uncascaded: &uncascaded,
             identity: &lineage.identity,
+            typename: self.typename,
         }
         .write(replace)?;
         crate::catalog::indexes::record(table_oid, &indexes)
@@ -89,17 +93,20 @@ struct MetaRow<'a> {
     pub(crate) group_keys: Option<&'a crate::ddl::aggregate::GroupKeys>,
     pub(crate) uncascaded: &'a Uncascaded,
     pub(crate) identity: &'a Identity,
+    pub(crate) typename: Option<&'a str>,
 }
 
 impl MetaRow<'_> {
     /// Insert the row, or with `replace` overwrite what registration derives of an
-    /// existing one (keeping `created_at`, `graphql_typename` and
+    /// existing one (keeping `created_at`, the GraphQL type name and
     /// `needs_reregister`: only `pg_tviews_reregister`, which also re-installs the
     /// triggers, clears the flag).
     ///
     /// # Errors
-    /// A failed write, or [`crate::error::TViewError::DependencyCycle`] when the
-    /// TVIEW closes a cycle of TVIEWs reading each other.
+    /// A failed write, [`crate::error::TViewError::TypenameTaken`] when a new
+    /// row's type name is another TVIEW's, or
+    /// [`crate::error::TViewError::DependencyCycle`] when the TVIEW closes a cycle
+    /// of TVIEWs reading each other.
     fn write(&self, replace: bool) -> TViewResult<()> {
         let declarations = &self.uncascaded.declarations;
         let group_keys = self.group_keys.map(serde_json::to_value).transpose()?;
@@ -119,6 +126,7 @@ impl MetaRow<'_> {
                 identity_column: self.identity.name.as_str(),
                 identity_type: pg_sys::Oid::from(self.identity.type_oid),
                 time_dependent: self.uncascaded.time_dependent,
+                typename: self.typename,
             },
             replace,
         )?;

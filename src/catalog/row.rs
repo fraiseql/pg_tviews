@@ -94,35 +94,64 @@ pub fn typename(entity: &str) -> TViewResult<Option<String>> {
 /// Returns an error if the catalog cannot be read.
 pub fn typenames() -> TViewResult<Vec<(String, String)>> {
     let sql = format!(
-        "SELECT entity, graphql_typename FROM {} ORDER BY entity",
+        "SELECT entity, typename FROM {} ORDER BY entity",
         super::meta_table()
     );
     crate::utils::spi::rows(&sql, &[], |row| {
-        let entity: String = row
-            .get(1)
-            .map_err(|e| crate::utils::spi::error(&sql, &e))?
-            .unwrap_or_default();
-        let declared: Option<String> =
-            row.get(2).map_err(|e| crate::utils::spi::error(&sql, &e))?;
-        let typename = super::typename(&entity, declared);
-        Ok((entity, typename))
+        let text = |i: usize| -> TViewResult<String> {
+            Ok(row
+                .get::<String>(i)
+                .map_err(|e| crate::utils::spi::error(&sql, &e))?
+                .unwrap_or_default())
+        };
+        Ok((text(1)?, text(2)?))
     })
 }
 
-/// Store the GraphQL type name of `entity`'s TVIEW (`None`: `PascalCase(entity)`).
+/// Refuse `typename` for `entity`'s rows when another TVIEW's rows have it: a
+/// type name names one TVIEW.
 ///
 /// # Errors
-/// Returns an error if the catalog cannot be written.
-pub fn set_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
+/// [`TViewError::TypenameTaken`] naming the other TVIEW, or a failed catalog read.
+pub fn require_typename_free(entity: &str, typename: &str) -> TViewResult<()> {
+    let holder = crate::utils::spi::one::<String>(
+        &format!(
+            "SELECT entity FROM {} WHERE typename = $1 AND entity <> $2",
+            super::meta_table()
+        ),
+        &[
+            crate::utils::spi::text(typename),
+            crate::utils::spi::text(entity),
+        ],
+    )
+    .map_err(|e| read_error("GraphQL type names", entity, &e))?;
+    holder.map_or(Ok(()), |holder| {
+        Err(TViewError::TypenameTaken {
+            typename: typename.to_string(),
+            holder,
+        })
+    })
+}
+
+/// Store the GraphQL type name declared for `entity`'s TVIEW (`None`:
+/// `PascalCase(entity)`), and the name it makes ([`super::typename`]).
+///
+/// # Errors
+/// [`TViewError::TypenameTaken`] when another TVIEW's rows have that name, or a
+/// failed catalog write.
+pub fn set_typename(entity: &str, declared: Option<&str>) -> TViewResult<()> {
+    let typename = super::typename(entity, declared.map(str::to_string));
+    require_typename_free(entity, &typename)?;
     crate::owner::as_extension_owner(|| {
         crate::utils::spi::run(
             &format!(
-                "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
+                "UPDATE {} SET graphql_typename = $2, typename = $3 WHERE entity = $1",
                 super::meta_table()
             ),
             &[
                 crate::utils::spi::text(entity),
-                crate::utils::spi::text(typename),
+                crate::utils::spi::text(declared),
+                crate::utils::spi::text(typename.as_str()),
             ],
         )
         .map_err(|e| crate::utils::spi::catalog_error("Store the GraphQL type name", &e))

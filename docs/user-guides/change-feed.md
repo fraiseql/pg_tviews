@@ -59,7 +59,8 @@ One JSON object per message, under 8,000 bytes:
 | `t` | types that changed whose rows or collections are not listed: evict the whole type and its collections |
 
 - **Types** are GraphQL type names, as `pg_tviews_flush_and_report()` reports them: the
-  TVIEW's `typename` option, else its entity in Pascal case (`blog_post` → `BlogPost`).
+  TVIEW's `typename` option, else its entity in Pascal case (`blog_post` → `BlogPost`);
+  no two TVIEWs have one name.
 - **Ids** are the rows' public `id` column (a uuid), as a JSON string.
 - **Net changes**: a row inserted and deleted in the same transaction is not listed;
   deleted and inserted again, it is in `u`; written twice, it is listed once.
