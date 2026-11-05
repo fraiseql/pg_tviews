@@ -145,8 +145,9 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
 /// that dropped the TVIEW's table need not own it.
 fn drop_backing_view(entity: &str) -> TViewResult<()> {
     if let Some(view) = crate::catalog::queries::backing_view(entity)? {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        drop_by_oid(view, "VIEW", true)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            drop_by_oid(view, "VIEW", true)
+        })?;
     }
     Ok(())
 }
@@ -166,8 +167,9 @@ pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
             &args,
         )?;
         if present == Some(true) {
-            let _owner = crate::owner::AsOwner::of_table(view)?;
-            drop_by_oid(view, "VIEW", true)?;
+            crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+                drop_by_oid(view, "VIEW", true)
+            })?;
         }
     }
     Ok(())
@@ -186,8 +188,9 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
         return Ok(false);
     };
     {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        drop_by_oid(view, "VIEW", false)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            drop_by_oid(view, "VIEW", false)
+        })?;
     }
     notice!(
         "pg_tviews: dropped {schema}.{name}, a backing view no TVIEW is registered with \

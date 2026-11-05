@@ -171,34 +171,40 @@ fn seq_scan_check() -> Check {
         Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
     };
     for meta in &metas {
-        let Ok(_owner) = crate::owner::AsOwner::of_entity(&meta.entity_name) else {
+        let Ok(owner) = crate::owner::Owner::of_table(meta.tview_oid) else {
             continue;
         };
-        for mapping in &meta.plan.tables {
-            let Some(template) = mapping
-                .sql
-                .as_deref()
-                .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
-            else {
-                continue;
-            };
-            match crate::lineage::large_seq_scans(&mapping.table, template) {
-                Ok(scans) => found.extend(scans.into_iter().map(|(relation, rows)| {
-                    format!(
-                        "tv_{} (writes to {} scan {relation}, about {rows} rows)",
-                        meta.entity_name, mapping.table
-                    )
-                })),
-                Err(e) => {
-                    return error(
-                        "seq_scans",
+        let scanned = crate::owner::AsOwner::run(owner, |frame| {
+            let mut scans = Vec::new();
+            for mapping in &meta.plan.tables {
+                let Some(template) = mapping
+                    .sql
+                    .as_deref()
+                    .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
+                else {
+                    continue;
+                };
+                match crate::lineage::large_seq_scans(frame, &mapping.table, template) {
+                    Ok(found) => scans.extend(found.into_iter().map(|(relation, rows)| {
                         format!(
+                            "tv_{} (writes to {} scan {relation}, about {rows} rows)",
+                            meta.entity_name, mapping.table
+                        )
+                    })),
+                    Err(e) => {
+                        return Ok(Err(format!(
                             "the mapping of {} in tv_{}: {e}",
                             mapping.table, meta.entity_name
-                        ),
-                    );
+                        )));
+                    }
                 }
             }
+            Ok(Ok(scans))
+        });
+        match scanned {
+            Ok(Ok(scans)) => found.extend(scans),
+            Ok(Err(why)) => return error("seq_scans", why),
+            Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
         }
     }
     if found.is_empty() {
@@ -278,14 +284,18 @@ fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Optio
     if callers != Some(true) {
         return Ok(None);
     }
-    let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-    let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let has_rows = |relation: &str| {
-        crate::utils::spi::one::<bool>(&format!("SELECT EXISTS (SELECT 1 FROM {relation})"), &[])
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |_frame| {
+        let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+        let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+        let has_rows = |relation: &str| {
+            crate::utils::spi::one::<bool>(
+                &format!("SELECT EXISTS (SELECT 1 FROM {relation})"),
+                &[],
+            )
             .map(|exists| exists.unwrap_or(false))
-    };
-    Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
+        };
+        Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
+    })
 }
 
 /// TVIEWs registered before a release that changed what registration derives.

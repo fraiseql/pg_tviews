@@ -84,8 +84,9 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
         crate::utils::ident::quoted(&wanted)
     );
     {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        crate::utils::spi::run_ddl(&sql)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            crate::utils::spi::run_ddl(&sql)
+        })?;
     }
     // Names are cached by OID: here at once, in other backends at commit.
     crate::cache::invalidate_all();
@@ -144,8 +145,9 @@ pub(crate) fn in_extension_schema_for<T>(
         } else {
             format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}")
         };
-        let _owner = crate::owner::AsOwner::of_extension()?;
-        crate::utils::spi::run_ddl(&sql)
+        crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+            crate::utils::spi::run_ddl(&sql)
+        })
     };
     privilege("GRANT")?;
     let result = ddl()?;

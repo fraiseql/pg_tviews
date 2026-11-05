@@ -451,20 +451,22 @@ fn replace_in_place(
     let read_before = crate::catalog::readers::tables_of(entity)?;
     let reads = create::reregister_metadata(entity, schema, definition)?;
     crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
-    {
-        // The rows are recomputed as the TVIEW's owner, as every refresh is.
-        let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-        crate::refresh::full::reconcile(entity, meta)?;
-    }
+    // The rows are recomputed as the TVIEW's owner, as every refresh is.
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |frame| {
+        crate::refresh::full::reconcile(frame, entity, meta)
+    })?;
 
+    // A TVIEW reading this one is re-derived and recomputed as its own owner,
+    // whose triggers on the tables it reads they are.
     for (dependent, table) in &dependents {
-        let _owner = crate::owner::AsOwner::of_table(*table)?;
-        create::reregister_tview(dependent)?;
-        let meta =
-            TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
-                name: dependent.clone(),
-            })?;
-        crate::refresh::full::reconcile(dependent, &meta)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(*table)?, |frame| {
+            create::rederive(dependent)?;
+            let meta =
+                TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
+                    name: dependent.clone(),
+                })?;
+            crate::refresh::full::reconcile(frame, dependent, &meta)
+        })?;
     }
     Ok(())
 }
@@ -472,8 +474,9 @@ fn replace_in_place(
 /// `LOCK TABLE` in `mode`, as the table's owner.
 fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
-    let _owner = crate::owner::AsOwner::of_table(table)?;
-    crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(table)?, |_frame| {
+        crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
+    })
 }
 
 #[cfg(test)]

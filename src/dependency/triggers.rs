@@ -483,11 +483,6 @@ fn sync_table(member: &Member, wanted: &[&TriggerSpec], keep: bool) -> TViewResu
             continue;
         }
         kept.push((spec.function, spec.tgtype));
-        let _owner = if member.relid == member.root {
-            None
-        } else {
-            Some(crate::owner::AsOwner::of_table(member.relid)?)
-        };
         let trigger_sql = format!(
             "CREATE TRIGGER {} {} EXECUTE FUNCTION {}.{}()",
             ident::quoted(&trigger_name(spec.tag, &schema, &relname)),
@@ -495,10 +490,19 @@ fn sync_table(member: &Member, wanted: &[&TriggerSpec], keep: bool) -> TViewResu
             crate::utils::ext_schema(),
             spec.function,
         );
-        crate::utils::spi::run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
-            operation: format!("Install {} trigger on {qi_table}", spec.function),
-            pg_error: e.to_string(),
-        })?;
+        let create = || {
+            crate::utils::spi::run_ddl(&trigger_sql).map_err(|e| TViewError::CatalogError {
+                operation: format!("Install {} trigger on {qi_table}", spec.function),
+                pg_error: e.to_string(),
+            })
+        };
+        if member.relid == member.root {
+            create()?;
+        } else {
+            crate::owner::AsOwner::run(crate::owner::Owner::of_table(member.relid)?, |_frame| {
+                create()
+            })?;
+        }
     }
     Ok(())
 }
@@ -564,14 +568,15 @@ fn tables_with_triggers() -> TViewResult<Vec<pg_sys::Oid>> {
 /// only the `TRIGGER` privilege, and these are `pg_tviews`' own triggers, removed
 /// for a TVIEW the caller may drop.
 fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_table(table_oid)?;
-    let drop_sql = format!(
-        "DROP TRIGGER IF EXISTS {} ON {table}",
-        ident::quoted(trigger)
-    );
-    crate::utils::spi::run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
-        operation: format!("Drop trigger {trigger} from {table}"),
-        pg_error: e.to_string(),
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(table_oid)?, |_frame| {
+        let drop_sql = format!(
+            "DROP TRIGGER IF EXISTS {} ON {table}",
+            ident::quoted(trigger)
+        );
+        crate::utils::spi::run_ddl(&drop_sql).map_err(|e| TViewError::CatalogError {
+            operation: format!("Drop trigger {trigger} from {table}"),
+            pg_error: e.to_string(),
+        })
     })
 }
 

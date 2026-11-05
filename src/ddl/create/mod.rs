@@ -6,7 +6,7 @@ mod relations;
 mod select;
 mod storage;
 
-use derive::derive;
+use derive::derive_as;
 pub(crate) use indexes::{ManagedIndex, index_name, key_index, managed_indexes};
 pub use json_indexes::JsonIndex;
 pub(crate) use json_indexes::{
@@ -23,17 +23,19 @@ pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
 mod tests;
 
 thread_local! {
-    /// Set by [`without_rows`]: the TVIEW is created empty.
-    static WITHOUT_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by [`rebuilt_for`]: the owner the TVIEW being created is rebuilt for.
+    static REBUILT_FOR: std::cell::Cell<Option<crate::owner::Owner>> =
+        const { std::cell::Cell::new(None) };
 }
 
-/// Run `create` with the new TVIEW's table left empty: a rebuild by a role that
-/// is not the TVIEW's owner fills it as the owner once the owner is restored,
-/// so the owner's view functions never run with the caller's privileges.
-pub(crate) fn without_rows<T>(create: impl FnOnce() -> T) -> T {
-    WITHOUT_ROWS.with(|w| w.set(true));
+/// Run `create` to rebuild a TVIEW owned by `owner`, which the caller may change
+/// but need not be: its definition is analyzed as `owner`, and its table is left
+/// empty, for the rebuild to fill as the owner once the owner is restored. The
+/// owner's view functions never run with the caller's privileges.
+pub(crate) fn rebuilt_for<T>(owner: crate::owner::Owner, create: impl FnOnce() -> T) -> T {
+    REBUILT_FOR.with(|w| w.set(Some(owner)));
     let result = create();
-    WITHOUT_ROWS.with(|w| w.set(false));
+    REBUILT_FOR.with(|w| w.set(None));
     result
 }
 
@@ -177,6 +179,13 @@ fn create_tview_inner(
         tview_name,
         schema_name
     );
+    // The role the TVIEW is analyzed as: its owner-to-be, the creating role, or
+    // the owner a rebuild restores.
+    let rebuilt_for = REBUILT_FOR.with(std::cell::Cell::get);
+    let owner = match rebuilt_for {
+        Some(owner) => owner,
+        None => crate::owner::Owner::current_user()?,
+    };
     // Calls that register, change or drop one entity run one after the other.
     super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
 
@@ -208,7 +217,8 @@ fn create_tview_inner(
     // Pass schema_name so the view OID lookup searches in the correct schema even when
     // current_schema() resolves to a different schema due to the database search_path.
     let base_table_oids = crate::dependency::find_base_tables(&view_name, &view_schema)?;
-    let derivation = derive(
+    let derivation = derive_as(
+        owner,
         entity_name,
         group_keys,
         &base_table_oids,
@@ -229,7 +239,7 @@ fn create_tview_inner(
 
     // Populate initial data, unless the caller fills the table itself as its
     // owner (a rebuild by another role).
-    let rows = if WITHOUT_ROWS.with(std::cell::Cell::get) {
+    let rows = if rebuilt_for.is_some() {
         0
     } else {
         fill_new(&schema_name, &tv_table_name, view_oid, lineage)?
@@ -357,7 +367,10 @@ pub fn reregister_metadata(
     // The stored policies hold; an `error` table no cascade reaches aborts the
     // re-registration (and the ALTER that caused it).
     let declarations = Declarations::of(&meta);
-    let derivation = derive(
+    // Analyzed as the TVIEW's owner, whoever re-derives it: planning its mapping
+    // queries runs the owner's functions.
+    let derivation = derive_as(
+        crate::owner::Owner::of_table(meta.tview_oid)?,
         entity_name,
         group_keys.as_ref(),
         &base_table_oids,
@@ -397,6 +410,16 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    rederive(entity)
+}
+
+/// Re-derive `entity`'s metadata from its stored definition and make its
+/// base-table triggers match, for a caller whose right to it was checked.
+///
+/// # Errors
+/// Returns an error if the TVIEW is not registered or the definition cannot be
+/// analyzed.
+pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
     super::lock_entity(entity)?;
     let (definition, schema_name) = crate::catalog::row::definition_and_schema(entity)?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
@@ -435,7 +458,8 @@ pub(crate) fn stored_group_keys(
 /// What registration would refuse the view with.
 pub(crate) fn plan_of(entity: &str, view_oid: pgrx::pg_sys::Oid) -> TViewResult<serde_json::Value> {
     let base_tables = crate::dependency::base_tables_of(view_oid)?;
-    let derivation = derive(
+    let derivation = derive_as(
+        crate::owner::Owner::current_user()?,
         entity,
         None,
         &base_tables,

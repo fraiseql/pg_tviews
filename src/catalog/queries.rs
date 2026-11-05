@@ -104,10 +104,11 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::text(declared.time_refresh),
         crate::utils::spi::boolean(time_dependent),
     ];
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
-        query: sql,
-        error: e.to_string(),
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
+            query: sql.clone(),
+            error: e.to_string(),
+        })
     })
 }
 
@@ -116,31 +117,32 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    let args = [
-        crate::utils::spi::text(entity),
-        crate::utils::spi::text(declared.policy),
-        crate::utils::spi::oid_array(declared.table_oids),
-        crate::utils::spi::text_array(declared.table_policies),
-        crate::utils::spi::text_array(declared.function_read_functions),
-        crate::utils::spi::oid_array(declared.function_read_tables),
-        crate::utils::spi::text(declared.time_refresh),
-    ];
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET uncascaded_policy = $2, \
-                 uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
-                 uncascaded_table_policies = $4, function_read_functions = $5, \
-                 function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
-                 time_refresh = $7 \
-             WHERE entity = $1",
-            super::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Store the uncascaded policies".to_string(),
-        pg_error: e.to_string(),
+    crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+        let args = [
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(declared.policy),
+            crate::utils::spi::oid_array(declared.table_oids),
+            crate::utils::spi::text_array(declared.table_policies),
+            crate::utils::spi::text_array(declared.function_read_functions),
+            crate::utils::spi::oid_array(declared.function_read_tables),
+            crate::utils::spi::text(declared.time_refresh),
+        ];
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET uncascaded_policy = $2, \
+                     uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     uncascaded_table_policies = $4, function_read_functions = $5, \
+                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     time_refresh = $7 \
+                 WHERE entity = $1",
+                super::meta_table()
+            ),
+            &args,
+        )
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Store the uncascaded policies".to_string(),
+            pg_error: e.to_string(),
+        })
     })
 }
 
@@ -150,21 +152,22 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
-             WHERE entity = $1 AND group_keys->>$2 = $3",
-            super::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(relname),
-            crate::utils::spi::text(old),
-            crate::utils::spi::text(new),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))
+    crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
+                 WHERE entity = $1 AND group_keys->>$2 = $3",
+                super::meta_table()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::text(relname),
+                crate::utils::spi::text(old),
+                crate::utils::spi::text(new),
+            ],
+        )
+        .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))
+    })
 }
 
 /// Delete `entity`'s row, as the extension's owner.
@@ -175,8 +178,7 @@ pub fn delete(entity: &str) -> TViewResult<()> {
     let args = [crate::utils::spi::text(entity)];
     let sql = format!("DELETE FROM {} WHERE entity = $1", super::meta_table());
     // The catalog is written as the extension's owner.
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(&sql, &args)
+    crate::owner::as_extension_owner(|| crate::utils::spi::run(&sql, &args))
 }
 
 // --- Drops -------------------------------------------------------------------

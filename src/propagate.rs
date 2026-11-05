@@ -142,22 +142,23 @@ fn find_affected_keys_batch(
         );
         args.extend(appeared.args());
     }
-    let _owner = crate::owner::AsOwner::of_entity(parent)?;
-    // Read-write: a fresh snapshot, which sees what the locks waited for.
-    crate::utils::spi::connect_mut(|client| {
-        let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
-        for row in crate::utils::spi::kept_update(client, &query, &args)? {
-            let Some(child_pk) = row["child_key"].value::<i64>()? else {
-                continue;
-            };
-            let key = match parent_key_type {
-                KeyType::Int => row["parent_key"].value::<i64>()?.map(KeyValue::Int),
-                KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
-            };
-            if let Some(key) = key {
-                result.entry(child_pk).or_default().push(key);
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(parent)?, |_frame| {
+        // Read-write: a fresh snapshot, which sees what the locks waited for.
+        crate::utils::spi::connect_mut(|client| {
+            let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
+            for row in crate::utils::spi::kept_update(client, &query, &args)? {
+                let Some(child_pk) = row["child_key"].value::<i64>()? else {
+                    continue;
+                };
+                let key = match parent_key_type {
+                    KeyType::Int => row["parent_key"].value::<i64>()?.map(KeyValue::Int),
+                    KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
+                };
+                if let Some(key) = key {
+                    result.entry(child_pk).or_default().push(key);
+                }
             }
-        }
-        Ok::<_, crate::TViewError>(result)
+            Ok::<_, crate::TViewError>(result)
+        })
     })
 }

@@ -27,7 +27,12 @@ use crate::queue::key::KeyValue;
 /// # Errors
 ///
 /// What the lock, the upsert or the delete returns.
-pub fn recompute(meta: &TviewMeta, keys: &[KeyValue]) -> TViewResult<super::Touched> {
+pub fn recompute(
+    frame: &crate::owner::OwnerFrame,
+    meta: &TviewMeta,
+    keys: &[KeyValue],
+) -> TViewResult<super::Touched> {
+    frame.require_owner_of(meta.tview_oid)?;
     if keys.is_empty() {
         return Ok(super::Touched::default());
     }

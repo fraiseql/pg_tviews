@@ -114,18 +114,19 @@ pub fn typenames() -> TViewResult<Vec<(String, String)>> {
 /// # Errors
 /// Returns an error if the catalog cannot be written.
 pub fn set_typename(entity: &str, typename: Option<&str>) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
-            super::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(typename),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Store the GraphQL type name", &e))
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET graphql_typename = $2 WHERE entity = $1",
+                super::meta_table()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::text(typename),
+            ],
+        )
+        .map_err(|e| crate::utils::spi::catalog_error("Store the GraphQL type name", &e))
+    })
 }
 
 /// Whether `entity`'s definition reads the current time.
@@ -149,17 +150,18 @@ pub fn time_dependent(entity: &str) -> TViewResult<bool> {
 /// # Errors
 /// Returns an error if the catalog cannot be written.
 pub fn clear_needs_reregister(entity: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET needs_reregister = false WHERE entity = $1",
-            super::meta_table()
-        ),
-        &[crate::utils::spi::text(entity)],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Clear needs_reregister of TVIEW {entity}"),
-        pg_error: e.to_string(),
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET needs_reregister = false WHERE entity = $1",
+                super::meta_table()
+            ),
+            &[crate::utils::spi::text(entity)],
+        )
+        .map_err(|e| TViewError::CatalogError {
+            operation: format!("Clear needs_reregister of TVIEW {entity}"),
+            pg_error: e.to_string(),
+        })
     })
 }
 

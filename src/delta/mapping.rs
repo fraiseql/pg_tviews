@@ -490,23 +490,24 @@ fn reached_through(
     let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
     let args = lookup.args();
     let plan = lookup.plan();
-    let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
-        return Ok(None);
-    };
-    let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
-        patches.iter().map(|(key, fields)| (*key, fields)).collect();
-    let mut reached = Vec::with_capacity(found.len());
-    for row in &found {
-        let parse = |i: usize| row.get(i)?.as_deref()?.parse::<i64>().ok();
-        let (Some(key), Some(value)) = (parse(0), parse(1)) else {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+        let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
             return Ok(None);
         };
-        if let Some(fields) = fields.get(&key) {
-            reached.push((value, (*fields).clone()));
+        let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
+            patches.iter().map(|(key, fields)| (*key, fields)).collect();
+        let mut reached = Vec::with_capacity(found.len());
+        for row in &found {
+            let parse = |i: usize| row.get(i)?.as_deref()?.parse::<i64>().ok();
+            let (Some(key), Some(value)) = (parse(0), parse(1)) else {
+                return Ok(None);
+            };
+            if let Some(fields) = fields.get(&key) {
+                reached.push((value, (*fields).clone()));
+            }
         }
-    }
-    Ok(Some(reached))
+        Ok(Some(reached))
+    })
 }
 
 /// The rows of a two-hop lookup (`sql`: key, lookup value, the value's lock

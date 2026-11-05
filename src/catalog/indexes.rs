@@ -12,18 +12,19 @@ use pgrx::pg_sys;
 /// Change the record of the TVIEW whose table is `table` with `sql`, which reads
 /// the table as `$1` and the names as `$2`.
 fn update(table: pg_sys::Oid, sql: &str, names: &[String]) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET managed_index_names = {sql} \
-             WHERE table_oid = $1::pg_catalog.oid::pg_catalog.regclass",
-            crate::catalog::meta_table()
-        ),
-        &[
-            crate::utils::spi::oid(table),
-            crate::utils::spi::text_array_of(names),
-        ],
-    )
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET managed_index_names = {sql} \
+                 WHERE table_oid = $1::pg_catalog.oid::pg_catalog.regclass",
+                crate::catalog::meta_table()
+            ),
+            &[
+                crate::utils::spi::oid(table),
+                crate::utils::spi::text_array_of(names),
+            ],
+        )
+    })
 }
 
 /// Add `names` to the record, which stays sorted and without duplicates (and is
@@ -105,17 +106,18 @@ pub(crate) fn declared(entity: &str) -> TViewResult<serde_json::Value> {
 /// # Errors
 /// A failed catalog write.
 pub(crate) fn declare(entity: &str, indexes: serde_json::Value) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET declared_indexes = $2 WHERE entity = $1",
-            crate::catalog::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::jsonb(pgrx::JsonB(indexes)),
-        ],
-    )
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET declared_indexes = $2 WHERE entity = $1",
+                crate::catalog::meta_table()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::jsonb(pgrx::JsonB(indexes)),
+            ],
+        )
+    })
 }
 
 /// `WHERE` conditions over `pg_index i` / `pg_class ic` that select the indexes a

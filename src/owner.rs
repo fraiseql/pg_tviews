@@ -19,26 +19,21 @@ use pgrx::prelude::*;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 
-/// While alive, the current user is a TVIEW's owner. Dropping it restores the
-/// previous user, security context and `search_path`. On an error, the
-/// (sub)transaction abort restores them instead, so the guard leaves them alone
-/// while unwinding.
-pub struct AsOwner {
-    saved_user: Oid,
-    saved_context: i32,
-    guc_level: i32,
-}
+/// The role an owner frame runs as: a TVIEW's owner, named by its table or
+/// entity, or the extension's owner, for writes to its catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Owner(Oid);
 
-impl AsOwner {
-    /// Switch to the owner of the relation `table`.
+impl Owner {
+    /// The owner of the relation `table`.
     ///
     /// # Errors
     /// Returns an error if the relation does not exist.
     pub fn of_table(table: Oid) -> TViewResult<Self> {
-        Ok(Self::role(relation_owner(table)?))
+        relation_owner(table).map(Self)
     }
 
-    /// Switch to the owner of the `pg_tviews` extension, to write its catalog.
+    /// The owner of the `pg_tviews` extension, who owns its catalog.
     ///
     /// # Errors
     /// Returns an error if the extension's row cannot be read.
@@ -61,16 +56,75 @@ impl AsOwner {
             operation: "Look up the owner of pg_tviews".to_string(),
             pg_error: "extension pg_tviews is not installed".to_string(),
         })?;
-        Ok(Self::role(owner))
+        Ok(Self(owner))
     }
 
-    /// Switch to `owner`, a TVIEW's owner read with [`relation_owner`].
+    /// The current user, the owner-to-be of a TVIEW it creates.
+    ///
+    /// # Errors
+    /// An internal error inside an owner frame, where the current user is the
+    /// frame's owner, not the caller.
+    pub fn current_user() -> TViewResult<Self> {
+        if OPEN_FRAMES.with(std::cell::Cell::get) > 0 {
+            return Err(frame_error("the caller is read inside an owner frame"));
+        }
+        // SAFETY: reads backend-global state.
+        Ok(Self(unsafe { pg_sys::GetUserId() }))
+    }
+
+    /// The role `role`: one read with [`relation_owner`].
     #[must_use]
-    pub fn of_role(owner: Oid) -> Self {
-        Self::role(owner)
+    pub const fn of_role(role: Oid) -> Self {
+        Self(role)
     }
+}
 
-    fn role(owner: Oid) -> Self {
+/// Runs work in an owner frame. SQL derived from a TVIEW, planned or run, runs
+/// in its owner's frame only: the functions that plan or run it take the
+/// frame's [`OwnerFrame`] token, which nothing else can make.
+pub struct AsOwner;
+
+impl AsOwner {
+    /// Run `work` as `owner`: the current user is the owner, inside a
+    /// security-restricted operation, with `search_path` set to
+    /// `pg_catalog, pg_temp` and the [`RENDER_SETTINGS`] and [`PLAN_SETTINGS`]
+    /// pinned. Leaving restores the caller's user, context and settings; on an
+    /// error, the (sub)transaction abort restores them.
+    ///
+    /// # Errors
+    /// What `work` returns.
+    pub fn run<T>(
+        owner: Owner,
+        work: impl FnOnce(&mut OwnerFrame) -> TViewResult<T>,
+    ) -> TViewResult<T> {
+        let mut frame = OwnerFrame::enter(owner.0);
+        work(&mut frame)
+    }
+}
+
+/// Run `work` as the extension's owner, who owns the registration catalog: for a
+/// catalog write by a caller whose right to change the TVIEW was checked.
+///
+/// # Errors
+/// What `work` returns, or a failure to read the extension's owner.
+pub fn as_extension_owner<T>(work: impl FnOnce() -> TViewResult<T>) -> TViewResult<T> {
+    AsOwner::run(Owner::of_extension()?, |_| work())
+}
+
+/// The token of an open owner frame, naming its owner. Only [`AsOwner::run`]
+/// makes one, and only for the time `work` runs. A frame opened inside it makes
+/// it unusable until that frame closes ([`OwnerFrame::require_current`]): no
+/// TVIEW's SQL runs as the inner frame's role on the outer frame's token.
+pub struct OwnerFrame {
+    owner: Oid,
+    saved_user: Oid,
+    saved_context: i32,
+    guc_level: i32,
+    depth: usize,
+}
+
+impl OwnerFrame {
+    fn enter(owner: Oid) -> Self {
         let mut saved_user = pg_sys::InvalidOid;
         let mut saved_context = 0;
         // SAFETY: plain backend-global state, as REFRESH MATERIALIZED VIEW sets it;
@@ -91,21 +145,79 @@ impl AsOwner {
         };
         // The owner resolves no name the caller wrote.
         REPLACED_PATHS.with(|paths| paths.borrow_mut().push(None));
+        let depth = OPEN_FRAMES.with(|open| {
+            open.set(open.get() + 1);
+            open.get()
+        });
         Self {
+            owner,
             saved_user,
             saved_context,
             guc_level,
+            depth,
+        }
+    }
+
+    /// Fail unless this is the innermost open frame and `table` (a TVIEW's
+    /// table) is owned by its owner: SQL derived from that TVIEW runs as the
+    /// TVIEW's owner, never as another frame's.
+    ///
+    /// # Errors
+    /// An internal error on a mismatch, or if the relation does not exist.
+    pub fn require_owner_of(&self, table: Oid) -> TViewResult<()> {
+        self.require_current()?;
+        check_frame_owner(self.owner, relation_owner(table)?, table)
+    }
+
+    /// Fail unless this is the innermost open frame and the current user is its
+    /// owner.
+    ///
+    /// # Errors
+    /// An internal error when another frame is open inside this one.
+    pub fn require_current(&self) -> TViewResult<()> {
+        let innermost = OPEN_FRAMES.with(std::cell::Cell::get) == self.depth;
+        // SAFETY: reads backend-global state.
+        let user = unsafe { pg_sys::GetUserId() };
+        if innermost && user == self.owner {
+            Ok(())
+        } else {
+            Err(frame_error(
+                "an owner frame is used while another is open inside it",
+            ))
         }
     }
 }
 
-impl Drop for AsOwner {
+/// `Ok` when a frame owned by `frame_owner` may run the SQL of a TVIEW whose
+/// table `table` is owned by `table_owner`.
+fn check_frame_owner(frame_owner: Oid, table_owner: Oid, table: Oid) -> TViewResult<()> {
+    if frame_owner == table_owner {
+        Ok(())
+    } else {
+        Err(frame_error(&format!(
+            "the SQL of relation {} runs in a frame of role {}, not of its owner {}",
+            table.to_u32(),
+            frame_owner.to_u32(),
+            table_owner.to_u32()
+        )))
+    }
+}
+
+fn frame_error(why: &str) -> TViewError {
+    TViewError::CatalogError {
+        operation: "Run a TVIEW's SQL as its owner".to_string(),
+        pg_error: why.to_string(),
+    }
+}
+
+impl Drop for OwnerFrame {
     fn drop(&mut self) {
         REPLACED_PATHS.with(|paths| paths.borrow_mut().pop());
+        OPEN_FRAMES.with(|open| open.set(open.get() - 1));
         if std::thread::panicking() {
             return;
         }
-        // SAFETY: undoes exactly what `of_table` did, innermost first.
+        // SAFETY: undoes exactly what `enter` did, innermost first.
         unsafe {
             pg_sys::AtEOXact_GUC(false, self.guc_level);
             pg_sys::SetUserIdAndSecContext(self.saved_user, self.saved_context);
@@ -225,8 +337,10 @@ pub fn in_extension_work() -> bool {
 
 thread_local! {
     /// The `search_path` each open [`CatalogPath`] replaced: the caller's.
-    /// `None` for an [`AsOwner`], under which nothing the caller wrote is resolved.
+    /// `None` for an owner frame, under which nothing the caller wrote is resolved.
     static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
+    /// How many owner frames are open, the innermost last.
+    static OPEN_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The session's `search_path`, as set.

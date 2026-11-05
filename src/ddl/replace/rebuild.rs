@@ -179,12 +179,13 @@ pub(super) fn rebuild(
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let user_indexes = user_indexes(meta.tview_oid)?;
 
+    let owner = crate::owner::Owner::of_table(meta.tview_oid)?;
     crate::ddl::drop::drop_tview(
         &format!("{}.{tv_name}", ident::quoted(schema)),
         false,
         false,
     )?;
-    create::without_rows(|| {
+    create::rebuilt_for(owner, || {
         create::create_tview_in(
             &tv_name,
             query,

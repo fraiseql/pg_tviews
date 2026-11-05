@@ -253,8 +253,8 @@ fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
     meta
 }
 
-impl crate::owner::AsOwner {
-    /// Switch to the owner of `entity`'s `tv_*` table.
+impl crate::owner::Owner {
+    /// The owner of `entity`'s `tv_*` table.
     ///
     /// # Errors
     /// Returns an error if the entity is not registered or its table is gone.

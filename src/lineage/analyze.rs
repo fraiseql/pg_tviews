@@ -336,6 +336,7 @@ fn check_tables_agree(
 /// Returns an error if the view cannot be analyzed, or if the analysis and
 /// `pg_depend` disagree on the tables the view reads.
 pub fn analyze(
+    frame: &crate::owner::OwnerFrame,
     entity: &str,
     view_oid: pgrx::pg_sys::Oid,
     base_tables: &[pgrx::pg_sys::Oid],
@@ -434,7 +435,7 @@ pub fn analyze(
                 .collect();
         }
         if let Some(sql) = &table.sql {
-            explain(entity, table, sql)?;
+            explain(frame, entity, table, sql)?;
         }
     }
     let references = match graph.root_columns() {
@@ -498,12 +499,13 @@ pub(super) const LARGE_TABLE_ROWS: f64 = 1000.0;
 /// sequential scan of a large table. Fails when the query does not plan: a
 /// mapping `pg_tviews` cannot run must not be registered.
 pub(super) fn explain(
+    frame: &crate::owner::OwnerFrame,
     entity: &str,
     table: &TableLineage,
     template: &str,
 ) -> crate::TViewResult<()> {
     use pgrx::prelude::*;
-    for (relation, rows) in large_seq_scans(&table.qualified, template)? {
+    for (relation, rows) in large_seq_scans(frame, &table.qualified, template)? {
         let mut advice: Vec<String> = table
             .lookups
             .iter()
@@ -542,7 +544,12 @@ pub(super) fn explain(
 /// # Errors
 /// Returns an error if a relation the template names is gone or the query does
 /// not plan.
-pub fn large_seq_scans(table: &str, template: &str) -> crate::TViewResult<Vec<(String, f64)>> {
+pub fn large_seq_scans(
+    frame: &crate::owner::OwnerFrame,
+    table: &str,
+    template: &str,
+) -> crate::TViewResult<Vec<(String, f64)>> {
+    frame.require_current()?;
     let sql = render_template(template)
         .map_err(|e| crate::TViewError::CatalogError {
             operation: format!("Name the relations of the mapping of {table}"),

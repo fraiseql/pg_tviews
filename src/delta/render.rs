@@ -78,28 +78,29 @@ pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Opti
     if let Some(columns) = COMPUTED.with(|m| m.get(&table_oid)) {
         return Ok(columns);
     }
-    let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (columns, any_virtual) = crate::utils::spi::catalog_rows(
-        "SELECT pg_catalog.string_agg( \
-                          CASE WHEN a.attgenerated = 'v' \
-                               THEN '(' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) || ') AS ' \
-                                    || pg_catalog.quote_ident(a.attname) \
-                               ELSE pg_catalog.quote_ident(a.attname) END, \
-                          ', ' ORDER BY a.attnum), \
-                        pg_catalog.bool_or(a.attgenerated = 'v') \
-                 FROM pg_catalog.pg_attribute a \
-                 LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
-                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
-        &[crate::utils::spi::oid(table_oid)],
-        |row| Ok((row.get::<String>(1)?, row.get::<bool>(2)?)),
-    )?
-    .into_iter()
-    .next()
-    .unwrap_or_default();
-    let columns = columns.filter(|_| any_virtual == Some(true));
-    crate::cache::watch(&[table_oid]);
-    COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
-    Ok(columns)
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+        let (columns, any_virtual) = crate::utils::spi::catalog_rows(
+            "SELECT pg_catalog.string_agg( \
+                              CASE WHEN a.attgenerated = 'v' \
+                                   THEN '(' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) || ') AS ' \
+                                        || pg_catalog.quote_ident(a.attname) \
+                                   ELSE pg_catalog.quote_ident(a.attname) END, \
+                              ', ' ORDER BY a.attnum), \
+                            pg_catalog.bool_or(a.attgenerated = 'v') \
+                     FROM pg_catalog.pg_attribute a \
+                     LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+                     WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped",
+            &[crate::utils::spi::oid(table_oid)],
+            |row| Ok((row.get::<String>(1)?, row.get::<bool>(2)?)),
+        )?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+        let columns = columns.filter(|_| any_virtual == Some(true));
+        crate::cache::watch(&[table_oid]);
+        COMPUTED.with(|m| m.insert(table_oid, columns.clone()));
+        Ok(columns)
+    })
 }
 
 /// `n.pk = o.pk AND ROW(n.<cols>) *= ROW(o.<cols>)`: the same row, its columns

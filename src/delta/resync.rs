@@ -141,10 +141,11 @@ fn enqueue(
         MappingKind::Propagated => return Ok(false),
     };
     let key_type = meta.key_type.clone();
-    let mut found = {
-        let _owner = crate::owner::AsOwner::of_entity(entity)?;
-        lookup(&key_type, rows, &keys_sql, keys)?
-    };
+    let mut found =
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |frame| {
+            frame.require_owner_of(meta.tview_oid)?;
+            lookup(&key_type, rows, &keys_sql, keys)
+        })?;
     // A row gone is still a key of the TVIEW keyed by the table's key.
     if mapping.kind == MappingKind::Local && mapping.column.as_deref() == Some(pk.name.as_str()) {
         found.extend(keys.iter().map(|&k| match &key_type {

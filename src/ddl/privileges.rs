@@ -38,8 +38,9 @@ fn revoke_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
         let (Some(view), Some(statement)) = (view, statement) else {
             continue;
         };
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        crate::utils::spi::run_ddl(&statement)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            crate::utils::spi::run_ddl(&statement)
+        })?;
     }
     Ok(())
 }
