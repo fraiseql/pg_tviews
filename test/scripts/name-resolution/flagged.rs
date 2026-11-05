@@ -20,4 +20,14 @@ fn flagged() {
     let _ = "SELECT nextval('public.s')";
     let _ = r#"SELECT 'x.y'::regtype"#;
     let _ = "SELECT $1::regprocedure";
+    let _ = "SELECT t.relname::regclass FROM t";
+    let _ = "SELECT $1::\"pg_catalog\".regclass";
+    let _ = "SELECT pg_catalog.regclassin('public.t'::cstring)";
+    let _ = "SELECT regtypein($1)";
+    let _ = "SELECT pg_catalog.pg_partition_root('public.t')";
+    let _ = format!("SELECT pg_catalog.pg_get_viewdef('{}')", name);
+    let _ = "SELECT pg_catalog.has_function_privilege(current_user, 'public.f(int)', 'EXECUTE')";
+    let _ = "SELECT pg_catalog.has_type_privilege('public.ty', 'USAGE')";
+    let _ = format!("SELECT count(*) FROM {} WHERE true", mapping.table);
+    let _ = format!("SELECT 1 FROM {} s", meta.source_table);
 }

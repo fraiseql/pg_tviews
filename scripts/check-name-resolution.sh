@@ -28,6 +28,7 @@ allowed=(
   "src/catalog/queries.rs|pg_catalog.to_regclass(\$1) IS NOT NULL|the extension's own catalog table"
   "src/catalog/queries.rs|'{}'::pg_catalog.regnamespace|the extension's own schema"
   "src/dependency/triggers.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
+  "src/lineage/analyze.rs|CREATE INDEX ON {} USING {}|advice in a notice, never run"
 )
 
 # The SQL is in Rust string literals: each is read whole (a `\` continuation
@@ -39,27 +40,35 @@ allowed=(
 #     `o.tgrelid`), a value cast to oid first (`$1::pg_catalog.oid`), or a literal
 #     in pg_catalog;
 #   the call form `pg_catalog.regclass($1)`;
+#   the input functions `regclassin(…)` and the other reg*in();
 #   a text literal or a format placeholder passed where a function takes a
-#     regclass (`pg_relation_size('…')`, `nextval('…')`, `has_table_privilege(…)`).
+#     regclass or another object's name (`pg_relation_size('…')`, `nextval('…')`,
+#     `has_table_privilege(…)`, `pg_partition_root('…')`, `pg_get_viewdef('…')`,
+#     `has_function_privilege(…)`);
+#   a name stored in the catalog or a plan (`mapping.table`, `meta.source_table`)
+#     passed to a format!() whose string is SQL.
 bad=$(ROOT="${NAME_CHECK_ROOT:-src}" python3 - "${allowed[@]}" <<'EOF'
 import os, re, sys
 
 REG = r'reg(?:class|proc|procedure|type|oper|operator|namespace|role|collation|config|dictionary)'
-TYPE = r'(?:pg_catalog\s*\.\s*)?"?' + REG + r'"?(?:\s*\[\s*\])?'
+SCHEMA = r'(?:"?pg_catalog"?\s*\.\s*)?'
+TYPE = SCHEMA + r'"?' + REG + r'"?(?:\s*\[\s*\])?'
 CAST = re.compile(r'::\s*' + TYPE + r'(?![a-z0-9_])', re.I)
 CAST_AS = re.compile(r'\bCAST\s*\(\s*(.+?)\s+AS\s+' + TYPE + r'(?![a-z0-9_])', re.I)
 TO_REG = re.compile(r'\bto_' + REG + r'\s*\(', re.I)
-CALL = re.compile(r'(?<![:\w"])(?:pg_catalog\s*\.\s*)?"?' + REG + r'"?\s*\(', re.I)
+CALL = re.compile(r'(?<![:\w"])' + SCHEMA + r'"?' + REG + r'(?:in)?"?\s*\(', re.I)
 TAKES_REGCLASS = (r'pg_relation_size|pg_total_relation_size|pg_table_size|pg_indexes_size|'
                   r'pg_relation_filenode|pg_relation_filepath|nextval|currval|setval|'
                   r'has_table_privilege|has_column_privilege|has_any_column_privilege|'
-                  r'has_sequence_privilege|pg_get_serial_sequence')
+                  r'has_sequence_privilege|pg_get_serial_sequence|pg_partition_root|'
+                  r'pg_partition_tree|pg_partition_ancestors|pg_get_viewdef|'
+                  r'has_function_privilege|has_type_privilege')
 # The table is the first argument, or the second of three (a role first).
-NAME_ARG = re.compile(r'\b(?:' + TAKES_REGCLASS + r')\s*\(\s*(?:[^,()\']*,\s*(?=[\'{][^,()]*,))?[\'{]',
+NAME_ARG = re.compile(r'\b(?:' + TAKES_REGCLASS + r')\s*\(\s*(?:[^,()\']*,\s*(?=[\'{](?:[^,()]|\([^()]*\))*,))?[\'{]',
                       re.I)
 # What may be cast to a reg* type: an OID column, a value cast to oid, a literal
 # in pg_catalog.
-OID_COLUMN = re.compile(r'(?<![\w$.\'"{}])[a-z_][a-z0-9_]*\s*\.\s*[a-z_][a-z0-9_]*\s*$', re.I)
+OID_COLUMN = re.compile(r'(?<![\w$.\'"{}])[a-z_][a-z0-9_]*\s*\.\s*(?:[a-z_]*(?:oid|relid|objid)|inhparent|amproc|rel)\s*$', re.I)
 OID_CAST = re.compile(r'::\s*(?:pg_catalog\s*\.\s*)?oid(?:\s*\[\s*\])?\s*$', re.I)
 CATALOG_LITERAL = re.compile(r"'pg_catalog(?:\.[a-z0-9_]+)?'\s*$", re.I)
 
@@ -67,7 +76,7 @@ def oid_operand(before):
     return any(p.search(before) for p in (OID_COLUMN, OID_CAST, CATALOG_LITERAL))
 
 def literals(text):
-    """(line, content) of each string literal outside comments."""
+    """(line, content, start, end) of each string literal outside comments."""
     i, n, line = 0, len(text), 1
     while i < n:
         c = text[i]
@@ -83,7 +92,7 @@ def literals(text):
         elif re.match(r'b?r#*"', text[i:]) and (i == 0 or not (text[i-1].isalnum() or text[i-1] == '_')):
             m = re.match(r'b?r(#*)"', text[i:]); end = '"' + m.group(1)
             j = text.find(end, i + len(m.group(0))); j = n if j < 0 else j
-            yield line, text[i + len(m.group(0)):j]
+            yield line, text[i + len(m.group(0)):j], i, j + len(end)
             line += text.count('\n', i, j); i = j + len(end)
         elif c == '"' or (c == 'b' and text.startswith('b"', i)):
             j = i + (2 if c == 'b' else 1); out = []
@@ -97,10 +106,44 @@ def literals(text):
                     out.append(text[j:j + 2]); j += 2
                 else:
                     out.append(text[j]); j += 1
-            yield line, ''.join(out).replace('\\"', '"')
+            yield line, ''.join(out).replace('\\"', '"'), i, j + 1
             line += text.count('\n', i, j); i = j + 1
         else:
             i += 1
+
+# A name stored in the catalog or a plan (`mapping.table`, `meta.source_table`,
+# `x.relname`) names whatever holds that name now: SQL gets the relation's OID
+# (`{r:relid}`), never the stored name.
+STORED_NAME = re.compile(r'\.\s*(?:table|source_table|relname|tview_name|qualified\s*\()(?![\w])', re.I)
+SQL_LIKE = re.compile(r'\b(?:SELECT|FROM|JOIN|UPDATE|INSERT|DELETE|EXPLAIN|TRUNCATE|LOCK|ALTER|CREATE|DROP)\b')
+FORMAT = re.compile(r'\b(?:format|write|writeln)!\s*\(\s*(?:[\w.&]+\s*,\s*)?$')
+
+def format_args(text, end):
+    """The arguments after a format string literal ending at `end`, to the call's ')'."""
+    depth, i, n = 0, end, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == '\\' else 1
+            i = j + 1
+            continue
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            if depth == 0:
+                return text[end:i]
+            depth -= 1
+        i += 1
+    return text[end:]
+
+def stored_names(text, start, end, sql):
+    if not SQL_LIKE.search(sql) or not FORMAT.search(text[max(start - 80, 0):start]):
+        return
+    m = STORED_NAME.search(format_args(text, end))
+    if m:
+        yield 'stored name ' + m.group(0).strip()
 
 def hits(sql):
     for m in TO_REG.finditer(sql):
@@ -125,10 +168,12 @@ for dirpath, _, files in os.walk(os.environ['ROOT']):
         if not name.endswith('.rs'):
             continue
         path = os.path.join(dirpath, name)
-        for line, sql in literals(open(path, encoding='utf-8').read()):
-            for hit in hits(sql):
+        text = open(path, encoding='utf-8').read()
+        for line, sql, start, end in literals(text):
+            for hit in [*hits(sql), *stored_names(text, start, end, sql)]:
                 site = next((i for i, (f, t) in enumerate(allowed)
-                             if path == f and t in sql and (hit in t or t in hit)), None)
+                             if path == f and t in sql
+                             and (hit in t or t in hit or hit.startswith('stored name'))), None)
                 if site is not None:
                     used.add(site)
                     continue
