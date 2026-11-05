@@ -235,9 +235,10 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     meta
 }
 
-/// Cache a catalog row just read, unless the extension's own script is running
+/// Cache a catalog row read by a read that started in `read_in`
+/// ([`crate::cache::epoch`]), unless the extension's own script is running
 /// ([`meta_select`]).
-fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
+fn remember(read_in: u64, loaded: TviewMeta) -> Rc<TviewMeta> {
     let meta = Rc::new(loaded);
     if crate::revision::in_own_script() {
         return meta;
@@ -250,7 +251,7 @@ fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
         .map(|c| c.parent_table_oid)
         .collect();
     crate::cache::watch(&parents);
-    METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
+    METAS.with(|m| m.insert_read_in(read_in, meta.entity_name.clone(), meta.clone()));
     meta
 }
 
@@ -363,15 +364,16 @@ impl TviewMeta {
     /// another entity that does not decode is left for its own read.
     fn load(entities: &[String], wanted: &str) -> crate::TViewResult<Option<Rc<Self>>> {
         let mut found = None;
+        let read_in = crate::cache::epoch();
         for (entity, meta) in Self::read(
             "WHERE entity OPERATOR(pg_catalog.=) ANY ($1)",
             &[crate::utils::spi::text_array_of(entities)],
             Derived::Strict,
         )? {
             if entity == wanted {
-                found = Some(remember(meta?));
+                found = Some(remember(read_in, meta?));
             } else if let Ok(meta) = meta {
-                remember(meta);
+                remember(read_in, meta);
             }
         }
         Ok(found)

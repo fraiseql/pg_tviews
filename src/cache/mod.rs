@@ -58,7 +58,14 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
     /// an invalidation arrived since that lookup, when what was read may predate
     /// it (but a key the memo keeps across invalidations).
     pub fn insert(&self, key: K, value: V) {
-        let read_in = self.epoch.get();
+        self.insert_read_in(self.epoch.get(), key, value);
+    }
+
+    /// Remember `value` for `key`, read by a read that started in `read_in`
+    /// ([`epoch`]): unless an invalidation arrived since, when what was read may
+    /// predate it (but a key the memo keeps across invalidations). Every row of
+    /// one read is remembered, or none.
+    pub fn insert_read_in(&self, read_in: u64, key: K, value: V) {
         self.sync();
         if self.epoch.get() != read_in && !(self.keep)(&key) {
             return;
@@ -82,8 +89,9 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
         if let Some(value) = self.get(&key) {
             return Ok(value);
         }
+        let read_in = self.epoch.get();
         let value = load()?;
-        self.insert(key, value.clone());
+        self.insert_read_in(read_in, key, value.clone());
         Ok(value)
     }
 
@@ -107,6 +115,12 @@ impl<K: Eq + Hash, V: Clone> Default for Memo<K, V> {
 
 /// How the catalog's OID is found: `None` before `CREATE EXTENSION`.
 type CatalogOid = fn() -> Option<Oid>;
+
+/// The epoch a catalog read starting now runs in, for [`Memo::insert_read_in`].
+pub fn epoch() -> u64 {
+    sync_generation();
+    EPOCH.with(Cell::get)
+}
 
 /// Forget every memoized value of this backend (but what a memo keeps, see
 /// [`Memo::keeping`]).
@@ -280,6 +294,32 @@ mod tests {
         // A load no invalidation crossed is remembered.
         assert_eq!(memo.get_or_load(4, || Ok(40)).unwrap(), 40);
         assert_eq!(memo.get(&4), Some(40));
+    }
+
+    #[test]
+    fn rows_of_one_read_across_an_invalidation_are_not_remembered() {
+        let memo: Memo<u32, u32> = Memo::new();
+        assert_eq!(memo.get(&1), None);
+        let read_in = epoch();
+        // The read that returns both rows sees the catalog before an
+        // invalidation absorbed after it.
+        invalidate_all();
+        memo.insert_read_in(read_in, 1, 10);
+        memo.insert_read_in(read_in, 2, 20);
+        assert_eq!((memo.get(&1), memo.get(&2)), (None, None));
+    }
+
+    #[test]
+    fn a_load_looking_up_its_own_memo_across_an_invalidation_is_not_remembered() {
+        let memo: Memo<u32, u32> = Memo::new();
+        let value = memo
+            .get_or_load(1, || {
+                invalidate_all();
+                Ok(memo.get(&2).unwrap_or(10))
+            })
+            .unwrap();
+        assert_eq!(value, 10);
+        assert_eq!(memo.get(&1), None);
     }
 
     #[test]
