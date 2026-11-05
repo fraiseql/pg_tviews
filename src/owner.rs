@@ -186,8 +186,9 @@ impl AsOwner {
         owner: Owner,
         work: impl FnOnce(&mut OwnerFrame) -> TViewResult<T>,
     ) -> TViewResult<T> {
-        // SAFETY: reads backend-global state; no frame of this call is open yet.
-        let caller = unsafe { pg_sys::GetUserId() };
+        // The role that called into pg_tviews, not the owner of a frame this one
+        // opens inside of.
+        let caller = caller();
         check_temp_shadows(caller, owner.role)?;
         // Decided before the owner's work runs: nothing below reads who the
         // current user is once it fails.
