@@ -194,7 +194,8 @@ fn seq_scan_check() -> Check {
                 else {
                     continue;
                 };
-                match crate::lineage::large_seq_scans(frame, &mapping.table, template) {
+                let relid = pgrx::pg_sys::Oid::from(mapping.relid);
+                match crate::lineage::large_seq_scans(frame, relid, &mapping.table, template) {
                     Ok(found) => scans.extend(found.into_iter().map(|(relation, rows)| {
                         format!(
                             "tv_{} (writes to {} scan {relation}, about {rows} rows)",

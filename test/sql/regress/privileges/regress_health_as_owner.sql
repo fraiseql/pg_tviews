@@ -61,8 +61,25 @@ RESET ROLE;
 SELECT must((SELECT array_agg(DISTINCT cu) FROM public.who_log) = ARRAY['regress_hc_owner_a']::name[],
             'planned as the owner for a member of its role');
 
+-- A mapping names its tables by OID: after the joined table is renamed, the
+-- check plans the same table, and a relation that takes the old name is not read.
+SET ROLE regress_hc_owner_b;
+ALTER TABLE public.tb_tag RENAME TO tb_tag_moved;
+RESET ROLE;
+SELECT must(status <> 'ERROR', 'the check fails after a rename: ' || message)
+FROM tviews.pg_tviews_check_health() WHERE component = 'seq_scans';
+SET ROLE regress_hc_owner_b;
+CREATE VIEW public.tb_tag AS
+    SELECT pk_tag, label FROM public.tb_tag_moved WHERE public.who('by name') = 1;
+GRANT SELECT ON public.tb_tag TO PUBLIC;
+RESET ROLE;
+SELECT status FROM tviews.pg_tviews_check_health() WHERE component = 'seq_scans';
+SELECT must(NOT EXISTS (SELECT 1 FROM public.who_log WHERE step = 'by name'),
+            'the check read a relation by the old name');
+
 SELECT 'health: planned for the owner''s members only' AS result;
 
 DROP EXTENSION pg_tviews CASCADE;
-DROP TABLE public.tb_tag, public.tb_doc;
+DROP VIEW public.tb_tag;
+DROP TABLE public.tb_tag_moved, public.tb_doc;
 SELECT regress_drop_roles('regress_hc');

@@ -505,7 +505,8 @@ pub(super) fn explain(
     template: &str,
 ) -> crate::TViewResult<()> {
     use pgrx::prelude::*;
-    for (relation, rows) in large_seq_scans(frame, &table.qualified, template)? {
+    let relid = pgrx::pg_sys::Oid::from(table.relid);
+    for (relation, rows) in large_seq_scans(frame, relid, &table.qualified, template)? {
         let mut advice: Vec<String> = table
             .lookups
             .iter()
@@ -539,18 +540,23 @@ pub(super) fn explain(
 
 /// `(relation, estimated rows)` of each sequential scan of a table above
 /// [`LARGE_TABLE_ROWS`] rows, once per relation, in the plan of the mapping query
-/// `template` of `table` (qualified). Fails when the query does not plan.
+/// `template` of the table `relid` (`table` names it in messages). Fails when the
+/// query does not plan.
 ///
 /// # Errors
 /// Returns an error if a relation the template names is gone or the query does
 /// not plan.
 pub fn large_seq_scans(
     frame: &crate::owner::OwnerFrame,
+    relid: pgrx::pg_sys::Oid,
     table: &str,
     template: &str,
 ) -> crate::TViewResult<Vec<(String, f64)>> {
     frame.require_current()?;
-    let sql = render_template(template)
+    let sql = render_template(&format!(
+        "WITH {DELTA} AS (SELECT * FROM {{r:{}}} LIMIT 0) {template}",
+        relid.to_u32()
+    ))
         .map_err(|e| crate::TViewError::CatalogError {
             operation: format!("Name the relations of the mapping of {table}"),
             pg_error: e.to_string(),
@@ -559,8 +565,7 @@ pub fn large_seq_scans(
             operation: format!("Name the relations of the mapping of {table}"),
             pg_error: "a relation or column it reads is gone".to_string(),
         })?;
-    let explain =
-        format!("EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {table} LIMIT 0) {sql}");
+    let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
     let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
         .map_err(|e| crate::TViewError::SpiError {
             query: explain.clone(),
