@@ -457,7 +457,28 @@ pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
     let read_before = crate::catalog::readers::tables_of(entity)?;
     let plan = reregister_metadata(entity, &schema_name, &definition)?;
     crate::dependency::sync_read_tables(&plan, &read_before, entity)?;
+    if let Some(meta) = crate::catalog::TviewMeta::load_to_rederive(entity)? {
+        // Its backing view is its owner's alone, whatever was granted on it before.
+        super::privileges::follow(Some(meta.tview_oid), false)?;
+        warn_function_paths(entity, &meta)?;
+    }
     crate::catalog::row::clear_needs_reregister(entity)
+}
+
+/// Warn about the functions `entity`'s refresh runs whose `search_path` does not
+/// end in `pg_temp`: a TVIEW registered before they were refused keeps working,
+/// and the health check's `function_paths` component reports it.
+fn warn_function_paths(entity: &str, meta: &crate::catalog::TviewMeta) -> TViewResult<()> {
+    for issue in crate::catalog::function_paths::issues(meta.view_oid, Some(meta.tview_oid))? {
+        pgrx::warning!(
+            "pg_tviews: tv_{entity} runs {}, whose search_path ({}) does not end in pg_temp; \
+             set it with ALTER FUNCTION … SET search_path = {}",
+            issue.function,
+            issue.path,
+            issue.fix
+        );
+    }
+    Ok(())
 }
 
 /// The `group_keys` of an aggregate TVIEW, `None` for any other.

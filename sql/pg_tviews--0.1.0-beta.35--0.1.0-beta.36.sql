@@ -37,6 +37,24 @@ SET typename = COALESCE(m.graphql_typename,
                               WITH ORDINALITY AS p(part, n)
                          WHERE p.part <> ''),
                         '');
+DO $$
+DECLARE
+    clashes text;
+BEGIN
+    SELECT pg_catalog.string_agg(pg_catalog.format('%s (%s)', c.typename, c.tviews), '; '
+                                 ORDER BY c.typename)
+      INTO clashes
+    FROM (SELECT m.typename, pg_catalog.string_agg('tv_' || m.entity, ', ' ORDER BY m.entity) AS tviews
+          FROM @extschema@.pg_tview_meta m
+          GROUP BY m.typename HAVING pg_catalog.count(*) > 1) c;
+    IF clashes IS NOT NULL THEN
+        RAISE EXCEPTION 'pg_tviews: a GraphQL type name names one TVIEW; these are shared: %', clashes
+            USING ERRCODE = '42710',
+                  HINT = 'Give all but one TVIEW of each name a typename option of its own '
+                         '(pg_tviews_create_or_replace(tview, definition, options => '
+                         '''{"typename": "..."}'')) or drop it, then update again.';
+    END IF;
+END $$;
 ALTER TABLE @extschema@.pg_tview_meta ALTER COLUMN typename SET NOT NULL,
     ADD CONSTRAINT pg_tview_meta_typename_key UNIQUE (typename);
 
@@ -136,7 +154,65 @@ LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
 
+-- Each TVIEW is re-derived below as its owner, and each view it reads through as
+-- that view's owner: every relation a view reads must still be readable by the
+-- view's owner, and every table a declared function reads by the TVIEW's owner.
+-- All that are not are named in one error, before anything is re-derived.
+DO $$
+DECLARE
+    missing text;
+BEGIN
+    WITH RECURSIVE chain(entity, reader, relid, depth) AS (
+        SELECT m.entity, v.relowner, v.oid, 0
+        FROM @extschema@.pg_tview_meta m
+        JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid
+      UNION
+        SELECT c.entity, v.relowner, d.refobjid, c.depth + 1
+        FROM chain c
+        JOIN pg_catalog.pg_class v ON v.oid = c.relid AND v.relkind = 'v'
+        JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid
+        JOIN pg_catalog.pg_depend d
+          ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid
+         AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid <> v.oid
+        WHERE c.depth < 100
+    ),
+    needed(entity, reader, relid) AS (
+        SELECT DISTINCT c.entity, c.reader, c.relid FROM chain c WHERE c.depth > 0
+      UNION
+        SELECT m.entity, t.relowner, f.relid::pg_catalog.oid
+        FROM @extschema@.pg_tview_meta m
+        JOIN pg_catalog.pg_class t ON t.oid = m.table_oid::pg_catalog.oid,
+             pg_catalog.unnest(m.function_read_tables) AS f(relid)
+        WHERE f.relid IS NOT NULL
+    ),
+    lacking(entity, reader, privilege) AS (
+        SELECT n.entity, n.reader, pg_catalog.format('USAGE on schema %I', s.nspname)
+        FROM needed n
+        JOIN pg_catalog.pg_class r ON r.oid = n.relid AND r.relkind IN ('r', 'p', 'v', 'm', 'f')
+        JOIN pg_catalog.pg_namespace s ON s.oid = r.relnamespace
+        WHERE NOT pg_catalog.has_schema_privilege(n.reader, s.oid, 'USAGE')
+      UNION
+        SELECT n.entity, n.reader, pg_catalog.format('SELECT on %s', r.oid::pg_catalog.regclass)
+        FROM needed n
+        JOIN pg_catalog.pg_class r ON r.oid = n.relid AND r.relkind IN ('r', 'p', 'v', 'm', 'f')
+        WHERE NOT pg_catalog.has_any_column_privilege(n.reader, r.oid, 'SELECT')
+    )
+    SELECT pg_catalog.string_agg(pg_catalog.format('tv_%s (%s lacks %s)', l.entity,
+                                     pg_catalog.pg_get_userbyid(l.reader), l.privilege),
+                                 '; ' ORDER BY l.entity, l.privilege)
+      INTO missing
+    FROM lacking l;
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'pg_tviews: TVIEWs whose owners may no longer read what they read: %', missing
+            USING ERRCODE = '42501',
+                  HINT = 'Grant each privilege named, or drop the TVIEW, then update again.';
+    END IF;
+END $$;
+
 -- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
--- on an older plan.
+-- on an older plan. Re-deriving renders its plan by the current rules, takes every
+-- privilege on its backing view (its columns included) from the other roles, and
+-- warns about each function its refresh runs whose search_path does not end in
+-- pg_temp (the health check's function_paths component lists them too).
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
 SELECT pg_catalog.count(*) FROM @extschema@.pg_tviews_reregister_all(strict => true);

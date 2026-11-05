@@ -558,8 +558,15 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `reregister` (TVIEWs marked
-`needs_reregister`), `triggers` and `tviews`. A check that cannot run is an `ERROR` row.
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `reregister`
+(TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
+an `ERROR` row.
+
+`function_paths` is an `ERROR` listing the functions a TVIEW's refresh runs (those its
+definition calls, through operators, aggregates and views, and the user triggers on its
+table) whose `search_path` setting does not end in `pg_temp`, with the setting that
+fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
+before the rule stays, and is reported here and warned about whenever it is re-derived.
 
 `contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
 yields rows (a restore that left the data out, a table emptied by hand). It reads each

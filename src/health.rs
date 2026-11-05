@@ -47,6 +47,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             columns_check(),
             seq_scan_check(),
             contents_check(),
+            function_paths_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -284,6 +285,49 @@ fn contents_check() -> Check {
                 "empty while their definition yields rows: {}; refill each with \
                  SELECT tviews.pg_tviews_refresh(tview)",
                 sample(&empty)
+            ),
+        )
+    }
+}
+
+/// TVIEWs whose refresh runs a function whose `search_path` does not end in
+/// `pg_temp` (registered before such functions were refused): the function
+/// resolves unqualified names in the writer's temporary schema first. Reads the
+/// catalog only.
+fn function_paths_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("function_paths", format!("could not be checked: {e}")),
+    };
+    let mut found = Vec::new();
+    for meta in &metas {
+        match crate::catalog::function_paths::issues(meta.view_oid, Some(meta.tview_oid)) {
+            Ok(issues) => found.extend(issues.into_iter().map(|issue| {
+                format!(
+                    "tv_{} runs {} (search_path = {}; set it to {})",
+                    meta.entity_name, issue.function, issue.path, issue.fix
+                )
+            })),
+            Err(e) => {
+                return error(
+                    "function_paths",
+                    format!("tv_{} could not be checked: {e}", meta.entity_name),
+                );
+            }
+        }
+    }
+    if found.is_empty() {
+        ok(
+            "function_paths",
+            "Every function a refresh runs sets no search_path, or one ending in pg_temp",
+        )
+    } else {
+        error(
+            "function_paths",
+            format!(
+                "functions whose search_path does not end in pg_temp: {}; fix each with \
+                 ALTER FUNCTION … SET search_path = <schemas>, pg_temp",
+                sample(&found)
             ),
         )
     }
