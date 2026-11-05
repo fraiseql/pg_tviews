@@ -161,7 +161,11 @@ blocks every writer of that relation. For any other role the refresh keeps one l
 value, up to 16 times `pg_tviews.lock_escalation_threshold`; past that the statement
 fails with `54000` ("too many rows linked in one statement"), naming no relation. A
 write's own locks on the values it changed escalate without this check: the writer may
-write those rows.
+write those rows, but they include the keys of embedded TVIEW rows its flush changed, so
+a bulk write can lock a whole TVIEW table that other TVIEWs read. A full refresh
+(`TRUNCATE` of a base table, the catch-up after `pg_tviews_resume_triggers()`) locks
+every relation its TVIEW reads, whatever the caller may write. Both hold until the
+transaction ends.
 
 ```sql
 -- Who waits for whom

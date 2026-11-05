@@ -245,9 +245,12 @@ at commit.
 - **Open transactions hold their locks.** A write holds the value locks of what it
   linked until its transaction ends, as row locks are held: set
   `idle_in_transaction_session_timeout` (or `transaction_timeout`) for writer roles.
-  A refresh locks a whole table it reads only for a role that may write that table;
-  any other role locks one value per linked row, at most 16 times
+  A refresh by keys locks a whole table it reads only for a role that may write that
+  table; any other role locks one value per linked row, at most 16 times
   `pg_tviews.lock_escalation_threshold` per table and transaction (`54000` past that).
+  A full refresh (`TRUNCATE` of a base table, catching up after
+  `pg_tviews_resume_triggers()`) locks every table its TVIEW reads, whatever the
+  caller may write, until its transaction ends.
 
 ```sql
 BEGIN ISOLATION LEVEL REPEATABLE READ;
