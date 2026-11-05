@@ -146,10 +146,12 @@ pub mod validity {
         };
         let key = crate::utils::ident::quoted(&meta.identity.column);
         let (tv, view) = relations(&meta)?;
+        // A set difference, not an anti-join: the TVIEW was just filled by this
+        // write, and with its statistics still those of an empty table an
+        // anti-join is planned as a nested loop over every pair of rows.
         let missing = probe(
             &format!(
-                "SELECT EXISTS (SELECT 1 FROM {view} v \
-                                WHERE NOT EXISTS (SELECT 1 FROM {tv} t WHERE t.{key} = v.{key}))"
+                "SELECT EXISTS (SELECT v.{key} FROM {view} v EXCEPT SELECT t.{key} FROM {tv} t)"
             ),
             &[],
         )?;
