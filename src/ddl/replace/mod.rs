@@ -431,15 +431,18 @@ fn replace_in_place(
     let dependents = crate::catalog::queries::readers_of(entity, meta.view_oid, meta.tview_oid)?;
 
     // Writers lock a base table, then the TVIEW tables their flush writes: take
-    // the same order. SHARE on every table read, before or after, holds writers
+    // the same order. SHARE on a table read, before or after, holds its writers
     // off until the transaction ends; EXCLUSIVE on the TVIEW tables lets readers
-    // go on. Each as the table's owner: SHARE needs more than SELECT.
+    // go on, and holds off the flush of every write to a table left unlocked.
+    // Each as the table's owner: SHARE needs more than SELECT. Only tables the
+    // caller may attach triggers to are locked: another role's table, read by a
+    // dependent, is not the caller's to hold.
     let mut entities = vec![entity.to_string()];
     entities.extend(dependents.iter().map(|(dependent, _)| dependent.clone()));
     let tv_tables: Vec<pg_sys::Oid> = std::iter::once(meta.tview_oid)
         .chain(dependents.iter().map(|&(_, table)| table))
         .collect();
-    let mut read_tables = crate::utils::spi::oids(
+    let read = crate::utils::spi::oids(
         &format!(
             "SELECT DISTINCT r.relid FROM {}.reads r \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
@@ -449,13 +452,13 @@ fn replace_in_place(
         &[crate::utils::spi::text_array_of(&entities)],
     )?;
     // A table the new definition reads that the caller may not attach work to
-    // is not locked: if it needs triggers, the replace is refused below.
-    for &table in new_base_tables {
-        if super::may_trigger(table)? {
+    // is refused below if it needs triggers.
+    let mut read_tables = Vec::new();
+    for &table in read.iter().chain(new_base_tables) {
+        if !tv_tables.contains(&table) && super::may_trigger(table)? {
             read_tables.push(table);
         }
     }
-    read_tables.retain(|table| !tv_tables.contains(table));
     read_tables.sort_unstable_by_key(|table| table.to_u32());
     read_tables.dedup();
     for &table in &read_tables {
