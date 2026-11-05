@@ -56,9 +56,9 @@ fn pg_tviews_flush_and_report(
 /// The session's refresh counters and the transaction's refresh queue
 /// (debugging; `tviews.stats` is per TVIEW and readable from any session).
 #[pg_extern(name = "pg_tviews_show_queue")]
-fn pg_tviews_queue_stats() -> pgrx::JsonB {
+fn pg_tviews_queue_stats() -> Result<pgrx::JsonB, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
-    pgrx::JsonB(crate::health::queue_stats())
+    Ok(pgrx::JsonB(crate::health::queue_stats()?))
 }
 
 /// The transactions the cluster committed without publishing their changes on

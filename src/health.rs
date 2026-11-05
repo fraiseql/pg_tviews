@@ -402,11 +402,16 @@ fn count_check() -> Check {
 }
 
 /// The session's refresh counters, and the keys queued in the transaction
-/// (`queued`).
-pub(crate) fn queue_stats() -> serde_json::Value {
+/// (`queued`) of the TVIEWs the caller may read without row security applying;
+/// the others are named by type in `omitted_types`. `queue_size` counts every
+/// key, as `tviews.stats` does.
+///
+/// # Errors
+/// A failed catalog read.
+pub(crate) fn queue_stats() -> crate::TViewResult<serde_json::Value> {
+    let (queued, omitted) = queued()?;
     let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
-    #[allow(unused_mut)] // Reason: only test-hooks builds add to it
     let mut json_value = serde_json::json!({
         "queue_size": stats.queue_size,
         "flushes": stats.flushes,
@@ -433,8 +438,11 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "plans_prepared": stats.plans_prepared,
         "per_execution_plans": stats.per_execution_plans,
         "propagation_pruned": stats.propagation_pruned,
-        "queued": queued(),
+        "queued": queued,
     });
+    if !omitted.is_empty() {
+        json_value["omitted_types"] = serde_json::json!(omitted);
+    }
     #[cfg(feature = "test-hooks")]
     {
         json_value["cache_resets"] = crate::cache::resets().into();
@@ -445,13 +453,35 @@ pub(crate) fn queue_stats() -> serde_json::Value {
             .into();
     }
 
-    json_value
+    Ok(json_value)
 }
 
-/// The keys queued in the transaction, as `{entity, pk}`.
-fn queued() -> Vec<serde_json::Value> {
-    crate::queue::get_queue_contents()
+/// The keys queued in the transaction, as `{entity, pk}`, of the TVIEWs the
+/// caller may read without row security applying, and the types of the others.
+///
+/// # Errors
+/// A failed catalog read.
+fn queued() -> crate::TViewResult<(Vec<serde_json::Value>, std::collections::BTreeSet<String>)> {
+    let keys = crate::queue::get_queue_contents();
+    let entities: std::collections::BTreeSet<String> =
+        keys.iter().map(|key| key.entity.clone()).collect();
+    let mut shown = std::collections::HashSet::new();
+    let mut omitted = std::collections::BTreeSet::new();
+    for (entity, typename, _, oid) in
+        crate::catalog::queries::typenames_and_tables(entities.into_iter().collect())?
+    {
+        // Unknown counts as active.
+        if crate::visibility::may_read_relation(oid)
+            && !crate::visibility::rls_active_for_caller(oid).unwrap_or(true)
+        {
+            shown.insert(entity);
+        } else {
+            omitted.insert(typename);
+        }
+    }
+    let listed = keys
         .into_iter()
+        .filter(|key| shown.contains(&key.entity))
         .map(|key| {
             serde_json::json!({
                 "entity": key.entity,
@@ -461,7 +491,8 @@ fn queued() -> Vec<serde_json::Value> {
                 }
             })
         })
-        .collect()
+        .collect();
+    Ok((listed, omitted))
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.
