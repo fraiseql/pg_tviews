@@ -1,7 +1,8 @@
 -- Every way a TVIEW goes frees its tviews.stats slot: pg_tviews_drop, DROP
 -- SCHEMA … CASCADE (by a superuser, or by the schema's owner over another role's
--- TVIEW), DROP OWNED, and a drop in the transaction that wrote the TVIEW. The
--- slots are a fixed table shared by the cluster: one kept by a TVIEW that is
+-- TVIEW), DROP OWNED, and a drop in the transaction that wrote the TVIEW; and a
+-- TVIEW created in a transaction or subtransaction that rolls back takes none.
+-- The slots are a fixed table shared by the cluster: one kept by a TVIEW that is
 -- gone is lost until a restart. Test builds list the slots each database holds
 -- in pg_tviews_show_queue().
 --
@@ -84,6 +85,23 @@ INSERT INTO dss_c.tb_five VALUES (2, DEFAULT, 'y');
 SELECT tviews.pg_tviews_drop('dss_c.tv_five');
 COMMIT;
 SELECT must(slots() = :base, format('a drop after a write in its transaction kept the slot: %s', slots()));
+
+-- Created and written in a transaction that rolls back.
+BEGIN;
+SELECT written('dss_c', 'six');
+ROLLBACK;
+SELECT must(slots() = :base, format('a rolled-back create took a slot: %s', slots()));
+-- In a subtransaction that rolls back, the transaction committing.
+BEGIN;
+SAVEPOINT s;
+SELECT written('dss_c', 'seven');
+ROLLBACK TO SAVEPOINT s;
+COMMIT;
+SELECT must(slots() = :base, format('a rolled-back savepoint''s create took a slot: %s', slots()));
+-- Committed: one slot.
+SELECT written('dss_c', 'eight');
+SELECT must(slots() = :base + 1, format('a committed create took no slot: %s', slots()));
+SELECT tviews.pg_tviews_drop('dss_c.tv_eight');
 
 DROP SCHEMA dss_c CASCADE;
 DROP EXTENSION pg_tviews CASCADE;

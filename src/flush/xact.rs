@@ -136,6 +136,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
                 fail_unflushed();
                 fail_suspended();
                 crate::publish::at_pre_commit();
+                crate::stats::merge_committing();
             }
             crate::suspend::clear_changed_entities();
             crate::suspend::force_resume();

@@ -293,27 +293,68 @@ pub fn add(entity: &str, counter: Counter, n: u64) {
     });
 }
 
-/// Merge this transaction's additions into the shared table, at its end however
-/// it ends. Runs in a transaction callback: no SPI, nothing that can fail.
+/// Merge this transaction's additions into the shared table as it commits
+/// (`PRE_COMMIT`, when the catalog is still readable): a TVIEW whose table is
+/// in what commits gets a slot if it has none. Runs in a transaction callback:
+/// no SPI, nothing that can fail.
+pub fn merge_committing() {
+    merge_into(true);
+}
+
+/// Merge what is left at the end of a transaction however it ends (an aborted
+/// or prepared one's additions) into the slots its TVIEWs already have: a TVIEW
+/// created in a transaction that did not commit takes no slot. Runs in a
+/// transaction callback: no SPI, nothing that can fail.
 pub fn merge() {
+    merge_into(false);
+}
+
+fn merge_into(committing: bool) {
     let local = LOCAL.with_borrow_mut(std::mem::take);
     if local.is_empty() || !available() {
         return;
     }
+    // Whether each table may take a slot, decided before the lock is held: its
+    // relation is in the committing transaction's catalog (one created in a
+    // subtransaction that rolled back is not).
+    let local: Vec<(Oid, [u64; COUNTERS], bool)> = local
+        .into_values()
+        .map(|(oid, counts)| (oid, counts, committing && relation_exists(oid)))
+        .collect();
     // SAFETY: reads backend globals.
     let (db, now) = unsafe { (pg_sys::MyDatabaseId.to_u32(), pg_sys::GetCurrentTimestamp()) };
     let Some(mut table) = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE) else {
         return;
     };
-    for (oid, counts) in local.into_values() {
-        match table.find_or_take(db, oid.to_u32(), now) {
+    for (oid, counts, may_take) in local {
+        let slot = if may_take {
+            table.find_or_take(db, oid.to_u32(), now)
+        } else {
+            table.find(db, oid.to_u32())
+        };
+        match slot {
             Some(i) => {
                 for (total, n) in table.slots[i].counts.iter_mut().zip(counts) {
                     *total = total.saturating_add(n);
                 }
             }
-            None => table.overflowed = true,
+            None if may_take => table.overflowed = true,
+            None => {}
         }
+    }
+}
+
+/// Whether relation `oid` is in the current transaction's catalog.
+fn relation_exists(oid: Oid) -> bool {
+    // SAFETY: a syscache lookup by OID, in a transaction (PRE_COMMIT).
+    unsafe {
+        pg_sys::SearchSysCacheExists(
+            pg_sys::SysCacheIdentifier::RELOID.cast_signed(),
+            pg_sys::Datum::from(oid),
+            pg_sys::Datum::from(0),
+            pg_sys::Datum::from(0),
+            pg_sys::Datum::from(0),
+        )
     }
 }
 
