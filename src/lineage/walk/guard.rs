@@ -9,7 +9,8 @@ impl Walker<'_> {
     /// `col = ANY (const array)` (`IN`), `col IS NULL`. A row failing it is never
     /// read by that occurrence. `nullable` is `None` for `WHERE` and inner joins;
     /// for an outer join's condition only an occurrence on its nullable side is
-    /// filtered by it.
+    /// filtered by it. `col IS NULL` is not a guard of an occurrence an outer join
+    /// below may NULL-extend: the NULL-extended row meets it.
     ///
     /// SAFETY: `qual` is a valid expression of the innermost level.
     pub(super) unsafe fn guard(
@@ -61,6 +62,11 @@ impl Walker<'_> {
                     let Some(column) = self.own_column(var.cast()) else {
                         return;
                     };
+                    // Not strict: a row an outer join below NULL-extends meets it,
+                    // and a real row failing it still changes the view.
+                    if self.null_extended(column.occ) {
+                        return;
+                    }
                     if nullable.is_none_or(|n| n.contains(&column.occ)) {
                         let mut sql = Sql::text("(");
                         sql.push_sql(column.sql());

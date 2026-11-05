@@ -300,6 +300,12 @@ other reads' mapping went unused.
   failing one of them is never read by that occurrence, whatever happens above it
   (`WHERE` applies before grouping, windows, `DISTINCT` and `LIMIT`). Any subset of a
   row's conditions is a necessary one, so the other conjuncts are simply not used.
+  That holds only for a condition a NULL-extended row of the occurrence fails: a
+  strict one (`=`, `IN`). `col IS NULL` over an occurrence an outer join below the
+  condition may NULL-extend is met by the NULL-extended row, while a real row failing
+  it still changes the view (an anti-join on a flag row, `LEFT JOIN tb_flag f ON …
+  WHERE f.pk_flag IS NULL`): it is not a guard. In an outer join's own condition,
+  before that join NULL-extends anything, it still is.
 - **A guarded table.** When every `all_keys` occurrence of a table has guards (and a
   trigger watches it), the table's key mapping carries `guard`: a query over the
   changed rows (both images of an `UPDATE`) returning a row when one meets every
