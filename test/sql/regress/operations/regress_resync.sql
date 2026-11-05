@@ -129,13 +129,35 @@ SELECT tviews.pg_tviews_resync('tb_user', ARRAY[2]);
 RESET ROLE;
 SELECT must(in_sync(), 'out of sync after the writer''s resync');
 
--- 6. A table no TVIEW reads, and one without an integer primary key.
+-- 6. A table no TVIEW reads, and one without an integer primary key, are refused.
 CREATE TABLE plain_t (pk_plain int PRIMARY KEY);
-SELECT must(NOT EXISTS (SELECT FROM tviews.pg_tviews_resync('plain_t', ARRAY[1])),
-            'a table no TVIEW reads reported TVIEWs');
+SELECT must(failure($$SELECT tviews.pg_tviews_resync('plain_t', ARRAY[1])$$) = '22023',
+            'a table no TVIEW reads accepted');
 CREATE TABLE no_key (a int);
 SELECT must(failure($$SELECT tviews.pg_tviews_resync('no_key', ARRAY[1])$$) = '22023',
             'a table without a primary key accepted');
+
+-- 7. A partition of a table a TVIEW reads resyncs its rows through the TVIEWs
+-- reading the partitioned table, whatever its own column order.
+CREATE TABLE tb_thing (pk_thing int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       name text) PARTITION BY RANGE (pk_thing);
+CREATE TABLE tb_thing_low PARTITION OF tb_thing FOR VALUES FROM (0) TO (100);
+CREATE TABLE tb_thing_high (name text, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                            pk_thing int NOT NULL);
+ALTER TABLE tb_thing ATTACH PARTITION tb_thing_high FOR VALUES FROM (100) TO (200);
+INSERT INTO tb_thing (pk_thing, name) VALUES (1, 'a'), (150, 'b');
+SELECT tviews.pg_tviews_create('tv_thing', $$
+    SELECT t.pk_thing, t.id, jsonb_build_object('id', t.id, 'name', t.name) AS data
+    FROM tb_thing t $$);
+SET session_replication_role = replica;
+UPDATE tb_thing SET name = name || '!';
+RESET session_replication_role;
+SELECT COALESCE(jsonb_object_agg(tview, rows_changed), '{}') AS changed
+    FROM tviews.pg_tviews_resync('tb_thing_high', ARRAY[150]) \gset
+SELECT must(:'changed'::jsonb = '{"public.tv_thing": 1}', 'partition resync: ' || :'changed');
+SELECT tviews.pg_tviews_resync('tb_thing_low', ARRAY[1]);
+SELECT must(NOT EXISTS (SELECT 1 FROM tv_thing t FULL JOIN tviews.public__tv_thing v USING (pk_thing)
+                        WHERE t.data IS DISTINCT FROM v.data), 'partitions out of sync after resync');
 
 DROP EXTENSION pg_tviews CASCADE;
 DROP OWNED BY resync_reader_280;

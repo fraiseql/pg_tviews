@@ -42,12 +42,13 @@ pub fn qualified(relid: Oid) -> TViewResult<String> {
 
 /// Recompute the TVIEW rows that the rows of `source` keyed `keys` (its primary
 /// key) reach. The caller needs `UPDATE` on `source`, and `SELECT`: it reads the
-/// rows.
+/// rows. A partition's rows are mapped through the TVIEWs reading its
+/// partitioned table.
 ///
 /// # Errors
 /// `PermissionDenied` without `UPDATE` or `SELECT`, or under row security;
-/// `InvalidInput` for a table without a single-column integer primary key; a
-/// failed lookup or refresh.
+/// `InvalidInput` for a table without a single-column integer primary key or
+/// that no TVIEW reads; a failed lookup or refresh.
 pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
     // SAFETY: a lock on a relation by OID, held until the transaction ends: no
     // other session renames or drops it meanwhile.
@@ -71,10 +72,13 @@ pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
             ),
         });
     }
-    let pk = primary_key(source, &name)?;
+    // The TVIEWs read a partitioned table: its root names the readers, the plans
+    // and the row type; the rows are read from the partition given.
+    let root = partition_root(source)?;
+    let pk = primary_key(root, &name)?;
     // What is queued already is flushed first: the counts are the resync's own.
     crate::flush::flush_refresh_queue()?;
-    let readers = crate::catalog::table_readers(source)?;
+    let readers = crate::catalog::table_readers(root)?;
     let mut entities: Vec<String> = readers
         .row()
         .chain(readers.delta())
@@ -82,13 +86,19 @@ pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
         .collect();
     entities.sort();
     entities.dedup();
+    if entities.is_empty() {
+        return Err(TViewError::InvalidInput {
+            parameter: "source".to_string(),
+            reason: format!("no TVIEW reads {name}"),
+        });
+    }
     let rows = read_rows(source, &pk, keys, &name)?;
     let mut done = Vec::new();
     for entity in entities {
-        let Some(meta) = TviewMeta::load_reaching(&entity, source)? else {
+        let Some(meta) = TviewMeta::load_reaching(&entity, root)? else {
             continue;
         };
-        let rebuilt = enqueue(&meta, source, &pk, &rows, keys)?;
+        let rebuilt = enqueue(&meta, root, &pk, &rows, keys)?;
         done.push((entity, meta.tview_oid, rebuilt));
     }
     // Counted from this flush's changed rows, none when nothing was queued.
@@ -115,32 +125,52 @@ pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
         .collect())
 }
 
-/// The source table's primary key column: its number and name.
+/// The source table's primary key column: its name.
 struct PrimaryKey {
-    attnum: i16,
     name: String,
 }
 
-/// The rows of `source` keyed `keys`, as a JSON array of their row images, read
-/// as the caller under the caller's privileges.
+/// The partitioned table at the root of `relid`'s partition tree, or `relid`.
+fn partition_root(relid: Oid) -> TViewResult<Oid> {
+    let root = crate::utils::spi::catalog_rows(
+        "SELECT pg_catalog.pg_partition_root($1)::pg_catalog.oid",
+        &[crate::utils::spi::oid(relid)],
+        |row| row.get::<Oid>(1),
+    )?;
+    Ok(root.into_iter().flatten().next().unwrap_or(relid))
+}
+
+/// The rows of `source` keyed `keys`, as a JSON array of their row images (by
+/// column name), read as the caller under the caller's privileges.
 fn read_rows(source: Oid, pk: &PrimaryKey, keys: &[i64], name: &str) -> TViewResult<pgrx::JsonB> {
+    let key_name = std::ffi::CString::new(pk.name.as_str()).map_err(|_| gone(name))?;
+    // SAFETY: a syscache lookup by OID and column name; InvalidAttrNumber when
+    // the column is gone. A partition's column numbers may differ from its root's.
+    let attnum = unsafe { pg_sys::get_attnum(source, key_name.as_ptr()) };
+    if attnum <= 0 {
+        return Err(gone(name));
+    }
     let sql = crate::lineage::render_template(&format!(
         "SELECT COALESCE(pg_catalog.jsonb_agg(pg_catalog.to_jsonb(s)), '[]') \
-         FROM {{r:{}}} s WHERE s.{{c:{}:{}}} OPERATOR(pg_catalog.=) ANY ($1)",
+         FROM {{r:{}}} s WHERE s.{{c:{}:{attnum}}} OPERATOR(pg_catalog.=) ANY ($1)",
         source.to_u32(),
         source.to_u32(),
-        pk.attnum
     ))
     .map_err(|e| crate::utils::spi::error("the resynced rows", &e))?
-    .ok_or_else(|| TViewError::CatalogError {
-        operation: format!("Resync {name}"),
-        pg_error: "the table or its key column is gone".to_string(),
-    })?;
+    .ok_or_else(|| gone(name))?;
     let rows = crate::utils::spi::one::<pgrx::JsonB>(
         &sql,
         &[crate::utils::spi::int8_array(keys.to_vec())],
     )?;
     Ok(rows.unwrap_or_else(|| pgrx::JsonB(serde_json::Value::Array(Vec::new()))))
+}
+
+/// The table being resynced, or its key column, was dropped meanwhile.
+fn gone(name: &str) -> TViewError {
+    TViewError::CatalogError {
+        operation: format!("Resync {name}"),
+        pg_error: "the table or its key column is gone".to_string(),
+    }
 }
 
 /// Enqueue `meta`'s keys that the rows `rows` (of `source`, keyed `keys`) reach.
@@ -245,7 +275,7 @@ fn may(relid: Oid, mode: u32) -> bool {
 /// The single-column integer primary key of `source`.
 fn primary_key(source: Oid, name: &str) -> TViewResult<PrimaryKey> {
     let found = crate::utils::spi::catalog_rows(
-        "SELECT a.attnum, a.attname::pg_catalog.text FROM pg_catalog.pg_index i \
+        "SELECT a.attname::pg_catalog.text FROM pg_catalog.pg_index i \
          JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] \
          JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
          WHERE i.indrelid = $1 AND i.indisprimary AND i.indnatts = 1 \
@@ -253,10 +283,10 @@ fn primary_key(source: Oid, name: &str) -> TViewResult<PrimaryKey> {
                IN ('pg_catalog.int2'::pg_catalog.regtype, 'pg_catalog.int4'::pg_catalog.regtype, \
                    'pg_catalog.int8'::pg_catalog.regtype)",
         &[crate::utils::spi::oid(source)],
-        |row| Ok((row.get::<i16>(1)?, row.get::<String>(2)?)),
+        |row| row.get::<String>(1),
     )?;
     match found.into_iter().next() {
-        Some((Some(attnum), Some(name))) => Ok(PrimaryKey { attnum, name }),
+        Some(Some(name)) => Ok(PrimaryKey { name }),
         _ => Err(TViewError::InvalidInput {
             parameter: "source".to_string(),
             reason: format!("{name} has no single-column integer primary key to resync by"),
