@@ -26,8 +26,11 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         crate::catalog::resolve::parse(tview_name)?;
     let entity_name = entity.as_str();
     // A role that may not drop it takes no lock; checked again under the lock.
-    require_owner_of(entity_name)?;
-    super::lock_entity(entity_name);
+    // A name no TVIEW has takes none either: there is nothing to drop, and the
+    // lock would delay the role creating it.
+    if require_owner_of(entity_name)?.is_some() {
+        super::lock_entity(entity_name);
+    }
 
     // Check if TVIEW exists (in the named schema, if one is named)
     let exists = crate::catalog::row::exists(entity_name)?

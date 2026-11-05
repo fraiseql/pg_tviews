@@ -83,3 +83,29 @@ t
 (1 row)
 
 step s_rollback: ROLLBACK;
+
+starting permutation: s_begin s_drop_future o_create_future s_rollback
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step s_begin: BEGIN;
+stranger: NOTICE:  TVIEW "future" does not exist, skipping
+step s_drop_future: SELECT tviews.pg_tviews_drop('future', if_exists => true) AS dropped;
+dropped                                     
+--------------------------------------------
+TVIEW future does not exist, nothing dropped
+(1 row)
+
+step o_create_future: 
+  SELECT tviews.pg_tviews_create('tv_future', $$
+    SELECT f.pk_future, f.id, jsonb_build_object('n', f.n) AS data FROM tb_future f $$)
+    IS NOT NULL AS created;
+
+created
+-------
+t      
+(1 row)
+
+step s_rollback: ROLLBACK;
