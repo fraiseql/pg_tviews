@@ -6,7 +6,7 @@
 # count. Prints the violations; exits 1 on any.
 set -u
 cd "$(dirname "$0")/.."
-LAYERS=(config error cache metrics utils owner lineage catalog stats queue concurrency refresh propagate flush)
+LAYERS=(config error cache metrics utils owner visibility lineage catalog stats queue concurrency refresh propagate flush)
 python3 - "${LAYERS[@]}" <<'PY'
 import os, re, sys
 layers = sys.argv[1:]

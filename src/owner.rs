@@ -72,6 +72,12 @@ impl Owner {
         Ok(Self(unsafe { pg_sys::GetUserId() }))
     }
 
+    /// The role's OID.
+    #[must_use]
+    pub const fn oid(self) -> Oid {
+        self.0
+    }
+
     /// The role `role`: one read with [`relation_owner`].
     #[must_use]
     pub const fn of_role(role: Oid) -> Self {

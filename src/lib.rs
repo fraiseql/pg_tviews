@@ -56,6 +56,7 @@ mod revision;
 mod stats;
 mod trigger;
 mod utils;
+mod visibility;
 
 // Feature modules
 mod admin;
