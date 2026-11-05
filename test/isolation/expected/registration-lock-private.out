@@ -1,0 +1,85 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s_lock o_rereg s_unlock
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step s_lock: SELECT pg_advisory_lock(1953917285, hashtext('post')) IS NULL AS locked;
+locked
+------
+f     
+(1 row)
+
+step o_rereg: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step s_unlock: SELECT pg_advisory_unlock_all();
+pg_advisory_unlock_all
+----------------------
+                      
+(1 row)
+
+
+starting permutation: o_begin o_rereg x_rereg o_commit
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step o_begin: BEGIN;
+step o_rereg: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step x_rereg: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered; <waiting ...>
+step o_commit: COMMIT;
+step x_rereg: <... completed>
+reregistered
+------------
+t           
+(1 row)
+
+
+starting permutation: s_begin s_drop o_rereg s_rollback
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step s_begin: BEGIN;
+step s_drop: SELECT tviews.pg_tviews_drop('post');
+ERROR:  must be owner of TVIEW tv_post
+step o_rereg: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step s_rollback: ROLLBACK;
+
+starting permutation: s_begin s_replace o_rereg s_rollback
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step s_begin: BEGIN;
+step s_replace: 
+  SELECT tviews.pg_tviews_create_or_replace('post', $$
+    SELECT p.pk_post, p.id, jsonb_build_object('t', p.title) AS data FROM tb_post p $$);
+
+ERROR:  must be owner of TVIEW tv_post
+step o_rereg: SELECT tviews.pg_tviews_reregister('post') IS NOT NULL AS reregistered;
+reregistered
+------------
+t           
+(1 row)
+
+step s_rollback: ROLLBACK;

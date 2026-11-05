@@ -54,7 +54,10 @@ controls exist today. How the extension works is in
 - **No `SECURITY DEFINER` functions.** Every function checks as the caller; the
   catalog and audit-log writes then run as the extension's owner inside the library.
 - **Ownership checks before any lock.** Every function acting on, or showing, one
-  TVIEW requires owning it or the extension (42501).
+  TVIEW requires owning it or the extension (42501) before it takes a lock, so a
+  refused call holds none, even in a transaction left open. The lock serializing
+  DDL on one entity is private to pg_tviews: no role can take it with
+  `pg_advisory_lock()`.
 - **Functions acting on every TVIEW end in `_all` and are revoked from `PUBLIC`**
   (`pg_tviews_refresh_all()`, `pg_tviews_rebuild_all()`, `pg_tviews_reregister_all()`,
   `pg_tviews_ensure_propagation_indexes_all()`, `pg_tviews_reset_stats_all()`, with the

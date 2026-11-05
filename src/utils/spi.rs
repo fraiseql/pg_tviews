@@ -207,11 +207,6 @@ impl LookupKeys {
     }
 }
 
-/// An `integer` argument.
-pub fn int4<'a>(value: i32) -> DatumWithOid<'a> {
-    DatumWithOid::from(value)
-}
-
 /// A `smallint` argument.
 pub fn int2<'a>(value: i16) -> DatumWithOid<'a> {
     DatumWithOid::from(value)

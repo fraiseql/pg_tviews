@@ -27,6 +27,8 @@ thread_local! {
 pub const VALUE_TAG: u16 = 0x5476;
 /// `field4` of a relation's intent and escalated locks.
 pub const RELATION_TAG: u16 = 0x5477;
+/// `field4` of a TVIEW's registration lock.
+pub const REGISTRATION_TAG: u16 = 0x5478;
 
 /// Which end of the protocol takes a lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -138,6 +140,38 @@ pub const fn value_tag(database: u32, relid: u32, hash: u32) -> pg_sys::LOCKTAG 
 #[must_use]
 pub const fn relation_tag(database: u32, relid: u32, space: Space) -> pg_sys::LOCKTAG {
     tag(database, relid, space.field3(), RELATION_TAG)
+}
+
+/// The tag of the registration lock of the entity whose name hashes to `hash`.
+#[must_use]
+pub const fn registration_tag(database: u32, hash: u32) -> pg_sys::LOCKTAG {
+    tag(database, hash, 0, REGISTRATION_TAG)
+}
+
+/// Hold the registration lock of `entity` until the transaction ends: calls
+/// registering, changing or dropping one entity run one after the other. The
+/// tag is private to `pg_tviews` (`pg_advisory_lock()` never takes it), so no
+/// other role can hold it.
+pub fn lock_registration(entity: &str) {
+    use std::hash::{Hash, Hasher};
+    // Every backend runs the same library, so they agree on the hash; two
+    // entities sharing one only take turns.
+    let mut hasher = std::hash::DefaultHasher::new();
+    entity.hash(&mut hasher);
+    #[allow(clippy::cast_possible_truncation)] // Reason: a lock tag field holds 32 bits
+    let hash = hasher.finish() as u32;
+    // SAFETY: a transaction is in progress (DDL runs in one) and the tag is a
+    // well-formed advisory tag; the lock belongs to the current resource owner
+    // and ends with the transaction. Waiting honours lock_timeout and deadlock
+    // detection, which raise an ERROR.
+    unsafe {
+        pg_sys::LockAcquire(
+            &registration_tag(database(), hash),
+            pg_sys::ExclusiveLock.cast_signed(),
+            false,
+            false,
+        );
+    }
 }
 
 fn database() -> u32 {
@@ -518,6 +552,20 @@ mod tests {
         assert_eq!(relation.locktag_field4, 0x5477);
         assert_eq!(relation.locktag_field3, 0);
         assert_eq!(relation_tag(5, 16_384, Space::Keys).locktag_field3, 1);
+        let registration = registration_tag(5, 99);
+        assert_eq!(registration.locktag_field4, 0x5478);
+        assert_eq!(
+            u32::from(registration.locktag_type),
+            pg_sys::LockTagType::LOCKTAG_ADVISORY
+        );
+        assert_eq!(
+            u32::from(registration.locktag_lockmethodid),
+            pg_sys::USER_LOCKMETHOD
+        );
+        assert_eq!(
+            (registration.locktag_field1, registration.locktag_field2),
+            (5, 99)
+        );
     }
 
     #[test]

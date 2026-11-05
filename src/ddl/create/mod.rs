@@ -189,7 +189,7 @@ fn create_tview_inner(
     }
     .with_text_search(crate::owner::session_text_search().as_deref());
     // Calls that register, change or drop one entity run one after the other.
-    super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
+    super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name));
 
     let (entity_name, final_select_sql, final_schema) =
         checked_definition(tview_name, select_sql, group_keys.is_some())?;
@@ -432,7 +432,7 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 /// Returns an error if the TVIEW is not registered or the definition cannot be
 /// analyzed.
 pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
-    super::lock_entity(entity)?;
+    super::lock_entity(entity);
     let (definition, schema_name) = crate::catalog::row::definition_and_schema(entity)?;
     let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
         return Err(TViewError::TviewNotFound {

@@ -120,13 +120,14 @@ item the count of its place's current items), compose the aggregate at read time
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it; readers are not blocked | end of transaction |
-| Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
+| Creating, replacing or dropping a TVIEW | pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624), so DDL on one entity runs one call at a time; a role that may not change the TVIEW is refused before it takes the lock | end of transaction |
 
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'
 own: `objsubid` is 21622 for a value (or the key of a row being created) and 21623 for
 a relation's intent and escalated locks, `classid` is the relation, `objid` a hash of
-the value. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
-nor block them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
+the value. A registration lock has `objsubid` 21624 and a hash of the entity as
+`classid`. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
+nor block any of them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
 released by `ROLLBACK TO SAVEPOINT` when taken after the savepoint; a link changed
 after the savepoint is forgotten with them.
 

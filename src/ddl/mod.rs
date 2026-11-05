@@ -179,25 +179,8 @@ pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
     }
 }
 
-/// Advisory lock class of TVIEW registrations (`"tvie"`).
-const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
-
 /// Hold the registration lock of `entity` until the transaction ends, so that
-/// calls registering, changing or dropping one entity run one after the other:
-/// `pg_advisory_xact_lock(<class>, hashtext(entity))`.
-///
-/// # Errors
-/// Returns an error if the lock cannot be taken.
-pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
-    crate::utils::spi::run(
-        "SELECT pg_catalog.pg_advisory_xact_lock($1, pg_catalog.hashtext($2))",
-        &[
-            crate::utils::spi::int4(REGISTRATION_LOCK_CLASS),
-            crate::utils::spi::text(entity),
-        ],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Lock the registration of TVIEW {entity}"),
-        pg_error: e.to_string(),
-    })
+/// calls registering, changing or dropping one entity run one after the other.
+pub(crate) fn lock_entity(entity: &str) {
+    crate::concurrency::lock_registration(entity);
 }

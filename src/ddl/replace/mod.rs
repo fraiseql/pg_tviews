@@ -48,8 +48,12 @@ pub(crate) fn create_or_replace(
     let Name { schema, entity } = resolve::parse(name)?;
     let options = parse_options(options)?;
     let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
-    super::lock_entity(&entity)?;
     let tv_name = format!("tv_{entity}");
+    // A role that may not replace it takes no lock; checked again under the lock.
+    if let Some(meta) = TviewMeta::load_by_entity(&entity)? {
+        crate::owner::require_owner(meta.tview_oid, &tv_name)?;
+    }
+    super::lock_entity(&entity);
 
     let declared = options.resolve()?;
     let registered = resolve::registered_schema(&entity)?;
@@ -249,14 +253,23 @@ pub(crate) fn create_only(
     if_not_exists: bool,
 ) -> TViewResult<Created> {
     let Name { schema, entity } = resolve::parse(name)?;
-    super::lock_entity(&entity)?;
-    if TviewMeta::load_by_entity(&entity)?.is_some() {
-        return Ok(if if_not_exists {
-            notice!("TVIEW tv_{entity} already exists, skipping");
-            Created::Skipped
-        } else {
-            Created::Exists(format!("tv_{entity}"))
-        });
+    let existing = || -> TViewResult<Option<Created>> {
+        Ok(TviewMeta::load_by_entity(&entity)?.map(|_| {
+            if if_not_exists {
+                notice!("TVIEW tv_{entity} already exists, skipping");
+                Created::Skipped
+            } else {
+                Created::Exists(format!("tv_{entity}"))
+            }
+        }))
+    };
+    // An existing TVIEW is answered without the lock; checked again under it.
+    if let Some(created) = existing()? {
+        return Ok(created);
+    }
+    super::lock_entity(&entity);
+    if let Some(created) = existing()? {
+        return Ok(created);
     }
     let schema = match schema {
         Some(schema) => schema,
