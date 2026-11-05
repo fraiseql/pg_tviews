@@ -243,9 +243,13 @@ fn create_tview_inner(
         &declarations,
     )?;
     let lineage = &derivation.lineage;
-    // The fill reads committed rows: writes in flight to the tables read commit
-    // first, and none starts before the TVIEW's triggers and plan are in place.
-    super::lock_tables_read(view_oid)?;
+    // Refused before any lock: a table it may not attach refreshes to.
+    let plan = crate::dependency::trigger_plan(lineage);
+    crate::dependency::check_installable(&plan, &[], entity_name)?;
+    // The fill reads committed rows: writes in flight to the tables whose
+    // writes refresh it commit first, and none starts before the TVIEW's
+    // triggers and plan are in place.
+    super::lock_tables_read(&plan)?;
 
     // Create materialized table tv_<entity>, keyed on the identity, and its indexes.
     let indexes = create_materialized_table(
@@ -347,7 +351,6 @@ fn finish(
     // Triggers on the tables it reads, as their lineage needs them: base tables,
     // and other TVIEWs' tables it maps like them.
     let plan = crate::dependency::trigger_plan(&derivation.lineage);
-    crate::dependency::check_installable(&plan, &[], entity)?;
     crate::dependency::sync_tables(&plan.iter().map(|&(table, _)| table).collect::<Vec<_>>())?;
     crate::cache::invalidate_all();
     crate::audit::log_create(entity, definition)

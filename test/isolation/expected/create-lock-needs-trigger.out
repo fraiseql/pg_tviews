@@ -1,0 +1,21 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_begin w_item r_table w_commit
+step w_begin: BEGIN;
+step w_item: INSERT INTO tb_item (pk_item, name) VALUES (2, 'two');
+step r_table: 
+  SELECT tviews.pg_tviews_create('tv_mine', $$
+    SELECT i.pk_item AS pk_mine, i.id, jsonb_build_object('n', i.name) AS data FROM tb_item i $$);
+
+ERROR:  Failed to create TVIEW: permission denied for table "public"."tb_item": pg_tviews maintains tv_mine with triggers on the tables it reads, which needs the TRIGGER privilege
+step w_commit: COMMIT;
+
+starting permutation: w_begin w_secret r_view w_commit
+step w_begin: BEGIN;
+step w_secret: INSERT INTO tb_secret (pk_secret, name) VALUES (2, 'two');
+step r_view: 
+  SELECT tviews.pg_tviews_create('tv_mine', $$
+    SELECT s.pk_secret AS pk_mine, s.id, jsonb_build_object('n', s.name) AS data FROM v_secret s $$);
+
+ERROR:  Failed to create TVIEW: permission denied for table "public"."tb_secret": pg_tviews maintains tv_mine with triggers on the tables it reads, which needs the TRIGGER privilege
+step w_commit: COMMIT;

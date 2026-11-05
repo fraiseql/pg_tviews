@@ -447,7 +447,13 @@ fn replace_in_place(
         ),
         &[crate::utils::spi::text_array_of(&entities)],
     )?;
-    read_tables.extend_from_slice(new_base_tables);
+    // A table the new definition reads that the caller may not attach work to
+    // is not locked: if it needs triggers, the replace is refused below.
+    for &table in new_base_tables {
+        if super::may_trigger(table)? {
+            read_tables.push(table);
+        }
+    }
     read_tables.retain(|table| !tv_tables.contains(table));
     read_tables.sort_unstable_by_key(|table| table.to_u32());
     read_tables.dedup();

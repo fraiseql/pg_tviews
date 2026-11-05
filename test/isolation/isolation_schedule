@@ -56,3 +56,4 @@ test: suspend-catch-up-vs-reader
 test: registration-lock-private
 test: escalation-unprivileged-writer
 test: create-vs-write
+test: create-lock-needs-trigger

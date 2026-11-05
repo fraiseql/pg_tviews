@@ -193,21 +193,35 @@ pub(crate) fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
     })
 }
 
-/// Hold SHARE on every table the view `view_oid` reads, each as its owner,
-/// until the transaction ends: a write in flight to one of them commits
-/// before the caller reads the view, and none starts until the caller commits.
-/// Writers lock a base table, then the TVIEW tables their flush writes: the
-/// tables that are no TVIEW's come first, each group in OID order.
-pub(crate) fn lock_tables_read(view_oid: pg_sys::Oid) -> TViewResult<()> {
+/// Hold SHARE on every table of `plan` whose writes refresh the TVIEW (one
+/// that gets triggers, or another TVIEW's table), each as its owner, until the
+/// transaction ends: a write in flight to one of them commits before the caller
+/// reads the view, and none starts until the caller commits. The caller holds
+/// `TRIGGER` on each ([`crate::dependency::check_installable`]). Writers lock a
+/// base table, then the TVIEW tables their flush writes: the tables that are no
+/// TVIEW's come first, each group in OID order.
+pub(crate) fn lock_tables_read(plan: &crate::dependency::TriggerPlan) -> TViewResult<()> {
     let tview_tables = crate::catalog::row::table_oids()?;
-    let mut tables: Vec<pg_sys::Oid> = crate::lineage::reads::view_relations_read(view_oid)?
-        .into_iter()
-        .filter(|&(_, relkind)| matches!(relkind, b'r' | b'p'))
-        .map(|(table, _)| table)
+    let mut tables: Vec<pg_sys::Oid> = plan
+        .iter()
+        .filter(|&&(table, set)| {
+            set != crate::catalog::readers::TriggerSet::None || tview_tables.contains(&table)
+        })
+        .map(|&(table, _)| table)
         .collect();
     tables.sort_unstable_by_key(|table| (tview_tables.contains(table), table.to_u32()));
     tables.dedup();
     tables
         .into_iter()
         .try_for_each(|table| lock_as_owner(table, "SHARE"))
+}
+
+/// Whether the current user holds `TRIGGER` on `table`: it may attach work to
+/// the table's writes, and so lock them out while it does.
+pub(crate) fn may_trigger(table: pg_sys::Oid) -> TViewResult<bool> {
+    crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.has_table_privilege($1, 'TRIGGER')",
+        &[crate::utils::spi::oid(table)],
+    )
+    .map(|may| may == Some(true))
 }
