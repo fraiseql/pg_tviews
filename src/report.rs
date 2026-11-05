@@ -31,10 +31,15 @@ use std::collections::{BTreeSet, HashMap};
 /// left out and their types listed in `omitted_types` (#230). `reset` clears them
 /// too: they were seen, just not asked for.
 ///
-/// Rows of a TVIEW the caller may not `SELECT` are left out the same way, asked
-/// for or not, and its type listed in `omitted_types` (#270): the report tells no
-/// more than reading the TVIEW would. A collection is listed only when the caller
-/// may read both its child and its parent TVIEW.
+/// Rows of a TVIEW the caller may not read ([`crate::visibility`]) are left out
+/// the same way, asked for or not, and its type listed in `omitted_types` (#270):
+/// the report tells no more than reading the TVIEW would. So are the rows of a
+/// TVIEW dropped since. Under row security, a row is listed only when a read as
+/// the caller returns it, with or without `include_data`; a deleted row cannot
+/// be read any more, so the deleted rows of such a TVIEW are not listed and its
+/// type is in `invalidated_types`. A collection is listed only when the caller
+/// may read both its child and its parent TVIEW, and names only the parents a
+/// read as the caller returns.
 ///
 /// When the rows were written with `pg_tviews.publish_changes = 'rows'`,
 /// `collections` names the parents whose child lists they left or joined (#244),
@@ -95,32 +100,40 @@ fn requested_types(types: Vec<String>) -> TViewResult<BTreeSet<String>> {
     Ok(types.into_iter().collect())
 }
 
-/// Per-entity type name, qualified TVIEW table, and whether the caller may read it.
+/// Per-entity type name, TVIEW table, whether the caller may read it, and
+/// whether row security applies to the caller's reads of it.
 struct EntityInfo {
     typename: String,
-    table: String,
+    oid: pgrx::pg_sys::Oid,
     readable: bool,
+    row_security: bool,
 }
 
 fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityInfo>> {
     let names: Vec<String> = entities.iter().map(|e| (*e).to_string()).collect();
     Ok(crate::catalog::queries::typenames_and_tables(names)?
         .into_iter()
-        .map(|(entity, typename, table, oid)| {
+        .map(|(entity, typename, _table, oid)| {
             let readable = crate::visibility::may_read_relation(oid);
+            // Unknown counts as active: its rows are then read as the caller.
+            let row_security =
+                readable && crate::visibility::rls_active_for_caller(oid).unwrap_or(true);
             (
                 entity,
                 EntityInfo {
                     typename,
-                    table,
+                    oid,
                     readable,
+                    row_security,
                 },
             )
         })
         .collect())
 }
 
-/// The current `data` of `entity`'s rows `pks`, by `pk_<entity>`.
+/// `entity`'s rows `pks` a read as the caller returns, by `pk_<entity>`, with
+/// their current `data` when `with_data` (`null` otherwise): what the report
+/// lists, under the caller's privileges and row security.
 ///
 /// `pk_<entity>` is BIGINT (#209) and indexed (its primary key, or its own index on a
 /// TVIEW named by another key): the keys are bound as `int8` and each row is one index
@@ -128,7 +141,12 @@ fn entity_info(entities: &BTreeSet<&str>) -> TViewResult<HashMap<String, EntityI
 ///
 /// # Errors
 /// A failed read.
-fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap<i64, Value>> {
+fn caller_rows(
+    entity: &str,
+    table: pgrx::pg_sys::Oid,
+    pks: Vec<i64>,
+    with_data: bool,
+) -> TViewResult<HashMap<i64, Value>> {
     let Some(lookup) = LookupKeys::of(pks) else {
         return Ok(HashMap::new());
     };
@@ -136,10 +154,21 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
         return Ok(HashMap::new());
     };
     let qi_pk = ident::quoted(meta.key_column());
-    let sql = format!(
-        "SELECT t.{qi_pk}, t.data FROM {table} t WHERE {}",
+    let data = if with_data {
+        "t.data"
+    } else {
+        "NULL::pg_catalog.jsonb"
+    };
+    let sql = crate::lineage::render_template(&format!(
+        "SELECT t.{qi_pk}, {data} FROM {{r:{}}} t WHERE {}",
+        table.to_u32(),
         lookup.predicate(&format!("t.{qi_pk}"), 1)
-    );
+    ))
+    .map_err(|e| crate::utils::spi::error("the reported rows", &e))?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: format!("Read the rows of tv_{entity}"),
+        pg_error: "its table is gone".to_string(),
+    })?;
     let rows = crate::utils::spi::kept_rows_as(&sql, &lookup.args(), lookup.plan(), |row| {
         Ok((row.get::<i64>(1)?, row.get::<pgrx::JsonB>(2)?))
     })?;
@@ -147,6 +176,46 @@ fn current_data(entity: &str, table: &str, pks: Vec<i64>) -> TViewResult<HashMap
         .into_iter()
         .filter_map(|(pk, data)| Some((pk?, data.map_or(Value::Null, |d| d.0))))
         .collect())
+}
+
+/// Rows read as the caller, by entity and `pk_<entity>`: their `data`, or
+/// `null` when not asked for.
+type Rows = HashMap<(String, i64), Value>;
+
+/// Under row security, the changed rows a read as the caller returns (with
+/// their data when `include_data`), read before the limit applies, and the
+/// entities with deleted rows, which cannot be read any more.
+///
+/// # Errors
+/// A failed read.
+fn read_under_row_security<'a>(
+    changes: &[&'a NetChange],
+    info: &HashMap<String, EntityInfo>,
+    include_data: bool,
+) -> TViewResult<(Rows, BTreeSet<&'a str>)> {
+    let mut rows = HashMap::new();
+    let mut deleted = BTreeSet::new();
+    let mut pks_by_entity: HashMap<&str, (pgrx::pg_sys::Oid, Vec<i64>)> = HashMap::new();
+    for c in changes {
+        let Some(i) = info.get(&c.entity).filter(|i| i.row_security) else {
+            continue;
+        };
+        if c.change == Change::Deleted {
+            deleted.insert(c.entity.as_str());
+        } else {
+            pks_by_entity
+                .entry(&c.entity)
+                .or_insert_with(|| (i.oid, Vec::new()))
+                .1
+                .push(c.pk);
+        }
+    }
+    for (entity, (oid, pks)) in pks_by_entity {
+        for (pk, data) in caller_rows(entity, oid, pks, include_data)? {
+            rows.insert((entity.to_string(), pk), data);
+        }
+    }
+    Ok((rows, deleted))
 }
 
 fn build_report(
@@ -169,7 +238,8 @@ fn build_report(
         )
     };
     // A TVIEW dropped since its rows were journaled has nothing left to read.
-    let readable = |entity: &str| info.get(entity).is_none_or(|i| i.readable);
+    let readable = |entity: &str| info.get(entity).is_some_and(|i| i.readable);
+    let row_security = |entity: &str| info.get(entity).is_some_and(|i| i.row_security);
     let asked =
         |entity: &str| readable(entity) && wanted.is_none_or(|w| w.contains(&typename(entity)));
 
@@ -190,10 +260,20 @@ fn build_report(
     let listed = |c: &&NetChange| include_data || !overflow.contains(&c.entity);
     // Flush order is not deterministic across runs, so report in a fixed order:
     // entity, then key.
-    let mut changes: Vec<NetChange> = changes
+    let changes: Vec<&NetChange> = changes
         .iter()
         .filter(|c| asked(&c.entity))
         .filter(listed)
+        .collect();
+
+    let (mut rows, shielded) = read_under_row_security(&changes, &info, include_data)?;
+    let shielded: BTreeSet<String> = shielded.into_iter().map(typename).collect();
+    let mut changes: Vec<NetChange> = changes
+        .into_iter()
+        .filter(|c| {
+            !row_security(&c.entity)
+                || (c.change != Change::Deleted && rows.contains_key(&(c.entity.clone(), c.pk)))
+        })
         .cloned()
         .collect();
     changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));
@@ -201,15 +281,17 @@ fn build_report(
 
     // The fresh documents, one read per entity, only when asked for: the ids
     // come from the journal.
-    let mut rows: HashMap<(String, i64), Value> = HashMap::new();
     if include_data {
         let mut pks_by_entity: HashMap<&str, Vec<i64>> = HashMap::new();
-        for c in reported.iter().filter(|c| c.change != Change::Deleted) {
+        for c in reported
+            .iter()
+            .filter(|c| c.change != Change::Deleted && !row_security(&c.entity))
+        {
             pks_by_entity.entry(&c.entity).or_default().push(c.pk);
         }
         for (entity, pks) in pks_by_entity {
             if let Some(i) = info.get(entity) {
-                for (pk, data) in current_data(entity, &i.table, pks)? {
+                for (pk, data) in caller_rows(entity, i.oid, pks, true)? {
                     rows.insert((entity.to_string(), pk), data);
                 }
             }
@@ -251,6 +333,7 @@ fn build_report(
         .map(|c| c.entity.as_str())
         .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
+        .chain(shielded)
         .collect();
     let hidden: BTreeSet<String> = entities
         .iter()
@@ -275,6 +358,37 @@ fn build_report(
         report["omitted_types"] = json!(omitted.into_iter().collect::<Vec<_>>());
     }
     Ok(report)
+}
+
+/// The public ids (JSON text) among `ids` of rows of the TVIEW table `parent` a
+/// read as the caller returns.
+///
+/// # Errors
+/// A failed read.
+fn visible_parents(
+    parent: pgrx::pg_sys::Oid,
+    ids: &BTreeSet<String>,
+) -> TViewResult<BTreeSet<String>> {
+    let plain: Vec<String> = ids
+        .iter()
+        .filter_map(|id| serde_json::from_str::<String>(id).ok())
+        .collect();
+    let sql = crate::lineage::render_template(&format!(
+        "SELECT pg_catalog.to_jsonb(t.id)::pg_catalog.text FROM {{r:{}}} t \
+         WHERE t.id OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.uuid[])",
+        parent.to_u32()
+    ))
+    .map_err(|e| crate::utils::spi::error("the listed parents", &e))?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: "Read the parents of a collection".to_string(),
+        pg_error: "the parent TVIEW's table is gone".to_string(),
+    })?;
+    let rows = crate::utils::spi::catalog_rows(
+        &sql,
+        &[crate::utils::spi::text_array_of(&plain)],
+        |row| row.get::<String>(1),
+    )?;
+    Ok(rows.into_iter().flatten().collect())
 }
 
 /// The collections the journaled rows left or joined, `{"Comment.fk_post": [<post
@@ -310,15 +424,15 @@ fn collections(
         })
         .cloned()
         .collect();
-    let mut ids: std::collections::BTreeMap<&str, (&str, BTreeSet<String>)> =
+    let mut ids: std::collections::BTreeMap<&str, (&str, pgrx::pg_sys::Oid, BTreeSet<String>)> =
         std::collections::BTreeMap::new();
     for ((collection, _), listed) in asked.iter().zip(feed::listed(&asked)) {
         let child = &*collection.child_type;
         match listed {
             Listed::Id(id) => {
                 ids.entry(&collection.key)
-                    .or_insert_with(|| (child, BTreeSet::new()))
-                    .1
+                    .or_insert_with(|| (child, collection.parent_table_oid, BTreeSet::new()))
+                    .2
                     .insert(id);
             }
             Listed::Gone => {}
@@ -328,10 +442,16 @@ fn collections(
         }
     }
     let mut out = Map::new();
-    for (key, (child, ids)) in ids {
+    for (key, (child, parent, ids)) in ids {
         if invalidated.contains(child) {
             continue;
         }
+        // Unknown counts as active: the parents are then read as the caller.
+        let ids = if crate::visibility::rls_active_for_caller(parent).unwrap_or(true) {
+            visible_parents(parent, &ids)?
+        } else {
+            ids
+        };
         let values = ids
             .iter()
             .map(|id| serde_json::from_str(id))

@@ -144,6 +144,59 @@ SELECT must((:'r'::jsonb)->'omitted_types' ? 'Note', 'no schema USAGE, omitted: 
 COMMIT;
 RESET ROLE;
 
+-- 7. Row security on a TVIEW: the report lists no row the caller's policies
+--    hide, with data or without, updated or deleted, nor a collection's parent
+--    they hide. A deleted row cannot be read any more: the type of a deleted row
+--    under row security is listed in invalidated_types instead.
+ALTER TABLE tv_comment ENABLE ROW LEVEL SECURITY;
+CREATE POLICY second_only ON tv_comment USING (pk_comment = 2);
+ALTER TABLE tv_post ENABLE ROW LEVEL SECURITY;
+CREATE POLICY second_only ON tv_post USING (pk_post = 2);
+GRANT DELETE ON tb_comment TO report_writer_270;
+SET ROLE report_writer_270;
+BEGIN;
+UPDATE tb_user SET name = 'fay' WHERE pk_user = 1;
+SELECT tviews.pg_tviews_flush_and_report(include_data => false) AS r \gset
+SELECT must(reported(:'r', 'Comment') = 1 AND reported(:'r', 'Post') = 1,
+            'row security, ids only: ' || :'r');
+SELECT tviews.pg_tviews_flush_and_report(include_data => false, types => ARRAY['Comment']) AS r \gset
+SELECT must(reported(:'r', 'Comment') = 0, 'row security, reset then asked: ' || :'r');
+UPDATE tb_user SET name = 'gus' WHERE pk_user = 1;
+SELECT tviews.pg_tviews_flush_and_report(types => ARRAY['Comment']) AS r \gset
+SELECT must(reported(:'r', 'Comment') = 1, 'row security, with data: ' || :'r');
+COMMIT;
+BEGIN;
+DELETE FROM tb_comment WHERE pk_comment = 1;
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(reported(:'r', 'Comment') = 0, 'row security, deleted listed: ' || :'r');
+SELECT must((:'r'::jsonb)->'invalidated_types' ? 'Comment', 'row security, deleted type: ' || :'r');
+ROLLBACK;
+RESET ROLE;
+SELECT id AS post1 FROM tb_post WHERE pk_post = 1 \gset
+SET pg_tviews.publish_changes = rows;
+SET ROLE report_writer_270;
+BEGIN;
+UPDATE tb_comment SET fk_post = 2 WHERE pk_comment = 1;
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(NOT jsonb_path_exists(:'r', '$.collections."Comment.fk_post"[*] ? (@ == $id)',
+                                  jsonb_build_object('id', :'post1')),
+            'row security, a hidden parent listed: ' || :'r');
+COMMIT;
+RESET ROLE;
+RESET pg_tviews.publish_changes;
+ALTER TABLE tv_comment DISABLE ROW LEVEL SECURITY;
+ALTER TABLE tv_post DISABLE ROW LEVEL SECURITY;
+
+-- 8. A TVIEW dropped in the transaction that changed its rows: nothing left to
+--    read, so nothing listed.
+BEGIN;
+UPDATE tb_user SET name = 'hal' WHERE pk_user = 1;
+SELECT tviews.pg_tviews_drop('comment');
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(reported(:'r', 'Comment') = 0, 'dropped, comments listed: ' || :'r');
+SELECT must((:'r'::jsonb)->'omitted_types' ? 'Comment', 'dropped, omitted: ' || :'r');
+ROLLBACK;
+
 DROP EXTENSION pg_tviews CASCADE;
 DROP SCHEMA hidden_270 CASCADE;
 DROP OWNED BY report_writer_270;
