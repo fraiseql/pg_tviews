@@ -228,6 +228,12 @@ at commit.
 - **Triggers off means stale.** `session_replication_role = replica` (superuser) or
   `ALTER TABLE … DISABLE TRIGGER` (table owner) skips the refresh;
   `pg_tviews_check_health()` reports disabled triggers.
+- **Open transactions hold their locks.** A write holds the value locks of what it
+  linked until its transaction ends, as row locks are held: set
+  `idle_in_transaction_session_timeout` (or `transaction_timeout`) for writer roles.
+  A refresh locks a whole table it reads only for a role that may write that table;
+  any other role locks one value per linked row, at most 16 times
+  `pg_tviews.lock_escalation_threshold` per table and transaction (`54000` past that).
 
 ```sql
 BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -277,6 +283,7 @@ DELETE FROM tviews.pg_tview_audit_log WHERE performed_at < now() - interval '90 
       own `search_path`, and are declared in `function_reads`.
 - [ ] Only operator roles hold `EXECUTE` on the `_all` functions.
 - [ ] Writers run at `READ COMMITTED`; no TVIEW reads a subscribed table.
+- [ ] Writer roles have `idle_in_transaction_session_timeout` set.
 - [ ] `pg_tviews.*` settings are set in `postgresql.conf` or by a superuser.
 - [ ] `pg_tviews_check_health()` reports no disabled triggers.
 - [ ] If auditing is required, `pg_tviews.audit_enabled = on` and old rows are

@@ -118,6 +118,19 @@ impl Owner {
     }
 }
 
+/// The role that called into `pg_tviews`, which privileges are decided for:
+/// the current user outside every owner frame, and the current user when the
+/// outermost frame opened inside one (where the current user is an owner).
+#[must_use]
+pub fn caller() -> Oid {
+    if OPEN_FRAMES.with(std::cell::Cell::get) > 0 {
+        CALLER.with(std::cell::Cell::get)
+    } else {
+        // SAFETY: reads backend-global state.
+        unsafe { pg_sys::GetUserId() }
+    }
+}
+
 /// The session's `default_text_search_config`: what a TVIEW created now keeps.
 #[must_use]
 pub fn session_text_search() -> Option<String> {
@@ -393,6 +406,9 @@ impl OwnerFrame {
             open.set(open.get() + 1);
             open.get()
         });
+        if depth == 1 {
+            CALLER.with(|caller| caller.set(saved_user));
+        }
         Self {
             owner,
             saved_user,
@@ -616,6 +632,8 @@ thread_local! {
     static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
     /// How many owner frames are open, the innermost last.
     static OPEN_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The current user when the outermost open frame opened.
+    static CALLER: std::cell::Cell<Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
     /// The text search configurations owners carry ([`Owner::with_text_search`]).
     static INTERNED: RefCell<Vec<&'static CStr>> = const { RefCell::new(Vec::new()) };
     /// The temporary schema found to shadow no name, until a name changes.

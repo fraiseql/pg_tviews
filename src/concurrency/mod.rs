@@ -19,6 +19,9 @@ pub use registry::Mark;
 use registry::{Held, REGISTRY};
 
 thread_local! {
+    /// `(relid, role)` → whether the role may write the relation, this transaction.
+    static WRITABLE: std::cell::RefCell<std::collections::HashMap<(u32, pg_sys::Oid), bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
     static LOCK_VALUES: crate::cache::Memo<(u32, i16), Option<LockValue>> = crate::cache::Memo::new();
 }
@@ -189,7 +192,16 @@ pub fn take(pass: &Pass) {
         return;
     }
     let threshold = crate::config::lock_escalation_threshold();
-    let (ops, escalations) = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold));
+    let caller = crate::owner::caller();
+    let may_lock_whole = |relid: u32| may_write(relid, caller);
+    let planned = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold, &may_lock_whole));
+    let (ops, escalations) = match planned {
+        Ok(planned) => planned,
+        Err(pass::TooManyLinks { max }) => crate::TViewError::RefreshLimit {
+            limit: crate::error::Limit::Links { max },
+        }
+        .raise(),
+    };
     for _ in 0..escalations {
         crate::metrics::metrics_api::record_value_lock_escalation();
     }
@@ -258,7 +270,11 @@ pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String
     let mut pass = Pass::default();
     pass.values(target, side, values);
     let threshold = crate::config::lock_escalation_threshold();
-    if REGISTRY.with_borrow(|r| pass::plan(&pass, r, threshold).1) > 0 {
+    // Asked as if the relation could be locked whole: whether it would be.
+    let whole = REGISTRY.with_borrow(|r| {
+        pass::plan(&pass, r, threshold, &|_| true).map_or(true, |(_, escalations)| escalations > 0)
+    });
+    if whole {
         return false;
     }
     take(&pass);
@@ -505,9 +521,33 @@ pub fn note_write(
     }
 }
 
+/// Whether `role` may write `relid` (`INSERT` or `UPDATE`): only then does a
+/// refresh it caused lock the whole relation, which blocks every writer of it.
+/// Answered once per relation and role in a transaction.
+fn may_write(relid: u32, role: pg_sys::Oid) -> bool {
+    if let Some(known) = WRITABLE.with_borrow(|w| w.get(&(relid, role)).copied()) {
+        return known;
+    }
+    let mut missing = false;
+    // SAFETY: an ACL check by OID; the `_ext` check reports a missing relation
+    // instead of raising. Any of the two privileges passes.
+    let may = unsafe {
+        pg_sys::pg_class_aclcheck_ext(
+            pg_sys::Oid::from(relid),
+            role,
+            pg_sys::AclMode::from(pg_sys::ACL_INSERT | pg_sys::ACL_UPDATE),
+            &raw mut missing,
+        )
+    } == pg_sys::AclResult::ACLCHECK_OK
+        && !missing;
+    WRITABLE.with_borrow_mut(|w| w.insert((relid, role), may));
+    may
+}
+
 /// The transaction ended: every lock was released.
 pub fn clear() {
     REGISTRY.with_borrow_mut(registry::Registry::clear);
+    WRITABLE.with_borrow_mut(std::collections::HashMap::clear);
 }
 
 #[cfg(test)]

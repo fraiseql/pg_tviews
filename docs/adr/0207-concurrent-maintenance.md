@@ -227,6 +227,14 @@ One lock per value exhausts the shared lock table at the default `max_locks_per_
 on one relation (default 64, per transaction, space and side), a transaction locks the
 relation instead. Values already held stay held.
 
+A refresh's escalated lock blocks every writer of the relation, so a refresh locks a relation
+whole only when the role that wrote may write that relation itself (`INSERT` or `UPDATE`,
+checked once per relation and transaction, for the role that called into `pg_tviews`, not
+the TVIEW's owner it refreshes as). A role that could not block those writers with plain
+PostgreSQL keeps locking values, one per value, up to 16 times the threshold; past that the
+statement fails with 54000 ("too many rows linked in one statement"), naming no relation. A
+writer's escalation is not gated: it locks values of the rows it changed, which it may write.
+
 ### Fresh snapshots
 
 The queries that find TVIEW rows (mapping queries, the embed lookup) and that compute them run
@@ -251,7 +259,10 @@ deadlock remains possible, reported by PostgreSQL with 40P01, which is retryable
 
 - A write can wait for a concurrent transaction writing related rows: an insert of a post
   waits for an open rename of its author, and the reverse. Deadlocks between such writes are
-  reported with 40P01.
+  reported with 40P01. A transaction left open holds its locks until it ends, as with row
+  locks: set `idle_in_transaction_session_timeout` for writer roles.
+- A role without `INSERT` or `UPDATE` on a table a TVIEW reads links at most 16 times
+  `pg_tviews.lock_escalation_threshold` of its rows in one transaction (54000 past that).
 - Writers at REPEATABLE READ or SERIALIZABLE are refused (0A000); fraiseql's mutations run at
   READ COMMITTED and keep rules spanning rows with constraints and `SELECT … FOR UPDATE`.
 - After a link change the capture runs the lookup twice and the read-set query once more,

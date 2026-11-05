@@ -771,7 +771,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | a flush over 1,000 entity batches (a loop: a trigger on a TVIEW table writing back what the refresh reads), or backing views nested more than 64 deep |
-| `54000` | `program_limit_exceeded` | refresh queue backpressure (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
+| `54000` | `program_limit_exceeded` | refresh queue backpressure (`pg_tviews.max_queue_size`), a statement's refresh over `pg_tviews.max_refresh_rows`, or more rows linked in one transaction than a role without `INSERT` or `UPDATE` on a table a TVIEW reads may lock one by one |
 | `55000` | `object_not_in_prerequisite_state` | the library is not in `shared_preload_libraries`, resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |

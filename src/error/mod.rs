@@ -26,6 +26,9 @@ pub enum Limit {
         count: u64,
         max: u64,
     },
+    /// A statement linked more than `max` values of one relation its writer may
+    /// not write, each locked on its own: the relation is not named.
+    Links { max: usize },
 }
 
 /// Why a transaction cannot be prepared.
@@ -219,6 +222,13 @@ impl TViewError {
                  after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
                  once, at resume or commit."
             )),
+            Self::RefreshLimit {
+                limit: Limit::Links { .. },
+            } => Some(
+                "Link fewer rows in one statement, or run it as a role with INSERT or UPDATE \
+                 on the tables the TVIEW reads: pg_tviews then locks such a table once."
+                    .into(),
+            ),
             Self::FunctionSearchPath { function, fix, .. } => {
                 Some(format!("ALTER FUNCTION {function} SET search_path = {fix}"))
             }
@@ -439,6 +449,13 @@ impl fmt::Display for TViewError {
                 f,
                 "refreshing {tview} {how} would write {count} rows in one statement \
                  (max_refresh_rows = {max})"
+            ),
+            Self::RefreshLimit {
+                limit: Limit::Links { max },
+            } => write!(
+                f,
+                "too many rows linked in one statement: more than {max} values of a table \
+                 its role may not write"
             ),
             Self::CatalogError {
                 operation,
@@ -689,6 +706,12 @@ mod tests {
         assert_eq!(
             code(TViewError::RefreshLimit {
                 limit: Limit::Queue { size: 1, max: 1 }
+            }),
+            "54000"
+        );
+        assert_eq!(
+            code(TViewError::RefreshLimit {
+                limit: Limit::Links { max: 1024 }
             }),
             "54000"
         );

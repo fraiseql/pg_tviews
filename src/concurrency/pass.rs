@@ -153,11 +153,33 @@ impl Wants {
     }
 }
 
+/// How many times `threshold` values of one relation a refresh locks one by one
+/// when it may not lock the relation.
+pub(super) const LINK_CAP_FACTOR: usize = 16;
+
+/// A refresh would lock more than `max` values of a relation it may not lock
+/// whole.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TooManyLinks {
+    pub max: usize,
+}
+
 /// The locks `pass` takes that `registry` doesn't hold, in acquisition order,
 /// and the relations it escalates. A writer's lock on a value or a relation
 /// covers a refresh's. Past `threshold` values per relation, space and side
-/// (counting those held), the relation is locked instead; 0 always does.
-pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: usize) -> (Vec<Op>, usize) {
+/// (counting those held), the relation is locked instead; 0 always does. A
+/// refresh locks a relation whole only when `may_lock_whole(relid)`: it blocks
+/// every writer of it. Otherwise it keeps locking values, up to
+/// [`LINK_CAP_FACTOR`] times `threshold`.
+///
+/// # Errors
+/// [`TooManyLinks`] past that cap.
+pub(super) fn plan(
+    pass: &Pass,
+    registry: &Registry,
+    threshold: usize,
+    may_lock_whole: &dyn Fn(u32) -> bool,
+) -> Result<(Vec<Op>, usize), TooManyLinks> {
     // The values asked for, per relation, space and side, writers first.
     let mut asked: BTreeMap<(u32, Space, Side), BTreeSet<u32>> = BTreeMap::new();
     for (space, target, side, values) in &pass.values {
@@ -215,13 +237,24 @@ pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: usize) -> (Vec<O
         if new.is_empty() {
             continue;
         }
-        let w = wants.entry((relid, space)).or_default();
         if registry.should_escalate(relid, space, side, new.len(), threshold) {
-            escalations += 1;
-            w.raise(side, Want::Escalated);
-            continue;
+            if side == Side::Writer || may_lock_whole(relid) {
+                escalations += 1;
+                wants
+                    .entry((relid, space))
+                    .or_default()
+                    .raise(side, Want::Escalated);
+                continue;
+            }
+            let max = threshold.max(1).saturating_mul(LINK_CAP_FACTOR);
+            if registry.values(relid, space, side) + new.len() > max {
+                return Err(TooManyLinks { max });
+            }
         }
-        w.raise(side, Want::Intent);
+        wants
+            .entry((relid, space))
+            .or_default()
+            .raise(side, Want::Intent);
         ops.extend(new.into_iter().map(|hash| Op::Value {
             relid,
             space,
@@ -239,7 +272,19 @@ pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: usize) -> (Vec<O
         }),
         Op::Relation { .. } => true,
     });
-    for (&(relid, space), w) in &wants {
+    ops.extend(relation_ops(&wants, registry));
+    ops.sort_by_key(Op::order);
+    Ok((ops, escalations))
+}
+
+/// The relation locks `wants` asks for that `registry` doesn't hold.
+fn relation_ops(wants: &BTreeMap<(u32, Space), Wants>, registry: &Registry) -> Vec<Op> {
+    let escalated = |relid, space, side| {
+        registry.escalated(relid, space, side)
+            || (side == Side::Refresh && registry.escalated(relid, space, Side::Writer))
+    };
+    let mut ops = Vec::new();
+    for (&(relid, space), w) in wants {
         let holds = |lock| registry.holds(&lock);
         let intent_held = |side| holds(Held::Intent { relid, space, side });
         let mut modes = Vec::new();
@@ -272,8 +317,7 @@ pub(super) fn plan(pass: &Pass, registry: &Registry, threshold: usize) -> (Vec<O
                 .map(|mode| Op::Relation { relid, space, mode }),
         );
     }
-    ops.sort_by_key(Op::order);
-    (ops, escalations)
+    ops
 }
 
 #[cfg(test)]
@@ -296,7 +340,7 @@ mod tests {
         let mut pass = Pass::default();
         pass.values(&target(20), Side::Refresh, &strings(&["b", "a"]));
         pass.values(&target(10), Side::Writer, &strings(&["c"]));
-        let (ops, _) = plan(&pass, &Registry::default(), 64);
+        let (ops, _) = plan(&pass, &Registry::default(), 64, &|_| true).unwrap();
         let order: Vec<_> = ops.iter().map(Op::order).collect();
         let mut sorted = order.clone();
         sorted.sort_unstable();
@@ -307,11 +351,55 @@ mod tests {
     }
 
     #[test]
+    fn a_refresh_locks_values_of_a_relation_it_may_not_lock_whole() {
+        let mut pass = Pass::default();
+        pass.values(&target(20), Side::Refresh, &strings(&["a", "b", "c"]));
+        let (ops, escalations) = plan(&pass, &Registry::default(), 1, &|_| false).unwrap();
+        assert_eq!(escalations, 0);
+        let values = ops
+            .iter()
+            .filter(|op| matches!(op, Op::Value { .. }))
+            .count();
+        assert_eq!(values, 3);
+        assert!(!ops.iter().any(|op| matches!(
+            op,
+            Op::Relation {
+                mode: RelationMode::RefreshEscalated,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_refresh_past_the_cap_on_such_a_relation_is_refused() {
+        let mut pass = Pass::default();
+        let values: Vec<String> = (0..=LINK_CAP_FACTOR).map(|i| i.to_string()).collect();
+        pass.values(&target(20), Side::Refresh, &values);
+        assert_eq!(
+            plan(&pass, &Registry::default(), 1, &|_| false),
+            Err(TooManyLinks {
+                max: LINK_CAP_FACTOR
+            })
+        );
+        let mut within = Pass::default();
+        within.values(&target(20), Side::Refresh, &values[1..]);
+        assert!(plan(&within, &Registry::default(), 1, &|_| false).is_ok());
+    }
+
+    #[test]
+    fn a_writer_escalates_whatever_it_may_lock_whole() {
+        let mut pass = Pass::default();
+        pass.values(&target(10), Side::Writer, &strings(&["a", "b"]));
+        let (_, escalations) = plan(&pass, &Registry::default(), 1, &|_| false).unwrap();
+        assert_eq!(escalations, 1);
+    }
+
+    #[test]
     fn a_writer_value_covers_the_same_refresh_value() {
         let mut pass = Pass::default();
         pass.values(&target(10), Side::Refresh, &strings(&["a", "b"]));
         pass.values(&target(10), Side::Writer, &strings(&["a"]));
-        let (ops, _) = plan(&pass, &Registry::default(), 64);
+        let (ops, _) = plan(&pass, &Registry::default(), 64, &|_| true).unwrap();
         let values: Vec<_> = ops
             .iter()
             .filter_map(|op| match op {
@@ -332,7 +420,7 @@ mod tests {
         let mut pass = Pass::default();
         pass.values(&target(10), Side::Writer, &strings(&["a"]));
         pass.values(&target(10), Side::Refresh, &strings(&["b", "c"]));
-        let (ops, escalations) = plan(&pass, &Registry::default(), 1);
+        let (ops, escalations) = plan(&pass, &Registry::default(), 1, &|_| true).unwrap();
         assert_eq!(escalations, 1);
         assert_eq!(
             ops.first(),
@@ -356,7 +444,7 @@ mod tests {
         let mut pass = Pass::default();
         pass.values(&target(10), Side::Writer, &strings(&["a", "b"]));
         pass.values(&target(10), Side::Refresh, &strings(&["c"]));
-        let (ops, _) = plan(&pass, &Registry::default(), 1);
+        let (ops, _) = plan(&pass, &Registry::default(), 1, &|_| true).unwrap();
         assert_eq!(
             ops,
             vec![Op::Relation {
@@ -384,6 +472,6 @@ mod tests {
         let mut pass = Pass::default();
         pass.values(&target(10), Side::Writer, &strings(&["a"]));
         pass.values(&target(10), Side::Refresh, &strings(&["a"]));
-        assert!(plan(&pass, &registry, 64).0.is_empty());
+        assert!(plan(&pass, &registry, 64, &|_| true).unwrap().0.is_empty());
     }
 }
