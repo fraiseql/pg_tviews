@@ -163,14 +163,24 @@ fn columns_check() -> Check {
 
 /// Mapping queries that scan a large table: the advice registration printed,
 /// re-evaluated with today's indexes and statistics (an index dropped later).
-/// Each is planned as its TVIEW's owner, as the trigger runs it.
+/// Each is planned as its TVIEW's owner, as the trigger runs it, for the TVIEWs
+/// whose owner's privileges the caller has: planning runs the owner's code.
 fn seq_scan_check() -> Check {
     let mut found = Vec::new();
     let metas = match crate::catalog::TviewMeta::load_all() {
         Ok(metas) => metas,
         Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
     };
+    let mut skipped = 0;
     for meta in &metas {
+        match acts_for_owner(meta) {
+            Ok(true) => {}
+            Ok(false) => {
+                skipped += 1;
+                continue;
+            }
+            Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
+        }
         let Ok(owner) = crate::owner::Owner::of_table(meta.tview_oid) else {
             continue;
         };
@@ -207,8 +217,19 @@ fn seq_scan_check() -> Check {
             Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
         }
     }
+    let unchecked = if skipped == 0 {
+        String::new()
+    } else {
+        format!(
+            " ({skipped} TVIEW{} of other owners not checked)",
+            if skipped == 1 { "" } else { "s" }
+        )
+    };
     if found.is_empty() {
-        ok("seq_scans", "No mapping query scans a large table")
+        ok(
+            "seq_scans",
+            format!("No mapping query scans a large table{unchecked}"),
+        )
     } else {
         warning(
             "seq_scans",
@@ -217,7 +238,7 @@ fn seq_scan_check() -> Check {
                  joins on makes them cheaper (SELECT * FROM \
                  tviews.pg_tviews_ensure_propagation_indexes(tview) creates the propagation ones)",
                 sample(&found)
-            ),
+            ) + &unchecked,
         )
     }
 }
@@ -267,6 +288,17 @@ fn contents_check() -> Check {
     }
 }
 
+/// Whether the caller has the privileges of the owner of `meta`'s TVIEW: only
+/// then is the TVIEW's own code run as its owner on the caller's behalf.
+fn acts_for_owner(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> {
+    let member = crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
+         WHERE c.oid = $1",
+        &[crate::utils::spi::oid(meta.tview_oid)],
+    )?;
+    Ok(member == Some(true))
+}
+
 /// The TVIEW's qualified name when its table is empty and its backing view is
 /// not, read as its owner; `None` too for a TVIEW not checked ([`contents_check`]).
 fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
@@ -276,12 +308,7 @@ fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Optio
     {
         return Ok(None);
     }
-    let callers = crate::utils::spi::one::<bool>(
-        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
-         WHERE c.oid = $1",
-        &[crate::utils::spi::oid(meta.tview_oid)],
-    )?;
-    if callers != Some(true) {
+    if !acts_for_owner(meta)? {
         return Ok(None);
     }
     crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |_frame| {
