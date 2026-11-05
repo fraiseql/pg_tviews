@@ -557,14 +557,14 @@ pub fn large_seq_scans(
         "WITH {DELTA} AS (SELECT * FROM {{r:{}}} LIMIT 0) {template}",
         relid.to_u32()
     ))
-        .map_err(|e| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {table}"),
-            pg_error: e.to_string(),
-        })?
-        .ok_or_else(|| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {table}"),
-            pg_error: "a relation or column it reads is gone".to_string(),
-        })?;
+    .map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Name the relations of the mapping of {table}"),
+        pg_error: e.to_string(),
+    })?
+    .ok_or_else(|| crate::TViewError::CatalogError {
+        operation: format!("Name the relations of the mapping of {table}"),
+        pg_error: "a relation or column it reads is gone".to_string(),
+    })?;
     let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
     let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
         .map_err(|e| crate::TViewError::SpiError {
