@@ -156,7 +156,6 @@ pub(crate) fn create_or_replace(
     {
         replace_in_place(
             &entity,
-            &schema,
             &meta,
             &qualified_view,
             &normalized_sql,
@@ -421,7 +420,6 @@ fn compare_definition(
 /// change. The tables, their indexes, privileges and dependents stay.
 fn replace_in_place(
     entity: &str,
-    schema: &str,
     meta: &TviewMeta,
     qualified_view: &str,
     definition: &str,
@@ -471,7 +469,7 @@ fn replace_in_place(
         ))
     })?;
     let read_before = crate::catalog::readers::tables_of(entity)?;
-    let reads = create::reregister_metadata(entity, schema, definition)?;
+    let reads = create::reregister_metadata(entity, definition)?;
     crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
     // The rows are recomputed as the TVIEW's owner, as every refresh is.
     crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {

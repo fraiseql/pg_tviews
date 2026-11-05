@@ -3,7 +3,6 @@
 use super::ViewColumns;
 use super::derive::{Derivation, uncascaded_tables};
 use super::indexes::{create_embed_lookup_indexes, key_index};
-use super::relations::relation_oid;
 use crate::ddl::uncascaded::{Declarations, Uncascaded};
 use crate::error::TViewResult;
 use crate::lineage::Identity;
@@ -15,8 +14,9 @@ use pgrx::pg_sys;
 /// the indexes its embed lookups need, and its catalog row.
 pub(crate) struct Registration<'a> {
     pub(crate) entity: &'a str,
-    /// The schema of `tv_<entity>`.
-    pub(crate) schema: &'a str,
+    /// The TVIEW's table: the one just created, or the one registered. Its
+    /// schema and name are read from it, never resolved from a name.
+    pub(crate) table_oid: pg_sys::Oid,
     pub(crate) view_oid: pg_sys::Oid,
     pub(crate) definition: &'a str,
     pub(crate) columns: &'a ViewColumns,
@@ -33,8 +33,8 @@ impl Registration<'_> {
     /// # Errors
     /// An `error` policy table no cascade reaches, a refused embed, a failed write.
     pub(crate) fn write(&self, declarations: Declarations, replace: bool) -> TViewResult<()> {
-        let tview = format!("tv_{}", self.entity);
-        let table_oid = relation_oid(self.schema, &tview)?;
+        let table_oid = self.table_oid;
+        let (schema, tview) = crate::ddl::relation_name(table_oid)?;
         let qualified = crate::utils::qualified_relname_from_oid(table_oid)?;
         let lineage = &self.derivation.lineage;
         crate::ddl::uncascaded::report_functions(
@@ -62,10 +62,10 @@ impl Registration<'_> {
             &lookups,
             self.columns,
             &tview,
-            self.schema,
+            &schema,
         )?);
         if let Some(index) = key_index(&tview, self.columns, &lineage.identity.name) {
-            indexes.extend(index.create(self.schema, &tview)?);
+            indexes.extend(index.create(&schema, &tview)?);
         }
         MetaRow {
             entity: self.entity,

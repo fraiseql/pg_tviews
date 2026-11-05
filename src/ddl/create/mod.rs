@@ -284,9 +284,10 @@ fn create_tview_inner(
     // Report the base tables no cascade reaches under
     // the policy (`error` aborts, and the objects created above roll back with it),
     // and register the TVIEW with its plan.
+    let table_oid = relation_oid(&schema_name, &tv_table_name)?;
     Registration {
         entity: entity_name,
-        schema: &schema_name,
+        table_oid,
         view_oid,
         definition: &final_select_sql,
         columns: &final_schema,
@@ -296,7 +297,6 @@ fn create_tview_inner(
     }
     .write(declarations, false)?;
 
-    let table_oid = relation_oid(&schema_name, &tv_table_name)?;
     finish(
         entity_name,
         table_oid,
@@ -366,7 +366,6 @@ fn finish(
 /// Returns an error if the definition cannot be analyzed or the catalog update fails.
 pub fn reregister_metadata(
     entity_name: &str,
-    schema_name: &str,
     definition: &str,
 ) -> TViewResult<crate::dependency::TriggerPlan> {
     // What is derived here runs as the owner later: nothing in it depends on
@@ -408,14 +407,12 @@ pub fn reregister_metadata(
         view_oid,
         &declarations,
     )?;
-    key_table_on_identity(
-        schema_name,
-        &format!("tv_{entity_name}"),
-        &derivation.lineage.identity.name,
-    )?;
+    // The registered table, by OID: whatever its name now, and whatever
+    // relation now has the name it was created with.
+    key_table_on_identity(meta.tview_oid, &derivation.lineage.identity.name)?;
     Registration {
         entity: entity_name,
-        schema: schema_name,
+        table_oid: meta.tview_oid,
         view_oid,
         definition,
         columns: &schema,
@@ -453,14 +450,14 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
 /// analyzed.
 pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
     super::lock_entity(entity);
-    let (definition, schema_name) = crate::catalog::row::definition_and_schema(entity)?;
-    let (Some(definition), Some(schema_name)) = (definition, schema_name) else {
+    let (definition, _) = crate::catalog::row::definition_and_schema(entity)?;
+    let Some(definition) = definition else {
         return Err(TViewError::TviewNotFound {
             name: entity.to_string(),
         });
     };
     let read_before = crate::catalog::readers::tables_of(entity)?;
-    let plan = reregister_metadata(entity, &schema_name, &definition)?;
+    let plan = reregister_metadata(entity, &definition)?;
     crate::dependency::sync_read_tables(&plan, &read_before, entity)?;
     if let Some(meta) = crate::catalog::TviewMeta::load_to_rederive(entity)? {
         // Its backing view is its owner's alone, whatever was granted on it before.
