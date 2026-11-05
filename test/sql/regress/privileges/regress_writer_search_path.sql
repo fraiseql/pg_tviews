@@ -74,21 +74,25 @@ RESET search_path;
 SELECT must((SELECT data->>'author' FROM app.tv_post WHERE pk_post = 2) = 'robert',
             'tv_post does not follow a write made under search_path app, public');
 
--- 2. A domain of the writer's in pg_temp, named like the join column's type.
+-- 2. A domain of the writer's in pg_temp, named like the join column's type:
+--    the write is refused before the owner's work runs, and the domain is never
+--    used.
 \c
 SET ROLE regress_wsp_writer;
 CREATE FUNCTION pg_temp.record() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN INSERT INTO public.ran_as VALUES (current_user); RETURN true; END $$;
 CREATE DOMAIN pg_temp.myid AS int CHECK (pg_temp.record());
 SET search_path = app, public, pg_temp;
+\set ON_ERROR_STOP off
 INSERT INTO tb_user VALUES (5, DEFAULT, 'erin');
-INSERT INTO tb_post VALUES (5, DEFAULT, 5, 'fifth');
+\set ON_ERROR_STOP on
+SELECT must(:'SQLSTATE' = '42501', 'a write next to a pg_temp domain named like a type: ' || :'SQLSTATE');
 RESET ROLE;
 RESET search_path;
 SELECT must(NOT EXISTS (SELECT FROM public.ran_as WHERE who = 'regress_wsp_owner'),
             'a pg_temp domain of the writer ran as the TVIEW owner');
-SELECT must((SELECT data->>'author' FROM app.tv_post WHERE pk_post = 5) = 'erin',
-            'tv_post does not follow a write made with a pg_temp domain');
+SELECT must(NOT EXISTS (SELECT FROM app.tb_user WHERE pk_user = 5),
+            'the refused write was kept');
 
 -- 3. A text || text of the writer's, searched before pg_catalog: recorded when
 --    called, never by pg_tviews.

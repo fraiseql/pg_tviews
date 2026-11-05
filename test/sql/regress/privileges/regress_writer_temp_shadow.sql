@@ -81,7 +81,59 @@ SELECT tviews.pg_tviews_create_or_replace('app.tv_note',
     (SELECT definition FROM tviews.pg_tview_meta WHERE entity = 'note'),
     options => '{"uncascaded_policy": "warn"}');
 
+-- Part B: what no check of the definition sees. f() runs g() through EXECUTE;
+-- g() sets a search_path without pg_temp. A writer's temporary relation or type
+-- named like one the owner resolves makes the write fail (42501, at the end of
+-- the statement, when its refresh runs), before the owner's code runs; other
+-- temporary objects do not.
+CREATE TABLE app.tb_tag (pk_tag int PRIMARY KEY);
+CREATE FUNCTION app.g(k int) RETURNS int LANGUAGE plpgsql SET search_path = app AS $$
+BEGIN RETURN (SELECT count(*)::int4 FROM tb_tag WHERE pk_tag = k); END $$;
+CREATE FUNCTION app.f(k int) RETURNS int LANGUAGE plpgsql IMMUTABLE
+    SET search_path = app, pg_temp AS $$
+DECLARE
+    n int;
+BEGIN EXECUTE 'SELECT app.g($1)' INTO n USING k; RETURN n; END $$;
+CREATE TABLE app.tb_item (pk_item int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                          name text);
+SELECT tviews.pg_tviews_create('app.tv_item', $q$
+    SELECT i.pk_item, i.id, jsonb_build_object('id', i.id, 'tags', app.f(i.pk_item)) AS data
+    FROM app.tb_item i $q$);
+GRANT SELECT, INSERT, UPDATE ON app.tb_item TO regress_ts_writer;
 RESET ROLE;
+TRUNCATE public.who_log;
+
+SET ROLE regress_ts_writer;
+CREATE TEMP VIEW tb_tag AS SELECT 1 AS pk_tag WHERE public.who('shadow') = 1;
+\set ON_ERROR_STOP off
+INSERT INTO app.tb_item (pk_item, name) VALUES (1, 'a');
+\set ON_ERROR_STOP on
+SELECT must(:'SQLSTATE' = '42501', 'a temporary relation named like the owner''s was used: ' || :'SQLSTATE');
+DROP VIEW pg_temp.tb_tag;
+-- A temporary table named like a type: its row type would be the type.
+CREATE TEMP TABLE int4 (x int);
+\set ON_ERROR_STOP off
+INSERT INTO app.tb_item (pk_item, name) VALUES (1, 'a');
+\set ON_ERROR_STOP on
+SELECT must(:'SQLSTATE' = '42501', 'a temporary table named like a type was allowed: ' || :'SQLSTATE');
+DROP TABLE pg_temp.int4;
+-- One named like a catalog relation.
+CREATE TEMP TABLE pg_class (x int);
+\set ON_ERROR_STOP off
+INSERT INTO app.tb_item (pk_item, name) VALUES (1, 'a');
+\set ON_ERROR_STOP on
+SELECT must(:'SQLSTATE' = '42501', 'a temporary table named like a catalog relation was allowed: ' || :'SQLSTATE');
+DROP TABLE pg_temp.pg_class;
+-- Temporary objects of other names, and dropped ones, change nothing.
+CREATE TEMP TABLE staging_import (x int);
+INSERT INTO app.tb_item (pk_item, name) VALUES (1, 'a');
+DROP TABLE staging_import;
+UPDATE app.tb_item SET name = 'b' WHERE pk_item = 1;
+RESET ROLE;
+SELECT must(NOT EXISTS (SELECT 1 FROM public.who_log WHERE step = 'shadow'),
+            'the owner''s code read a temporary object of the writer''s');
+SELECT must((SELECT data->>'tags' FROM app.tv_item WHERE pk_item = 1) = '0',
+            'the write next to other temporary objects was not refreshed');
 
 SELECT 'temp shadow: names resolve where the owner put them' AS result;
 

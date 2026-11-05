@@ -21,6 +21,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::lifecycle::validity::forget_claims,
     crate::stats::merge,
     crate::cache::end_transaction,
+    crate::owner::forget_temp_check,
 ];
 
 /// What an abort resets besides: the caches and the revision check, when the

@@ -103,6 +103,9 @@ impl AsOwner {
         owner: Owner,
         work: impl FnOnce(&mut OwnerFrame) -> TViewResult<T>,
     ) -> TViewResult<T> {
+        // SAFETY: reads backend-global state; no frame of this call is open yet.
+        let caller = unsafe { pg_sys::GetUserId() };
+        check_temp_shadows(caller, owner.0)?;
         let mut frame = OwnerFrame::enter(owner.0);
         work(&mut frame)
     }
@@ -115,6 +118,99 @@ impl AsOwner {
 /// What `work` returns, or a failure to read the extension's owner.
 pub fn as_extension_owner<T>(work: impl FnOnce() -> TViewResult<T>) -> TViewResult<T> {
     AsOwner::run(Owner::of_extension()?, |_| work())
+}
+
+/// Refuse to run work as `owner` for `caller` when the session's temporary schema
+/// holds a relation or type named like one in another schema, unless `caller`
+/// has `owner`'s privileges.
+///
+/// PostgreSQL looks up relations and types in the session's temporary schema
+/// first, unless the `search_path` lists `pg_temp` explicitly, later. The frame's
+/// own path does, but a function the owner's code calls may set one that does
+/// not, directly or through a function it runs by name at run time, which no check
+/// of a definition sees. The temporary schema is the session's, so the writer's:
+/// one of its relations or types taking another's name would stand in for it
+/// while the owner's code runs. Functions and operators are never looked up there
+/// implicitly.
+///
+/// A session that never made a temporary object has no temporary schema and
+/// pays nothing. Once checked, the answer holds until a relation or type is
+/// created, renamed or dropped, or the transaction ends.
+fn check_temp_shadows(caller: Oid, owner: Oid) -> TViewResult<()> {
+    let mut temp = pg_sys::InvalidOid;
+    let mut toast = pg_sys::InvalidOid;
+    // SAFETY: reads the backend's temporary namespace state.
+    unsafe { pg_sys::GetTempNamespaceState(&raw mut temp, &raw mut toast) };
+    if temp == pg_sys::InvalidOid || TEMP_CHECKED.with(std::cell::Cell::get) == Some(temp) {
+        return Ok(());
+    }
+    // SAFETY: a role membership check by OID.
+    if unsafe { pg_sys::has_privs_of_role(caller, owner) } {
+        return Ok(());
+    }
+    let _path = CatalogPath::pin();
+    let shadow = crate::utils::spi::catalog_rows(
+        "SELECT 'relation', t.relname::pg_catalog.text, n.nspname::pg_catalog.text \
+         FROM pg_catalog.pg_class t \
+         JOIN pg_catalog.pg_class o ON o.relname = t.relname AND o.relnamespace <> t.relnamespace \
+         JOIN pg_catalog.pg_namespace n ON n.oid = o.relnamespace \
+         WHERE t.relnamespace = $1 AND t.relkind NOT IN ('i', 'I') \
+           AND o.relkind NOT IN ('i', 'I', 't') AND n.nspname !~ '^pg_(temp|toast)' \
+         UNION ALL \
+         SELECT 'type', t.typname::pg_catalog.text, n.nspname::pg_catalog.text \
+         FROM pg_catalog.pg_type t \
+         JOIN pg_catalog.pg_type o ON o.typname = t.typname AND o.typnamespace <> t.typnamespace \
+         JOIN pg_catalog.pg_namespace n ON n.oid = o.typnamespace \
+         WHERE t.typnamespace = $1 AND n.nspname !~ '^pg_(temp|toast)' \
+         LIMIT 1",
+        &[crate::utils::spi::oid(temp)],
+        |row| {
+            Ok((
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<String>(3)?,
+            ))
+        },
+    )?;
+    if let Some((Some(kind), Some(name), Some(schema))) = shadow.into_iter().next() {
+        return Err(TViewError::PermissionDenied {
+            reason: format!(
+                "a temporary {kind} named {name} shadows {schema}.{name} while a TVIEW's owner \
+                 refreshes it: drop it or use another name"
+            ),
+        });
+    }
+    TEMP_CHECKED.with(|checked| checked.set(Some(temp)));
+    Ok(())
+}
+
+/// Forget that the temporary schema was checked: a relation or type changed, or
+/// the transaction ended.
+pub fn forget_temp_check() {
+    TEMP_CHECKED.with(|checked| checked.set(None));
+}
+
+#[pg_guard]
+unsafe extern "C-unwind" fn names_changed(_arg: pg_sys::Datum, _cache: i32, _hash: u32) {
+    forget_temp_check();
+}
+
+/// Watch the relation and type names for [`check_temp_shadows`]. Called once
+/// from `_PG_init`.
+pub fn register_name_callbacks() {
+    // SAFETY: registers a static callback with no argument; valid in `_PG_init`.
+    unsafe {
+        for cache in [
+            pg_sys::SysCacheIdentifier::RELNAMENSP,
+            pg_sys::SysCacheIdentifier::TYPENAMENSP,
+        ] {
+            pg_sys::CacheRegisterSyscacheCallback(
+                cache.cast_signed(),
+                Some(names_changed),
+                pg_sys::Datum::from(0),
+            );
+        }
+    }
 }
 
 /// The token of an open owner frame, naming its owner. Only [`AsOwner::run`]
@@ -347,6 +443,8 @@ thread_local! {
     static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
     /// How many owner frames are open, the innermost last.
     static OPEN_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The temporary schema found to shadow no name, until a name changes.
+    static TEMP_CHECKED: std::cell::Cell<Option<Oid>> = const { std::cell::Cell::new(None) };
 }
 
 /// The session's `search_path`, as set.
