@@ -1,0 +1,80 @@
+Parsed test spec with 3 sessions
+
+starting permutation: w_begin w_suspend w_insert w_resume w_exclusive r_read w_commit o_check
+step w_begin: BEGIN;
+step w_suspend: SELECT tviews.pg_tviews_suspend_triggers();
+pg_tviews_suspend_triggers
+--------------------------
+                          
+(1 row)
+
+step w_insert: INSERT INTO tb_post (pk_post, title) VALUES (3, 'three');
+step w_resume: SELECT tviews.pg_tviews_resume_triggers();
+pg_tviews_resume_triggers
+-------------------------
+                         
+(1 row)
+
+step w_exclusive: 
+  SELECT count(*) AS exclusive_locks FROM pg_locks
+  WHERE pid = pg_backend_pid() AND relation = 'tv_post'::regclass
+    AND mode = 'AccessExclusiveLock';
+
+exclusive_locks
+---------------
+              0
+(1 row)
+
+step r_read: SELECT count(*) AS rows FROM tv_post;
+rows
+----
+   2
+(1 row)
+
+step w_commit: COMMIT;
+step o_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|fresh
+-------+-----+-----
+      1|one  |t    
+      2|two  |t    
+      3|three|t    
+(3 rows)
+
+
+starting permutation: o_begin o_suspend o_insert o_resume r_read o_commit o_check
+step o_begin: BEGIN;
+step o_suspend: SELECT tviews.pg_tviews_suspend_triggers();
+pg_tviews_suspend_triggers
+--------------------------
+                          
+(1 row)
+
+step o_insert: INSERT INTO tb_post (pk_post, title) VALUES (4, 'four');
+step o_resume: SELECT tviews.pg_tviews_resume_triggers();
+pg_tviews_resume_triggers
+-------------------------
+                         
+(1 row)
+
+step r_read: SELECT count(*) AS rows FROM tv_post; <waiting ...>
+step o_commit: COMMIT;
+step r_read: <... completed>
+rows
+----
+   3
+(1 row)
+
+step o_check: 
+  SELECT t.pk_post, t.data->>'title' AS title, t.data = v.data AS fresh
+  FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post) ORDER BY 1;
+
+pk_post|title|fresh
+-------+-----+-----
+      1|one  |t    
+      2|two  |t    
+      4|four |t    
+(3 rows)
+

@@ -442,7 +442,9 @@ tviews.pg_tviews_show_suspended() RETURNS text[]
 
 `pg_tviews_suspend_triggers()` defers refreshes for a bulk load; calls nest and roll
 back with a savepoint. When the outermost `pg_tviews_resume_triggers()` runs, every
-TVIEW changed while suspended, and every TVIEW reading one of them, is rebuilt.
+TVIEW changed while suspended, and every TVIEW reading one of them, is brought to its
+view: rebuilt (`TRUNCATE`) when the caller has the privileges of its owner, otherwise
+row by row, without blocking its readers.
 Resume without suspend is `55000`. Suspension ends with the transaction: an explicit
 `COMMIT` statement catches up the same way. An implicit commit cannot (several
 statements sent as one query string, a `COMMIT` inside a procedure): while writes are

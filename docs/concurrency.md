@@ -161,8 +161,11 @@ ORDER BY l.granted, l.pid;
 
 `pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`
 or the end of the transaction, whichever comes first: suspension never outlives the
-transaction that started it. Resuming rebuilds the TVIEWs that changed and those that
-embed them (each with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does).
+transaction that started it. Resuming brings the TVIEWs that changed, and those that
+embed them, to their views. A caller with the privileges of a TVIEW's owner rebuilds
+it (`TRUNCATE`, with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does): its readers wait
+until the transaction ends. Any other caller changes only the rows that differ, as a
+write's full refresh does, and no reader waits.
 
 ## Settings
 

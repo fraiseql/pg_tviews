@@ -78,6 +78,14 @@ impl Owner {
         Ok(Self::of_role(unsafe { pg_sys::GetUserId() }))
     }
 
+    /// Whether this role has the privileges of `other` (is it, a member of it,
+    /// or a superuser), as `ALTER TABLE` on a table `other` owns would require.
+    #[must_use]
+    pub fn has_privileges_of(self, other: Self) -> bool {
+        // SAFETY: a role membership check by OID.
+        unsafe { pg_sys::has_privs_of_role(self.role, other.role) }
+    }
+
     /// The role's OID.
     #[must_use]
     pub const fn oid(self) -> Oid {

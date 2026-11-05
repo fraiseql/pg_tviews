@@ -55,9 +55,15 @@ pub(crate) fn refresh_time_dependent(
 /// pruned one flush-time propagation follows), dependencies first, each as its
 /// owner. Returns the rebuilt entities in order.
 ///
+/// A TVIEW is rebuilt whole (`TRUNCATE`, which its readers wait for) only when
+/// the caller has its owner's privileges; for any other caller its rows are
+/// brought to its view's one by one, as a write's full refresh does.
+///
 /// # Errors
-/// Returns an error if the dependency graph cannot be loaded or a rebuild fails.
+/// Returns an error if the dependency graph cannot be loaded or a rebuild fails,
+/// or inside an owner frame, where the caller is not known.
 pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> {
+    let caller = crate::owner::Owner::current_user()?;
     let graph = crate::catalog::graph()?;
     let mut readers: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     for (reader, read) in &graph.children {
@@ -83,7 +89,17 @@ pub fn rebuild_with_dependents(entities: &[String]) -> TViewResult<Vec<String>> 
             .unwrap_or(usize::MAX)
     });
     for entity in &order {
-        crate::refresh::full::rebuild_one(entity)?;
+        let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
+            crate::TViewError::TviewNotFound {
+                name: entity.clone(),
+            }
+        })?;
+        let owner = crate::owner::Owner::of_tview(&meta)?;
+        if caller.has_privileges_of(owner) {
+            crate::refresh::full::rebuild_one(entity)?;
+        } else {
+            crate::refresh::full::reconcile_as_owner(entity, &meta)?;
+        }
     }
     flush_after_rebuilds()?;
     Ok(order)

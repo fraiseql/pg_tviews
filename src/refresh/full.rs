@@ -116,6 +116,32 @@ fn rebuild_statements(frame: &OwnerFrame, entity: &str) -> TViewResult<(String, 
     Ok((qi_tv, insert))
 }
 
+/// Bring `entity`'s rows to its view's as its owner, under the lock a write's
+/// full refresh takes: rows change one by one, and no reader waits. The rows
+/// then match the view and can be trusted again. Returns the `pk_<entity>` of
+/// every row that changed.
+///
+/// # Errors
+/// Returns an error if the reconcile fails.
+pub fn reconcile_as_owner(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
+    let changed = AsOwner::run(Owner::of_tview(meta)?, |frame| {
+        reconcile_locked(frame, entity, meta)
+    })?;
+    crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
+    Ok(changed)
+}
+
+/// [`reconcile`], once every refresh of the TVIEW's rows waits for it, and it
+/// for them: every row may change.
+pub(crate) fn reconcile_locked(
+    frame: &OwnerFrame,
+    entity: &str,
+    meta: &TviewMeta,
+) -> TViewResult<Vec<i64>> {
+    crate::concurrency::lock_relation(meta.tview_oid.to_u32(), crate::concurrency::Side::Writer);
+    reconcile(frame, entity, meta)
+}
+
 /// Bring the rows of a TVIEW's table to those of its backing view with three
 /// statements that touch only rows that change, journaling each change. Rows
 /// that leave go first, so a unique index holds throughout. Returns the

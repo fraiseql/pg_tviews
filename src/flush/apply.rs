@@ -211,12 +211,7 @@ impl Flush {
             let rows = crate::utils::spi::count_rows(meta.tview_oid)?;
             self.charge(&meta, "by a full refresh", rows)?;
         }
-        // Every row may change: refreshes of any of them wait, and are waited for.
-        crate::concurrency::lock_relation(
-            meta.tview_oid.to_u32(),
-            crate::concurrency::Side::Writer,
-        );
-        let changed = crate::refresh::full::reconcile(frame, entity, &meta)?;
+        let changed = crate::refresh::full::reconcile_locked(frame, entity, &meta)?;
         // A full refresh may bring rows back: look their parents up in the
         // parents' views too.
         self.queue_parents_to_recompute(entity, &changed, &changed)?;
