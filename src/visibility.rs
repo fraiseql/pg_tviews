@@ -17,21 +17,30 @@ pub fn may_read_relation(relid: Oid) -> bool {
     };
     let user = caller.oid();
     let mut missing = false;
-    // SAFETY: catalog lookups and ACL checks by OID; the `_ext` checks report a
-    // missing object instead of raising.
+    // SAFETY: catalog lookups and ACL checks by OID. The schema's ACL check
+    // follows a syscache probe that found it, with no invalidation processed in
+    // between; the relation's `_ext` check reports a missing one instead of
+    // raising.
     unsafe {
         let schema = pg_sys::get_rel_namespace(relid);
-        if schema == pg_sys::InvalidOid {
+        if schema == pg_sys::InvalidOid
+            || !pg_sys::SearchSysCacheExists(
+                pg_sys::SysCacheIdentifier::NAMESPACEOID.cast_signed(),
+                pg_sys::Datum::from(schema),
+                pg_sys::Datum::from(0),
+                pg_sys::Datum::from(0),
+                pg_sys::Datum::from(0),
+            )
+        {
             return false;
         }
-        let usage = pg_sys::object_aclcheck_ext(
+        let usage = pg_sys::object_aclcheck(
             pg_sys::NamespaceRelationId,
             schema,
             user,
             pg_sys::AclMode::from(pg_sys::ACL_USAGE),
-            &raw mut missing,
         );
-        if missing || usage != pg_sys::AclResult::ACLCHECK_OK {
+        if usage != pg_sys::AclResult::ACLCHECK_OK {
             return false;
         }
         let select = pg_sys::pg_class_aclcheck_ext(
