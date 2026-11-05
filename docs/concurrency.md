@@ -120,6 +120,7 @@ item the count of its place's current items), compose the aggregate at read time
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it; readers are not blocked | end of transaction |
+| Creating or replacing a TVIEW | `SHARE` on every table the definition reads, taken as each table's owner before the fill: the call waits for writes in flight to those tables, and their writers wait for it, so the new TVIEW starts from committed rows and misses no write | end of transaction |
 | Creating, replacing or dropping a TVIEW | pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624), so DDL on one entity runs one call at a time; a role that may not change the TVIEW is refused before it takes the lock | end of transaction |
 
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'

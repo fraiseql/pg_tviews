@@ -231,6 +231,9 @@ fn create_tview_inner(
         &declarations,
     )?;
     let lineage = &derivation.lineage;
+    // The fill reads committed rows: writes in flight to the tables read commit
+    // first, and none starts before the TVIEW's triggers and plan are in place.
+    super::lock_tables_read(view_oid)?;
 
     // Create materialized table tv_<entity>, keyed on the identity, and its indexes.
     let indexes = create_materialized_table(

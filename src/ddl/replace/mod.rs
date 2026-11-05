@@ -453,10 +453,10 @@ fn replace_in_place(
     read_tables.sort_unstable_by_key(|table| table.to_u32());
     read_tables.dedup();
     for &table in &read_tables {
-        lock_as_owner(table, "SHARE")?;
+        super::lock_as_owner(table, "SHARE")?;
     }
     for &table in &tv_tables {
-        lock_as_owner(table, "EXCLUSIVE")?;
+        super::lock_as_owner(table, "EXCLUSIVE")?;
     }
 
     super::in_extension_schema(|| {
@@ -486,14 +486,6 @@ fn replace_in_place(
         })?;
     }
     Ok(())
-}
-
-/// `LOCK TABLE` in `mode`, as the table's owner.
-fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
-    let qualified = crate::utils::qualified_relname_from_oid(table)?;
-    crate::owner::AsOwner::run(crate::owner::Owner::of_table(table)?, |_frame| {
-        crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
-    })
 }
 
 #[cfg(test)]

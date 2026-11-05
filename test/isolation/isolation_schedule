@@ -55,3 +55,4 @@ test: resync-vs-rename
 test: suspend-catch-up-vs-reader
 test: registration-lock-private
 test: escalation-unprivileged-writer
+test: create-vs-write

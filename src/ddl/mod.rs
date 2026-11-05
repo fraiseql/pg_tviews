@@ -184,3 +184,30 @@ pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
 pub(crate) fn lock_entity(entity: &str) {
     crate::concurrency::lock_registration(entity);
 }
+
+/// `LOCK TABLE` in `mode`, as the table's owner.
+pub(crate) fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
+    let qualified = crate::utils::qualified_relname_from_oid(table)?;
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(table)?, |_frame| {
+        crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
+    })
+}
+
+/// Hold SHARE on every table the view `view_oid` reads, each as its owner,
+/// until the transaction ends: a write in flight to one of them commits
+/// before the caller reads the view, and none starts until the caller commits.
+/// Writers lock a base table, then the TVIEW tables their flush writes: the
+/// tables that are no TVIEW's come first, each group in OID order.
+pub(crate) fn lock_tables_read(view_oid: pg_sys::Oid) -> TViewResult<()> {
+    let tview_tables = crate::catalog::row::table_oids()?;
+    let mut tables: Vec<pg_sys::Oid> = crate::lineage::reads::view_relations_read(view_oid)?
+        .into_iter()
+        .filter(|&(_, relkind)| matches!(relkind, b'r' | b'p'))
+        .map(|(table, _)| table)
+        .collect();
+    tables.sort_unstable_by_key(|table| (tview_tables.contains(table), table.to_u32()));
+    tables.dedup();
+    tables
+        .into_iter()
+        .try_for_each(|table| lock_as_owner(table, "SHARE"))
+}
