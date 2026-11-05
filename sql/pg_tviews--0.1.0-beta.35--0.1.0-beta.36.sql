@@ -16,6 +16,13 @@ STRICT
 LANGUAGE c
 AS 'MODULE_PATHNAME', 'pg_tviews_resync_wrapper';
 
+-- The tag of a value lock, keyed with the server's secret: superusers only.
+CREATE FUNCTION @extschema@.pg_tviews_value_lock_tag(relation regclass, column_name text, value text)
+RETURNS bigint
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'pg_tviews_value_lock_tag_wrapper';
+REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_value_lock_tag(regclass, text, text) FROM PUBLIC;
+
 -- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
 -- on an older plan.
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;

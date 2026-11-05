@@ -77,7 +77,9 @@ INSERT INTO public.maintenance VALUES
     ('tviews.pg_tviews_ensure_propagation_indexes_all(boolean)'),
     ('tviews.pg_tviews_reset_stats_all()'),
     ('tviews.pg_tviews_invalidate_caches(oid)'),
-    ('tviews.pg_tviews_audit_write(jsonb)');
+    ('tviews.pg_tviews_audit_write(jsonb)'),
+    -- a value lock's tag: superusers only
+    ('tviews.pg_tviews_value_lock_tag(regclass,text,text)');
 DO $$
 DECLARE
     leaked text;
@@ -144,6 +146,7 @@ SELECT public.must_refuse(ARRAY[
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all()',
     'SELECT tviews.pg_tviews_reset_stats_all()',
     'SELECT tviews.pg_tviews_invalidate_caches(''public.tb_doc''::regclass)',
+    'SELECT tviews.pg_tviews_value_lock_tag(''public.tb_doc'', ''pk_doc'', ''1'')',
     -- someone else's TVIEW
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(''doc'', true)',
     'SELECT tviews.pg_tviews_reset_stats(''doc'')',

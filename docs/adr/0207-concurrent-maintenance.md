@@ -198,8 +198,13 @@ internal error. Specs: `local-child-vs-new-parent`, `aggregate-new-group-vs-writ
 
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:
 
-- `field1` = database, `field2` = relation OID, `field3` = a 32-bit FNV-1a hash of
-  (attnum, the value's lock form). The lock form is the hash the column type's equality uses
+- `field1` = database, `field2` = relation OID, `field3` = SipHash-2-4 of (attnum, the
+  value's lock form), keyed with a 128-bit secret the postmaster draws from
+  `pg_strong_random` into shared memory at start and truncated to 32 bits: `pg_locks`
+  shows the tags to every role, and an unkeyed hash would let any of them test which
+  value is locked. Without `shared_preload_libraries` there is no key, and pg_tviews
+  refuses to run at all (`55000`); a superuser computes a tag with
+  `pg_tviews_value_lock_tag`. The lock form is the hash the column type's equality uses
   (its default hash operator class), in the written column's type and collation, as text, so
   equal values with different text forms (`5` and `5.00`, `Ann` and `ann` under a
   case-insensitive collation) take the same lock on both sides;

@@ -59,6 +59,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reset_stats_all()`](#tviewsstats-and-pg_tviews_reset_stats) | `void` | operator |
 | [`pg_tviews_show_queue()`](#pg_tviews_show_queue) | `jsonb` | anyone |
 | [`pg_tviews_count_feed_gaps()`](#pg_tviews_count_feed_gaps) | `bigint` | anyone |
+| [`pg_tviews_value_lock_tag(relation regclass, column_name text, value text)`](#pg_tviews_value_lock_tag) | `bigint` | superuser |
 | [`pg_tviews_profile(tview text DEFAULT NULL, fanout_warn bigint DEFAULT 1000)`](#pg_tviews_profile) | `TABLE(…)` | anyone |
 | [`pg_tviews_version()`](#version-and-catalog) | `text` | anyone |
 | [`pg_tviews_catalog_revision()`](#version-and-catalog) | `integer` | anyone |
@@ -657,6 +658,27 @@ since the server started. Monotonic; any session reads it. A listener reads it w
 connects and on each heartbeat, and evicts everything when it moved
 ([gaps](../user-guides/change-feed.md#gaps-while-connected)). Without
 `shared_preload_libraries = 'pg_tviews'` nothing is counted and it fails with `55000`.
+
+### pg_tviews_value_lock_tag
+
+```text
+tviews.pg_tviews_value_lock_tag(relation regclass, column_name text, value text) RETURNS bigint
+```
+
+The `objid` of the value lock on `value` of `column_name` of `relation` (a table a
+TVIEW reads; a partitioned table's root), or, with `column_name` NULL, of the key
+`value` of the TVIEW table `relation` while a row is being created, to match against
+`pg_locks` ([Concurrency](../concurrency.md)). A value lock's tag is a hash keyed with
+a secret the server makes at start, so that no other role can tell which value a lock
+is on: `EXECUTE` is revoked from `PUBLIC`, and a caller that is not a superuser gets
+`42501`. A column `relation` lacks is `22023`.
+
+```sql
+SELECT l.pid, l.mode, l.granted
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.objsubid = 21622
+  AND l.objid::bigint = tviews.pg_tviews_value_lock_tag('tb_user', 'pk_user', '1');
+```
 
 ### pg_tviews_profile
 

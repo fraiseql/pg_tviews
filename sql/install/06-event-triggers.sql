@@ -141,3 +141,7 @@ REVOKE EXECUTE ON FUNCTION
     @extschema@.pg_tviews_reset_stats_all(),
     @extschema@.pg_tviews_invalidate_caches(OID)
 FROM PUBLIC;
+
+-- A value lock's tag is keyed with the server's secret: only a superuser may
+-- compute one.
+REVOKE EXECUTE ON FUNCTION @extschema@.pg_tviews_value_lock_tag(REGCLASS, TEXT, TEXT) FROM PUBLIC;

@@ -224,27 +224,20 @@ unsafe extern "C-unwind" fn request_shmem() {
 
 #[pg_guard]
 unsafe extern "C-unwind" fn startup_shmem() {
-    // SAFETY: called by shmem_startup_hook; ShmemInitStruct runs under the addin
-    // initialization lock, and a table found already is not touched.
+    // SAFETY: called by shmem_startup_hook, after request_shmem asked for the
+    // table's space; a table found already is not touched.
     unsafe {
         if let Some(prev) = PREV_SHMEM_STARTUP {
             pg_sys::ffi::pg_guard_ffi_boundary(|| prev());
         }
-        let init_lock = &raw mut (*pg_sys::MainLWLockArray.add(21)).lock;
-        pg_sys::LWLockAcquire(init_lock, pg_sys::LWLockMode::LW_EXCLUSIVE);
-        let mut found = false;
-        let table =
-            pg_sys::ShmemInitStruct(NAME.as_ptr(), std::mem::size_of::<Table>(), &raw mut found)
-                .cast::<Table>();
-        if !found {
+        let table = crate::utils::shmem::init_struct::<Table>(NAME, |table| {
             std::ptr::write_bytes(table, 0, 1);
-        }
+        });
         TABLE.store(table, Ordering::Release);
         LOCK.store(
             &raw mut (*pg_sys::GetNamedLWLockTranche(NAME.as_ptr())).lock,
             Ordering::Release,
         );
-        pg_sys::LWLockRelease(init_lock);
     }
 }
 

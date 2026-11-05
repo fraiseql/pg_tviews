@@ -8,6 +8,7 @@
 //! private advisory tag and are held to the end of the transaction. Writers run
 //! at READ COMMITTED: a transaction snapshot could not see what it waited for.
 
+pub mod key;
 mod pass;
 pub mod reads;
 mod registry;
@@ -106,19 +107,74 @@ const fn value_mode(side: Side) -> pg_sys::LOCKMODE {
     }
 }
 
-/// FNV-1a (32 bits) of the columns' attnums, a zero byte and the value's text:
-/// computable without a server, stable across releases. A collision only makes
+/// SipHash-2-4, keyed with the server's `key`, of the columns' attnums, a zero
+/// byte and the value's text, truncated to 32 bits: the same in every backend
+/// of the server, and not computable without its key. A collision only makes
 /// two values share a lock.
 #[must_use]
-pub fn value_hash(attnums: &[i16], value: &str) -> u32 {
-    const OFFSET: u32 = 0x811c_9dc5;
-    const PRIME: u32 = 0x0100_0193;
-    attnums
-        .iter()
-        .flat_map(|a| a.to_le_bytes())
-        .chain(std::iter::once(0))
-        .chain(value.bytes())
-        .fold(OFFSET, |h, b| (h ^ u32::from(b)).wrapping_mul(PRIME))
+pub fn value_hash(key: &key::Key, attnums: &[i16], value: &str) -> u32 {
+    use std::hash::Hasher;
+    let mut hasher = siphasher::sip::SipHasher24::new_with_key(key);
+    for attnum in attnums {
+        hasher.write(&attnum.to_le_bytes());
+    }
+    hasher.write(&[0]);
+    hasher.write(value.as_bytes());
+    #[allow(clippy::cast_possible_truncation)] // Reason: a lock tag field holds 32 bits
+    let hash = hasher.finish() as u32;
+    hash
+}
+
+/// The tag (`objid` in `pg_locks`) of the value lock on `value` of `column` of
+/// `relid`, or of the key `value` of the TVIEW table `relid` being created when
+/// `column` is `None`. Superusers only: the tag is keyed with the server's
+/// secret, so that no other role can tell which value a lock in `pg_locks` is
+/// on.
+///
+/// # Errors
+/// `PermissionDenied` for a caller that is not a superuser; `InvalidInput` for
+/// a column `relid` lacks; `WrongState` without the server's key; a failed
+/// conversion of `value` to the column's type.
+pub fn value_lock_tag(
+    relid: pg_sys::Oid,
+    column: Option<&str>,
+    value: &str,
+) -> crate::TViewResult<i64> {
+    // SAFETY: a role check of the current user.
+    if !unsafe { pg_sys::superuser() } {
+        return Err(crate::TViewError::PermissionDenied {
+            reason: "only a superuser may compute value-lock tags".to_string(),
+        });
+    }
+    let key = key::current()?;
+    let Some(column) = column else {
+        return Ok(i64::from(value_hash(&key, &[-1], value)));
+    };
+    let relation = crate::utils::qualified_relname_from_oid(relid)?;
+    let invalid = || crate::TViewError::InvalidInput {
+        parameter: "column_name".to_string(),
+        reason: format!("{relation} has no column {column}"),
+    };
+    let name = std::ffi::CString::new(column).map_err(|_| invalid())?;
+    // SAFETY: a syscache lookup by OID and column name; InvalidAttrNumber when
+    // there is no such column.
+    let attnum = unsafe { pg_sys::get_attnum(relid, name.as_ptr()) };
+    if attnum <= 0 {
+        return Err(invalid());
+    }
+    let lock = lock_value(relid.to_u32(), attnum)?.ok_or_else(invalid)?;
+    let _path = crate::owner::CatalogPath::pin();
+    let text = crate::utils::spi::one::<String>(
+        &format!("SELECT {}", lock.of("$1")),
+        &[crate::utils::spi::text(value)],
+    )?
+    .unwrap_or_default();
+    Ok(i64::from(value_hash(&key, &[attnum], &text)))
+}
+
+/// The server's value-lock key, or the error raised without it.
+fn lock_key() -> key::Key {
+    key::current().unwrap_or_else(|e| e.raise())
 }
 
 #[allow(clippy::cast_possible_truncation)] // Reason: lock tag types and lock method ids fit a uint8 (lock.h)
@@ -194,7 +250,8 @@ pub fn take(pass: &Pass) {
     let threshold = crate::config::lock_escalation_threshold();
     let caller = crate::owner::caller();
     let may_lock_whole = |relid: u32| may_write(relid, caller);
-    let planned = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold, &may_lock_whole));
+    let key = lock_key();
+    let planned = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold, &may_lock_whole, &key));
     let (ops, escalations) = match planned {
         Ok(planned) => planned,
         Err(pass::TooManyLinks { max }) => crate::TViewError::RefreshLimit {
@@ -272,7 +329,8 @@ pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String
     let threshold = crate::config::lock_escalation_threshold();
     // Asked as if the relation could be locked whole: whether it would be.
     let whole = REGISTRY.with_borrow(|r| {
-        pass::plan(&pass, r, threshold, &|_| true).map_or(true, |(_, escalations)| escalations > 0)
+        pass::plan(&pass, r, threshold, &|_| true, &lock_key())
+            .map_or(true, |(_, escalations)| escalations > 0)
     });
     if whole {
         return false;
@@ -291,7 +349,7 @@ pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
         relid,
         space: Space::Keys,
         side: Side::Writer,
-        hash: value_hash(&[-1], key),
+        hash: value_hash(&lock_key(), &[-1], key),
     };
     REGISTRY.with_borrow(|r| r.escalated(relid, Space::Keys, Side::Writer) || r.holds(&held))
 }
@@ -554,18 +612,38 @@ pub fn clear() {
 mod tests {
     use super::*;
 
+    const KEY: key::Key = [7; 16];
+
     #[test]
-    fn the_hash_is_stable() {
-        // FNV-1a over [1, 0] (attnum 1), 0x00, "42".
-        assert_eq!(value_hash(&[1], "42"), value_hash(&[1], "42"));
-        assert_eq!(value_hash(&[1], "42"), 0x0538_46ce);
+    fn siphash_matches_its_reference_vector() {
+        // SipHash-2-4 paper, appendix A: key 00..0f, message 00..0e.
+        use std::hash::Hasher;
+        let key: key::Key = std::array::from_fn(|i| u8::try_from(i).unwrap());
+        let message: Vec<u8> = (0..15).collect();
+        let mut hasher = siphasher::sip::SipHasher24::new_with_key(&key);
+        hasher.write(&message);
+        assert_eq!(hasher.finish(), 0xa129_ca61_49be_45e5);
+    }
+
+    #[test]
+    fn the_hash_depends_on_the_key() {
+        assert_eq!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[1], "42"));
+        assert_ne!(
+            value_hash(&KEY, &[1], "42"),
+            value_hash(&[8; 16], &[1], "42")
+        );
+        // The unkeyed FNV-1a of the same input.
+        assert_ne!(value_hash(&KEY, &[1], "42"), 0x0538_46ce);
     }
 
     #[test]
     fn the_columns_are_part_of_the_value() {
-        assert_ne!(value_hash(&[1], "42"), value_hash(&[2], "42"));
-        assert_ne!(value_hash(&[1, 2], "42"), value_hash(&[1], "42"));
-        assert_ne!(value_hash(&[1], "42"), value_hash(&[1], "43"));
+        assert_ne!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[2], "42"));
+        assert_ne!(
+            value_hash(&KEY, &[1, 2], "42"),
+            value_hash(&KEY, &[1], "42")
+        );
+        assert_ne!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[1], "43"));
     }
 
     #[test]
