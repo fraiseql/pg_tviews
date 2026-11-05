@@ -38,8 +38,9 @@ use std::collections::{BTreeSet, HashMap};
 /// the caller returns it, with or without `include_data`; a deleted row cannot
 /// be read any more, so the deleted rows of such a TVIEW are not listed and its
 /// type is in `invalidated_types`. A collection is listed only when the caller
-/// may read both its child and its parent TVIEW, and names only the parents a
-/// read as the caller returns.
+/// may read both its child and its parent TVIEW, and the child without row
+/// security (its type is in `invalidated_types` otherwise), and names only the
+/// parents a read as the caller returns.
 ///
 /// When the rows were written with `pg_tviews.publish_changes = 'rows'`,
 /// `collections` names the parents whose child lists they left or joined (#244),
@@ -335,15 +336,20 @@ fn build_report(
         .map(typename)
         .chain(shielded)
         .collect();
-    let hidden: BTreeSet<String> = entities
-        .iter()
-        .filter(|entity| !readable(entity))
-        .map(|entity| typename(entity))
-        .collect();
+    let types = |keep: &dyn Fn(&str) -> bool| -> BTreeSet<String> {
+        entities
+            .iter()
+            .filter(|e| keep(e))
+            .map(|e| typename(e))
+            .collect()
+    };
+    let hidden = types(&|entity| !readable(entity));
+    // Which rows of a child under row security joined or left a parent is not told.
+    let row_secured = types(&row_security);
     let collections = summary
         .parents
         .as_deref()
-        .map(|parents| collections(parents, wanted, &hidden, &mut invalidated))
+        .map(|parents| collections(parents, wanted, &hidden, &row_secured, &mut invalidated))
         .transpose()?;
     let mut report = json!({
         "updated": updated,
@@ -399,7 +405,8 @@ fn visible_parents(
 /// type in `invalidated` (rows left out past `max_entities`, an overflowed
 /// journal, an unlistable parent) stands for all its collections, as a type in
 /// the feed's `t` does: they are not listed. A collection whose child type is
-/// `hidden`, or whose parent TVIEW the caller may not read, is left out.
+/// `hidden`, or whose parent TVIEW the caller may not read, is left out; one of
+/// a type in `row_secured` too, its type then in `invalidated`.
 ///
 /// # Errors
 /// A captured id that is not JSON.
@@ -410,6 +417,7 @@ fn collections(
     )],
     wanted: Option<&BTreeSet<String>>,
     hidden: &BTreeSet<String>,
+    row_secured: &BTreeSet<String>,
     invalidated: &mut BTreeSet<String>,
 ) -> TViewResult<Value> {
     let mut parent_readable: HashMap<pgrx::pg_sys::Oid, bool> = HashMap::new();
@@ -417,6 +425,13 @@ fn collections(
         .iter()
         .filter(|(c, _)| wanted.is_none_or(|w| w.contains(&*c.child_type)))
         .filter(|(c, _)| !hidden.contains(&*c.child_type))
+        .filter(|(c, _)| {
+            let secured = row_secured.contains(&*c.child_type);
+            if secured {
+                invalidated.insert(c.child_type.to_string());
+            }
+            !secured
+        })
         .filter(|(c, _)| {
             *parent_readable
                 .entry(c.parent_table_oid)

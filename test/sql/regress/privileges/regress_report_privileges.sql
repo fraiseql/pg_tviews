@@ -182,6 +182,17 @@ SELECT must(NOT jsonb_path_exists(:'r', '$.collections."Comment.fk_post"[*] ? (@
                                   jsonb_build_object('id', :'post1')),
             'row security, a hidden parent listed: ' || :'r');
 COMMIT;
+-- Comment 1 is hidden from the caller: which parents it left or joined is not
+-- told either, and its type is invalidated.
+BEGIN;
+UPDATE tb_comment SET fk_post = CASE fk_post WHEN 1 THEN 2 ELSE 1 END WHERE pk_comment = 1;
+SELECT tviews.pg_tviews_flush_and_report() AS r \gset
+SELECT must(NOT coalesce((:'r'::jsonb)->'collections' ?| ARRAY['Comment.fk_post', 'Comment.fk_user'],
+                         false),
+            'row security, a hidden child''s collections listed: ' || :'r');
+SELECT must((:'r'::jsonb)->'invalidated_types' ? 'Comment',
+            'row security, a hidden child''s collections not invalidated: ' || :'r');
+ROLLBACK;
 RESET ROLE;
 RESET pg_tviews.publish_changes;
 ALTER TABLE tv_comment DISABLE ROW LEVEL SECURITY;
