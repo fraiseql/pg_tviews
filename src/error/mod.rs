@@ -73,6 +73,14 @@ pub enum TViewError {
     /// The current role may not do this.
     PermissionDenied { reason: String },
 
+    /// A function a TVIEW's refresh runs as its owner sets a `search_path` that
+    /// does not end in `pg_temp`: a writer's temporary objects would come first.
+    FunctionSearchPath {
+        function: String,
+        path: String,
+        fix: String,
+    },
+
     /// TVIEWs read each other in a cycle.
     DependencyCycle { entities: Vec<String> },
 
@@ -135,6 +143,7 @@ impl TViewError {
             Self::ColumnDdlRefused { .. } => PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE,
             Self::IndexNameReserved { .. } => PgSqlErrorCode::ERRCODE_RESERVED_NAME,
             Self::PermissionDenied { .. } => PgSqlErrorCode::ERRCODE_INSUFFICIENT_PRIVILEGE,
+            Self::FunctionSearchPath { .. } => PgSqlErrorCode::ERRCODE_INVALID_FUNCTION_DEFINITION,
             Self::DependencyCycle { .. } => PgSqlErrorCode::ERRCODE_INVALID_OBJECT_DEFINITION,
             Self::DepthExceeded { .. } => PgSqlErrorCode::ERRCODE_STATEMENT_TOO_COMPLEX,
             Self::InvalidSelectStatement { .. } => PgSqlErrorCode::ERRCODE_SYNTAX_ERROR,
@@ -210,6 +219,9 @@ impl TViewError {
                  after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
                  once, at resume or commit."
             )),
+            Self::FunctionSearchPath { function, fix, .. } => {
+                Some(format!("ALTER FUNCTION {function} SET search_path = {fix}"))
+            }
             Self::DepthExceeded { what, .. } if *what == "dependency" => {
                 Some("Flatten the views the TVIEW reads.".into())
             }
@@ -310,6 +322,12 @@ impl fmt::Display for TViewError {
             | Self::WrongState { reason } => {
                 write!(f, "{reason}")
             }
+            Self::FunctionSearchPath { function, path, .. } => write!(
+                f,
+                "{function} sets search_path = {path}: a TVIEW's refresh runs it as the \
+                 TVIEW's owner, in the writer's session, where a search_path not ending in \
+                 pg_temp looks up the writer's temporary relations and types first"
+            ),
             Self::KeyTypeRefused { column, found } => write!(
                 f,
                 "{column} is {found}: a TVIEW's pk_<entity> must be an integer key \
@@ -445,6 +463,11 @@ mod tests {
                 index: s(),
             },
             TViewError::PermissionDenied { reason: s() },
+            TViewError::FunctionSearchPath {
+                function: s(),
+                path: s(),
+                fix: s(),
+            },
             TViewError::DependencyCycle { entities: vec![] },
             TViewError::DepthExceeded {
                 what: "dependency",
@@ -493,6 +516,7 @@ mod tests {
                 | TViewError::ColumnDdlRefused { .. }
                 | TViewError::IndexNameReserved { .. }
                 | TViewError::PermissionDenied { .. }
+                | TViewError::FunctionSearchPath { .. }
                 | TViewError::DependencyCycle { .. }
                 | TViewError::DepthExceeded { .. }
                 | TViewError::InvalidSelectStatement { .. }

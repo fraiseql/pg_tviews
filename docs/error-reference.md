@@ -23,6 +23,7 @@ Placeholders stand for the values each message carries.
 | `42809` | `wrong_object_type` | `ColumnDdlRefused` | &lt;statement&gt; on TVIEW &lt;table&gt; is refused: a TVIEW's columns are its definition's | Change the definition with tviews.pg_tviews_create_or_replace(): the table follows it. |
 | `42939` | `reserved_name` | `IndexNameReserved` | index name &lt;index&gt; on TVIEW &lt;table&gt; is reserved for pg_tviews' own index | Give the index another name. pg_tviews creates its own indexes on a TVIEW (tviews.registry.managed_indexes lists them). |
 | `42501` | `insufficient_privilege` | `PermissionDenied` | &lt;reason&gt; |  |
+| `42P13` | `invalid_function_definition` | `FunctionSearchPath` | &lt;function&gt; sets search_path = &lt;search_path&gt;: a TVIEW's refresh runs it as the TVIEW's owner, in the writer's session, where a search_path not ending in pg_temp looks up the writer's temporary relations and types first | ALTER FUNCTION &lt;function&gt; SET search_path = &lt;search_path, pg_temp&gt; |
 | `42P17` | `invalid_object_definition` | `DependencyCycle` | relations would read each other in a cycle: &lt;relation&gt;, &lt;relation&gt; |  |
 | `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Flatten the views the TVIEW reads. |
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |

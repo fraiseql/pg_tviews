@@ -209,6 +209,9 @@ fn create_tview_inner(
         &format!("{schema_name}.{tv_table_name}"),
         &final_select_sql,
     )?;
+    // Every function the refresh runs as the owner resolves names in its own
+    // schemas, never first in a writer's temporary one.
+    crate::catalog::function_paths::check(view_oid, None)?;
 
     // Find base table dependencies, and how a write to each maps to keys,
     // from the view's query tree (ADR 0157), with the column that names the

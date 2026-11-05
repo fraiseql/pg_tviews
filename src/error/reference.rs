@@ -26,6 +26,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::ColumnDdlRefused { .. } => "ColumnDdlRefused",
         TViewError::IndexNameReserved { .. } => "IndexNameReserved",
         TViewError::PermissionDenied { .. } => "PermissionDenied",
+        TViewError::FunctionSearchPath { .. } => "FunctionSearchPath",
         TViewError::DependencyCycle { .. } => "DependencyCycle",
         TViewError::DepthExceeded { .. } => "DepthExceeded",
         TViewError::InvalidSelectStatement { .. } => "InvalidSelectStatement",
@@ -70,6 +71,11 @@ fn examples() -> Vec<TViewError> {
         },
         TViewError::PermissionDenied {
             reason: p("reason"),
+        },
+        TViewError::FunctionSearchPath {
+            function: p("function"),
+            path: p("search_path"),
+            fix: p("search_path, pg_temp"),
         },
         TViewError::DependencyCycle {
             entities: vec![p("relation"), p("relation")],
@@ -283,7 +289,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 20, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 21, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

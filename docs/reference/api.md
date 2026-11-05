@@ -758,6 +758,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
 | `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |
 | `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function |
+| `42P13` | `invalid_function_definition` | a function the TVIEW's refresh runs (one its definition calls, a trigger on its table) sets a `search_path` that does not end in `pg_temp` |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | a flush over 1,000 entity batches (a loop: a trigger on a TVIEW table writing back what the refresh reads), or backing views nested more than 64 deep |

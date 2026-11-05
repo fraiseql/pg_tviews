@@ -1,5 +1,6 @@
 mod cached;
 pub mod collections;
+pub mod function_paths;
 pub mod graph;
 pub(crate) mod indexes;
 mod partition;

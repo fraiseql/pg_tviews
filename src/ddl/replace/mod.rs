@@ -120,6 +120,9 @@ pub(crate) fn create_or_replace(
         Ok(())
     };
 
+    // The user triggers on the TVIEW's table run in its refresh, as its owner,
+    // as do the functions its definition calls.
+    crate::catalog::function_paths::check(meta.view_oid, Some(meta.tview_oid))?;
     if comparison.same_view && declared.group_keys == current.group_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         let same_declarations = declared.declarations.stored() == current.declarations;
@@ -154,6 +157,7 @@ pub(crate) fn create_or_replace(
             &normalized_sql,
             &comparison.base_tables,
         )?;
+        crate::catalog::function_paths::check(meta.view_oid, Some(meta.tview_oid))?;
         retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         alter(&current)?;
         check_time_declared(&entity, declares_time)?;
