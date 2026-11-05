@@ -212,12 +212,7 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     ),
 ];
 
-/// `undefined_object` for `ERRCODE_UNDEFINED_OBJECT`.
-fn condition(code: PgSqlErrorCode) -> String {
-    format!("{code:?}")
-        .trim_start_matches("ERRCODE_")
-        .to_lowercase()
-}
+use super::condition;
 
 /// `text` in a Markdown table cell: pipes escaped, and `<placeholder>`s kept as
 /// text rather than read as HTML.

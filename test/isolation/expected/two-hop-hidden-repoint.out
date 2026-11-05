@@ -12,9 +12,9 @@ pg_sleep
 (1 row)
 
 step w_rename: <... completed>
-state|message                                |names_hidden
------+---------------------------------------+------------
-55P03|canceling statement due to lock timeout|f           
+state|message                                                            |names_hidden
+-----+-------------------------------------------------------------------+------------
+55P03|refreshing a TVIEW as its owner postgres failed: lock_not_available|f           
 (1 row)
 
 step o_rollback: ROLLBACK;

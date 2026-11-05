@@ -251,6 +251,34 @@ impl TViewError {
         }
     }
 
+    /// This error without what it quotes of the rows or of `PostgreSQL`'s report:
+    /// for a caller without the privileges of the owner whose work raised it.
+    /// The variant, so the SQLSTATE, stays.
+    #[must_use]
+    pub fn without_values(self) -> Self {
+        match self {
+            Self::SpiError { .. } => Self::SpiError {
+                query: String::new(),
+                error: WITHHELD.to_string(),
+            },
+            Self::CatalogError { operation, .. } => Self::CatalogError {
+                operation,
+                pg_error: WITHHELD.to_string(),
+            },
+            Self::SerializationError { .. } => Self::SerializationError {
+                message: WITHHELD.to_string(),
+            },
+            Self::DuplicateKey {
+                tview, key_column, ..
+            } => Self::DuplicateKey {
+                tview,
+                key_column,
+                key: WITHHELD.to_string(),
+            },
+            other => other,
+        }
+    }
+
     /// Raise this error as a `PostgreSQL` ERROR. Does not return.
     #[track_caller]
     pub fn raise(self) -> ! {
@@ -284,6 +312,18 @@ impl TViewError {
 
 /// The text form of a `PostgreSQL` error code: five characters of six bits each
 /// (`MAKE_SQLSTATE`).
+/// `undefined_object` for `ERRCODE_UNDEFINED_OBJECT`.
+#[must_use]
+pub fn condition(code: PgSqlErrorCode) -> String {
+    format!("{code:?}")
+        .trim_start_matches("ERRCODE_")
+        .to_lowercase()
+}
+
+/// What replaces a value-bearing part of an error for a caller without the
+/// privileges of the role whose work raised it.
+const WITHHELD: &str = "withheld: the work ran as the TVIEW's owner; the server log has the error";
+
 fn sqlstate_text(code: PgSqlErrorCode) -> String {
     let packed = code as isize;
     (0..5)

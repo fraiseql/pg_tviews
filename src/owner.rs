@@ -14,8 +14,10 @@
 //! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
+use pgrx::pg_sys::panic::{CaughtError, ErrorReport};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
+use pgrx::{PgLogLevel, PgTryBuilder};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 
@@ -143,14 +145,22 @@ fn intern(config: &str) -> Option<&'static CStr> {
 pub struct AsOwner;
 
 impl AsOwner {
-    /// Run `work` as `owner`: the current user is the owner, inside a
-    /// security-restricted operation, with `search_path` set to
-    /// `pg_catalog, pg_temp` and the [`RENDER_SETTINGS`] and [`PLAN_SETTINGS`]
-    /// pinned. Leaving restores the caller's user, context and settings; on an
-    /// error, the (sub)transaction abort restores them.
+    /// Run `work` as `owner`. The frame decides:
+    /// - who: the current user is the owner, inside a security-restricted
+    ///   operation;
+    /// - where names resolve: `search_path` is `pg_catalog, pg_temp`, and a caller
+    ///   whose temporary schema shadows a name is refused first;
+    /// - how values render: the [`RENDER_SETTINGS`], [`PLAN_SETTINGS`] and the
+    ///   owner's text search configuration are pinned;
+    /// - what an error reveals: to a caller without the owner's privileges, an
+    ///   error the work raises or returns arrives with its SQLSTATE and without
+    ///   the values it quotes; the server log has it whole.
+    ///
+    /// Leaving restores the caller's user, context and settings; on an error,
+    /// the (sub)transaction abort restores them.
     ///
     /// # Errors
-    /// What `work` returns.
+    /// What `work` returns; a temporary object of the caller's shadowing a name.
     pub fn run<T>(
         owner: Owner,
         work: impl FnOnce(&mut OwnerFrame) -> TViewResult<T>,
@@ -158,9 +168,77 @@ impl AsOwner {
         // SAFETY: reads backend-global state; no frame of this call is open yet.
         let caller = unsafe { pg_sys::GetUserId() };
         check_temp_shadows(caller, owner.role)?;
+        // Decided before the owner's work runs: nothing below reads who the
+        // current user is once it fails.
+        // SAFETY: a role membership check by OID.
+        let privileged = unsafe { pg_sys::has_privs_of_role(caller, owner.role) };
         let mut frame = OwnerFrame::enter(owner);
-        work(&mut frame)
+        if privileged {
+            return work(&mut frame);
+        }
+        let role = role_name(owner.role);
+        let attempt = std::panic::AssertUnwindSafe(|| work(&mut frame));
+        PgTryBuilder::new(move || {
+            let attempt = attempt;
+            (attempt.0)()
+        })
+        .catch_others(move |error| raise_without_values(&error, &role))
+        .execute()
+        .map_err(|error| {
+            if error.clone().without_values() != error {
+                ErrorReport::from(error.clone()).report(PgLogLevel::LOG_SERVER_ONLY);
+            }
+            error.without_values()
+        })
     }
+}
+
+/// Raise `error`, raised by work run as `role` for a caller without its
+/// privileges, with its SQLSTATE and a message naming its condition; its
+/// message, detail and hint go to the server log only. No SQL runs here.
+fn raise_without_values(error: &CaughtError, role: &str) -> ! {
+    let report = match error {
+        CaughtError::PostgresError(report)
+        | CaughtError::ErrorReport(report)
+        | CaughtError::RustPanic {
+            ereport: report, ..
+        } => report,
+    };
+    let code = report.sql_error_code();
+    let mut logged = ErrorReport::new(
+        code,
+        format!(
+            "work run as {role}, a TVIEW's owner, failed: {}",
+            report.message()
+        ),
+        "pg_tviews",
+    );
+    if let Some(detail) = report.detail() {
+        logged = logged.set_detail(detail);
+    }
+    logged.report(PgLogLevel::LOG_SERVER_ONLY);
+    ErrorReport::new(
+        code,
+        format!(
+            "refreshing a TVIEW as its owner {role} failed: {}",
+            crate::error::condition(code)
+        ),
+        "pg_tviews",
+    )
+    .set_hint("The server log has the error; the TVIEW's owner and its members get it whole.")
+    .report(PgLogLevel::ERROR);
+    unreachable!("an ERROR report does not return")
+}
+
+/// The name of `role`, for messages; its OID when it has none.
+fn role_name(role: Oid) -> String {
+    // SAFETY: a syscache lookup by OID; null when the role is gone.
+    let name = unsafe { pg_sys::GetUserNameFromId(role, true) };
+    if name.is_null() {
+        return role.to_u32().to_string();
+    }
+    // SAFETY: a NUL-terminated name in a palloc'd copy.
+    crate::utils::ident::quote_if_needed(&unsafe { CStr::from_ptr(name) }.to_string_lossy())
 }
 
 /// Run `work` as the extension's owner, who owns the registration catalog: for a
