@@ -48,8 +48,17 @@ pub fn qualified(relid: Oid) -> TViewResult<String> {
 /// # Errors
 /// `PermissionDenied` without `UPDATE` or `SELECT`, or under row security;
 /// `InvalidInput` for a table without a single-column integer primary key or
-/// that no TVIEW reads; a failed lookup or refresh.
+/// that no TVIEW reads; `RefreshLimit` for more distinct keys than
+/// `pg_tviews.max_queue_size`; a failed lookup or refresh.
 pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
+    let mut keys = keys.to_vec();
+    keys.sort_unstable();
+    keys.dedup();
+    let max = crate::config::max_queue_size();
+    if keys.len() > max {
+        return Err(crate::queue::queue_full(keys.len(), max));
+    }
+    let keys = keys.as_slice();
     // SAFETY: a lock on a relation by OID, held until the transaction ends: no
     // other session renames or drops it meanwhile.
     unsafe { pg_sys::LockRelationOid(source, pg_sys::AccessShareLock.cast_signed()) };
