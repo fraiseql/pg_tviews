@@ -37,7 +37,7 @@ Every role can read all three.
 | `entity` | `text` | entity (`post`); unique across the database |
 | `query` | `text` | the normalized definition (below) |
 | `options` | `jsonb` | every option of the TVIEW, defaults included (below); NULL when the table is gone |
-| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Whoever can `SELECT` from the TVIEW's table can `SELECT` from it ([privileges](ddl.md#privileges)) |
+| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Only its owner, the TVIEW's, may read it: no grant on the table reaches it, and any privilege granted on it, or on one of its columns, is revoked ([privileges](ddl.md#privileges)); readers read the TVIEW's table |
 | `identity` | `text[]` | the column that names the TVIEW's rows and is its table's primary key: `{pk_<entity>}`, or a `DISTINCT ON` TVIEW's key (below) |
 | `base_tables` | `regclass[]` | the tables the backing view reads (below) |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
@@ -341,8 +341,10 @@ on the database (granted to `PUBLIC` by default), and a transaction that called 
 an existing TVIEW cannot be prepared with `PREPARE TRANSACTION`.
 
 **Serialization.** Every call that registers, changes or drops a TVIEW holds
-`pg_advisory_xact_lock(<class>, hashtext(entity))` until the transaction ends, so two
-calls for one entity run one after the other.
+pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624,
+which `pg_advisory_lock()` can neither take nor block) until the transaction ends, so
+two calls for one entity run one after the other. A caller that may not change an
+existing TVIEW is refused before it takes the lock.
 
 It works in any transaction, `DO` block or multi-statement batch (including the one that
 runs `CREATE EXTENSION`). Like every pg_tviews function it needs the library in

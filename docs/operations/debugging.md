@@ -38,6 +38,9 @@ FROM tviews.pg_tviews_profile();
 | Writes blocked | Long or prepared transactions holding locks | `pg_stat_activity`, `pg_prepared_xacts` |
 | Memory errors | Large rebuilds or bulk writes | Increase `work_mem` for the session |
 
+`pg_tviews_reregister_all()` is safe to run as a superuser: it re-derives each TVIEW in
+its owner's frame, so no TVIEW's code runs as the superuser.
+
 ## Troubleshooting Flowcharts
 
 ### TVIEW Not Refreshing
@@ -162,6 +165,9 @@ Follow the "TVIEW Not Refreshing" flowchart. Repairs:
 SELECT * FROM tviews.pg_tviews_reregister_all();   -- re-install triggers
 SELECT tviews.pg_tviews_refresh('post');           -- bring one TVIEW up to date
 ```
+
+`pg_tviews_reregister_all()` is safe to run as a superuser: it re-derives each TVIEW in
+its owner's frame, so no TVIEW's code runs as the superuser.
 
 ### Issue: Slow TVIEW Reads
 

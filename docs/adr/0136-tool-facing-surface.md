@@ -1,7 +1,9 @@
 # ADR 0136: A stable surface for tools
 
 - Status: Accepted; amended for #181 (see [Amendment](#amendment-181-pg_tviews-objects-live-in-tviews))
-  and for the maintenance functions (see [Amendment](#amendment-maintenance-functions-and-the-real-privilege-model))
+  and for the maintenance functions (see [Amendment](#amendment-maintenance-functions-and-the-real-privilege-model)),
+  for backing view privileges (see [Amendment](#amendment-010-beta35-backing-views-are-their-owners-alone))
+  and for the owner frame (see [Amendment](#amendment-010-beta36-the-owner-frame))
   and by [ADR 0211](0211-api-surface.md) (one TVIEW name, removed functions, read contract v2)
 - Issues: #136 (fixed schema, privileges), #139 (health check), #137 (upgrade path),
   #133 (read contract), #134 (create-or-replace)
@@ -400,6 +402,9 @@ someone tuned by hand, and a tool that wants a key pinned passes it. Passing
 fixed class id. That covers `create_or_replace`, `pg_tviews_create`, `pg_tviews_drop`, the
 CTAS path and `pg_tviews_reregister`. Two calls for one entity therefore run one after the
 other.
+(Amended in 0.1.0-beta.36: the lock is an advisory tag of pg_tviews' own, `objsubid`
+21624, that `pg_advisory_lock()` can neither take nor block, and a caller that may not
+change an existing TVIEW is refused before it takes it.)
 
 **What counts as the same.** For an existing TVIEW, under `ACCESS SHARE` on `tv_*` and
 `v_*`, the call compares:
@@ -565,7 +570,9 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   revokes it in the same transaction. Owning the views by the extension's owner would
   read the base tables with its privileges; `security_invoker` views would need grants
   for every reader.
-- **Privileges follow the table**: a grant on the application's schema (`GRANT SELECT ON
+- **The view's grants copied the table's** (superseded by the
+  [0.1.0-beta.35 amendment](#amendment-010-beta35-backing-views-are-their-owners-alone)):
+  a grant on the application's schema (`GRANT SELECT ON
   ALL TABLES IN SCHEMA app`, default privileges on `app`) no longer reaches the backing
   view, so whoever can `SELECT` from `tv_<entity>` can `SELECT` from its backing view.
   The view's `SELECT` grants are made its table's when the view is created, rebuilt or
@@ -593,6 +600,8 @@ query view, so a schema built from templates could not get the TVIEW (#181).
   `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`, `extra_float_digits` `1`,
   `bytea_output` `hex`), so the stored rows do not depend on the writer's session. Fixed
   values rather than options: one rendering per database, comparable across TVIEWs.
+  The complete list is in the
+  [0.1.0-beta.36 amendment](#amendment-010-beta36-the-owner-frame).
 - **Options** (Decision 5) gain `uncascaded_policy`: a TVIEW declares what a write to a
   table no cascade reaches does (ADR 0157, amendment), instead of a file setting the
   session's `pg_tviews.uncascaded_policy` first. A different value is an `altered`
@@ -675,3 +684,62 @@ Measured on a quiet dedicated machine (Hetzner CCX33, AMD EPYC-Milan, stock Post
   is within ±2 % (row bulk 2.3 % faster);
 - `compare.sh` (5 rounds × 15 s, 1 and 16 clients, paired): no write slower, mean ratios
   0.87-1.006, every 95 % interval reaching 1.00 or below.
+
+## Amendment (0.1.0-beta.35): backing views are their owner's alone
+
+Supersedes the "grants copied the table's" bullet of the #181 amendment. A backing view
+reads the base tables with its owner's privileges, so a role granted `SELECT` on it reads
+every row the definition yields, whatever row-level security on `tv_<entity>` hides. No
+grant is copied from the table any more. Every privilege another role holds on a backing
+view, on the view or on one of its columns (`GRANT … ON ALL TABLES IN SCHEMA tviews`,
+default privileges), is revoked when the view is created or rebuilt, when its TVIEW is
+re-derived (the update included), and after every `GRANT`, `REVOKE`,
+`ALTER TABLE … OWNER TO` and `REASSIGN OWNED`. `ALTER TABLE tv_<entity> OWNER TO` still
+gives the view the new owner. The revocations run as the view's owner, so the caller needs
+no privilege on the view. Readers read `tv_<entity>`.
+
+## Amendment (0.1.0-beta.36): the owner frame
+
+Decision 2's refresh context, extended to everything derived from a TVIEW. The guarantees
+are stated in [the security architecture](../security/architecture.md#owner-frame); the
+decisions:
+
+- **One frame, everywhere.** SQL derived from a TVIEW's definition or rendered from its
+  plan, planned or run, runs in an owner frame of the TVIEW's owner, opened by
+  `AsOwner::run(owner, |frame| …)` (`src/owner.rs`). That covers create (for the creating
+  role), replace, re-registration and the update script, the column-rename follow-up,
+  the health check's plans, resync's mappings, and every refresh and rebuild. The
+  functions that plan or run that SQL take the frame's token, which names its owner and
+  is checked against the TVIEW's table's owner; a frame opened inside another makes the
+  outer token unusable until it closes. Privileges are decided for the caller, the
+  current user when the outermost frame opened (`owner::caller()`).
+- **Pinned settings, fixed values.** Every frame sets, at fixed values rather than the
+  session's or the role's reset values: `TimeZone` `UTC`, `DateStyle` `ISO, YMD`,
+  `IntervalStyle` `postgres`, `extra_float_digits` `1`, `bytea_output` `hex`,
+  `lc_monetary` `C`, `lc_numeric` `C`, `lc_time` `C`, `timezone_abbreviations`
+  `Default`, `array_nulls` `on`, `quote_all_identifiers` `off`, `transform_null_equals`
+  `off`, `standard_conforming_strings` `on`, `xmlbinary` `base64`, `xmloption`
+  `content`, `gin_fuzzy_search_limit` `0` (`RENDER_SETTINGS`), and `plan_cache_mode`
+  `auto` and `jit` `off` (`PLAN_SETTINGS`). `default_text_search_config` is the TVIEW's
+  own: the creating session's, stored with its plan and kept by re-derivation. A
+  setting is set only when it differs. Derivation renders a plan's constants under the
+  same settings, and the row trigger reads a non-integer key under them.
+- **Temporary objects never shadow.** The frame's `search_path` is
+  `pg_catalog, pg_temp`, but a function the owner's code calls may set its own. A
+  function a TVIEW's refresh runs (called by its definition, through an operator,
+  aggregate or view, or a user trigger on its table) must set a `search_path` ending in
+  `pg_temp`, or none: create and replace refuse it (`42P13`), the update and every
+  re-derivation warn, and the health check's `function_paths` reports it. At run time,
+  before a frame opens for a caller without the owner's privileges, a temporary relation
+  or type of the session named like one in another schema refuses the work (`42501`);
+  the answer is kept until a relation or type name changes or the transaction ends.
+- **Errors without values.** Whether the caller has the owner's privileges is decided
+  before the work runs. For a caller without them, an error the work raises is
+  re-raised with its SQLSTATE and a message naming its condition, with no detail, and
+  logged whole to the server log only; an error pg_tviews returns keeps its variant and
+  SQLSTATE without the rows or PostgreSQL report it quotes. The owner, its members and
+  superusers get every error unchanged.
+- **Relations by OID.** A stored plan names relations by OID; its names are for messages.
+  SQL is rendered from the OIDs inside the frame immediately before it runs, never once
+  and reused across frames. `scripts/check-name-resolution.sh` fails on SQL built from a
+  stored name.

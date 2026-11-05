@@ -236,7 +236,8 @@ Re-derives the TVIEW's stored propagation plan
 ([ADR 0203](../adr/0203-propagation-plan.md)) and its triggers from its definition with
 the installed release, without touching its rows, and clears `needs_reregister`.
 Returns `reregistered`. It is the repair a write or the health check names when a
-TVIEW's plan does not decode.
+TVIEW's plan does not decode. The definition is analyzed in the TVIEW's owner's frame,
+whoever calls ([owner frame](../security/architecture.md#owner-frame)).
 
 ```sql
 SELECT tviews.pg_tviews_reregister('post');
@@ -297,11 +298,17 @@ those; only documents that changed are written. A key whose row is gone deletes 
 row of each TVIEW keyed by `source`'s key. A TVIEW that maps `source` through a row's
 links cannot find the rows a deleted or moved row left: rebuild it with
 `pg_tviews_refresh` after such writes. An `all_keys` table under `full_refresh`
-rebuilds the TVIEW. `source` needs a single-column integer primary key (`22023`).
+rebuilds the TVIEW. `source` needs a single-column integer primary key, and a TVIEW
+must read it (`22023` otherwise). A partition's rows are read from the partition and
+mapped through the TVIEWs reading its partitioned table.
 
-The caller needs `UPDATE` on `source`, what the write itself would need (`42501`); each
-TVIEW refreshes as its owner. Returns each TVIEW reading `source`, and each other TVIEW
-the flush changed, with the rows changed (`NULL`: rebuilt whole).
+The caller needs `UPDATE` on `source`, what the write itself would need, and `SELECT`:
+the rows are read once, as the caller (`42501` without either). A table whose row
+security applies to the caller is refused (`42501`): ask its owner. Each TVIEW's owner
+maps the rows it is handed, without reading `source`, and each TVIEW refreshes as its
+owner. More distinct keys than `pg_tviews.max_queue_size` is `54000`, checked before
+anything else. Returns each TVIEW reading `source`, and each other TVIEW the flush
+changed, with the rows changed (`NULL`: rebuilt whole).
 
 ```sql
 SET session_replication_role = replica;
@@ -623,7 +630,10 @@ the current transaction; the `direct_patch_*`, `view_recomputes`,
 over the session. Read it from the session doing the writes: another session sees its
 own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 `queued` lists the keys queued in the transaction; it is empty between statements,
-since every statement flushes.
+since every statement flushes. It lists only the keys of TVIEWs the caller may read
+(`SELECT` on the `tv_*` table and `USAGE` on its schema) with no row security applying to
+the caller; the types of the others are in `omitted_types`. `queue_size` counts every
+key.
 
 | Key | Meaning |
 |---|---|
@@ -644,6 +654,7 @@ since every statement flushes.
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
 | `queued` | the keys queued in the transaction, as `[{"entity": …, "pk": …}, …]` |
+| `omitted_types` | the GraphQL type names of queued TVIEWs whose keys `queued` leaves out; absent when none is |
 
 ```sql
 BEGIN;
@@ -758,10 +769,18 @@ pg_tviews follows the rules of `ALTER TABLE` and `REFRESH MATERIALIZED VIEW`
   explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_count_feed_gaps()`,
   `tviews.registry` and `pg_tviews_flush_and_report(include_data => false)`. With
   `include_data` (the default), the report reads each reported row's `data` as the
-  caller, so it also needs `SELECT` on those `tv_*` tables (`42501` otherwise).
-- **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table; the caller
-  becomes its owner.
+  caller. Whatever a function returns about rows (the report, `pg_tviews_show_queue`,
+  `pg_tviews_show_replication`) comes only from `tv_*` tables the caller may read:
+  `SELECT` on the table and `USAGE` on its schema; under row security, only the rows a
+  read as the caller returns, or nothing. The others are left out, never an error
+  ([caller visibility](../security/architecture.md#caller-visibility)).
+- **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table, and
+  `TRIGGER` on every table its definition reads, another role's `tv_*` table included;
+  the caller becomes its owner.
 - **Reading.** `tviews.registry` and `tviews.stats` are readable by any role.
+- **Errors.** An error raised while work runs as a TVIEW's owner reaches a caller
+  without the owner's privileges with its SQLSTATE and condition only; the server log
+  has it whole.
 
 A role that owns nothing is refused, and an operator is refused acting on one TVIEW
 it does not own:
@@ -796,7 +815,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42601` | `syntax_error` | the definition does not parse, or is more than one `SELECT` |
 | `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
 | `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |
-| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function |
+| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function; a creator without `TRIGGER` on a table the definition reads; a temporary relation or type of the session named like one a TVIEW's owner resolves; `pg_tviews_resync` without `SELECT` or `UPDATE` on the table, or under its row security |
 | `42P13` | `invalid_function_definition` | a function the TVIEW's refresh runs (one its definition calls, a trigger on its table) sets a `search_path` that does not end in `pg_temp` |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |

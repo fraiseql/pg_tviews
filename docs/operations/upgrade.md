@@ -37,8 +37,9 @@ Do it in each database that has the extension.
    ```sql
    ALTER EXTENSION pg_tviews UPDATE;
    ```
-   It re-derives every TVIEW's plan and triggers from its definition, as the TVIEW's
-   owner, inside the update; the rows are not touched. A TVIEW that no longer analyses
+   It re-derives every TVIEW's plan and triggers from its definition inside the update,
+   each in its owner's frame ([owner frame](../security/architecture.md#owner-frame)):
+   the role running the update runs none of a TVIEW's code. The rows are not touched. A TVIEW that no longer analyses
    fails the whole update, named with its error, and nothing is changed: fix or drop it
    and update again. `tviews.registry.needs_reregister` is false for every TVIEW after it.
    Before it re-derives anything, the update refuses, naming every case in one error:

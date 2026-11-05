@@ -38,6 +38,8 @@ jobs:
         run: scripts/check-spi-facade.sh
       - name: Check the lock is tracked, tokens are least-privilege and refs are commits
         run: scripts/check-ci-hardening.sh
+      - name: Check the docs make no claim the code no longer keeps
+        run: scripts/check-doc-claims.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})

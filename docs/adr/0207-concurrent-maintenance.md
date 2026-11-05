@@ -340,3 +340,16 @@ writers are now refused with 0A000 before they write; the fail-fast policy, the 
 (`concurrency/crosscheck.rs`) and their 40001 are gone. The REPEATABLE READ and SERIALIZABLE
 specs were rewritten to expect the refusal.
 
+**0.1.0-beta.36: keyed tags and gated escalation.** `pg_locks` shows every role the tags of
+every lock, so the 32-bit FNV-1a hash of a value let any role test which value another
+transaction held. The tag is now SipHash-2-4 keyed with a secret the postmaster draws at
+start ([Lock tags and modes](#lock-tags-and-modes)); a superuser matches it with
+`pg_tviews_value_lock_tag(relation regclass, column_name text, value text)`, which converts
+`value` to the column's type as the lock form does (a NULL `column_name` names a TVIEW key
+being created). A refresh's escalation took a whole-relation lock on any relation a TVIEW
+reads, whichever role wrote: it now needs `INSERT` or `UPDATE` on the relation for the role
+that called into pg_tviews, otherwise the refresh keeps value locks up to 16 times the
+threshold and fails with 54000 past it ([Escalation](#escalation)). The registration lock
+serializing DDL on one entity moved from `pg_advisory_xact_lock(1953917285, …)`, which any
+role could take, to an advisory tag of pg_tviews' own (`field4` 21624).
+

@@ -15,8 +15,8 @@ controls exist today. How the extension works is in
 
 | Threat | Vector | Main controls |
 |---|---|---|
-| Privilege escalation in the database | A role making a TVIEW owner's code run with its privileges, or the reverse; planting a function on a `search_path` the flush uses | Owner execution, fixed `search_path`, ownership checks (below) |
-| Data leakage | A role reading a TVIEW or its backing view without a grant | Backing view privileges follow the table's |
+| Privilege escalation in the database | A role making a TVIEW owner's code run with its privileges, or the reverse; planting a function, relation or type where the owner's code resolves names | The [owner frame](#owner-frame), ownership checks, `TRIGGER` to attach work to another role's table ([below](#effects-on-other-roles)) |
+| Data leakage | A role reading a TVIEW or its backing view without a grant; a role learning row data from pg_tviews' functions, errors or locks | Backing views are their owner's alone; [caller visibility](#caller-visibility) for every row a function returns; errors from owner-run work reach other roles without values; value-lock tags keyed with a server secret |
 | SQL injection | Identifiers and definitions passed to pg_tviews functions | Identifiers quoted with `quote_identifier`, values bound as parameters or quoted with `quote_literal`; a definition must be exactly one SELECT (42601) |
 | Denial of service | Unbounded queues or recursion; a writer's locks blocking writers of tables it has no rights on | `pg_tviews.max_queue_size` on every enqueue path (54000), at most 1,000 entity batches per flush and 64 nested views (54001), stack-depth checks in the query-tree walkers; a refresh locks a whole table only for a role that may write it, otherwise one lock per linked value, at most 16 times `pg_tviews.lock_escalation_threshold` (54000); a private registration lock; `idle_in_transaction_session_timeout` for writer roles |
 | Supply chain | Compromised crates or CI | `cargo deny check` (`deny.toml`) and `cargo audit` on every pull request and daily (`security-audit.yml`), pinned toolchain and pgrx, every workflow action pinned by commit and every installed tool by version |
@@ -38,7 +38,7 @@ controls exist today. How the extension works is in
 
 - **Refreshes run as the TVIEW's owner.** Every read and write of a `tv_*` table during
   a flush or rebuild runs as that table's owner, in a security-restricted operation,
-  with `search_path = pg_catalog, pg_temp` and fixed render settings (`src/owner.rs`),
+  with `search_path = pg_catalog, pg_temp` and fixed render settings ([owner frame](#owner-frame)),
   as `REFRESH MATERIALIZED VIEW` does. A writer to a base table needs no privilege on
   the TVIEW, its backing view, or the tables the view reads.
 - **The caller's `search_path` has no say in pg_tviews' own SQL.** Every function, the
@@ -68,13 +68,102 @@ controls exist today. How the extension works is in
 - **Catalog.** `pg_tview_meta` is writable only by the extension's owner; `PUBLIC` can
   read it and the `tviews.registry` view. A restored catalog row whose plan does not
   resolve fails the insert.
-- **Backing views** in `tviews` get the `SELECT` grants of their `tv_*` table and its
-  owner, after every `GRANT`, `REVOKE` and `ALTER … OWNER`.
+- **Backing views** in `tviews` are their owner's alone, the TVIEW's: a backing view
+  reads the base tables with its owner's privileges, so a role granted it would read
+  every row the definition yields, whatever row-level security hides on `tv_*`. No
+  grant on the table reaches it, and every privilege on it held by another role, on
+  the view or on one of its columns, is revoked when the view is created or rebuilt,
+  when the TVIEW is re-derived, and after every `GRANT`, `REVOKE`, `ALTER … OWNER` and
+  `REASSIGN OWNED` (`src/ddl/privileges.rs`). Readers read `tv_*`.
 - **jsonb_delta.** Patches call only functions in jsonb_delta's own schema, never a
   same-named function elsewhere on a `search_path`.
 - **Row-level security.** Refreshes read base tables as the TVIEW's owner, so a policy
   on a base table applies as it applies to that owner. A TVIEW does not carry its base
   tables' policies: put policies on `tv_*` itself to restrict who reads which rows.
+
+## Owner frame
+
+SQL derived from a TVIEW, planned (`EXPLAIN`) or run, runs only in an owner frame of the
+TVIEW's owner: its creation (the creating role, its owner-to-be),
+`pg_tviews_create_or_replace`, re-registration (`pg_tviews_reregister`,
+`pg_tviews_reregister_all`, `ALTER EXTENSION pg_tviews UPDATE`), the follow-up of a
+column rename, the health check's plans, `pg_tviews_resync`'s mappings, and every
+refresh and rebuild. One function opens frames, `AsOwner::run` in `src/owner.rs`, and
+the functions that plan or run such SQL take the token it hands to its work, which
+nothing else can make. The token names its owner: SQL of a TVIEW checks it against the
+owner of the TVIEW's table and fails with an internal error on a mismatch. A frame
+opened inside another (the extension's owner's, for a catalog write) makes the outer
+token unusable until it closes, so no TVIEW's SQL runs as the inner frame's role.
+
+A frame gives four guarantees:
+
+- **Who.** The current user is the owner, inside a security-restricted operation, as
+  in `REFRESH MATERIALIZED VIEW`. Privileges are decided for the caller, the current
+  user when the outermost frame opened (`owner::caller()`), never for the current user
+  inside a frame.
+- **Where names resolve.** `search_path` is `pg_catalog, pg_temp`. The session's
+  temporary schema is the writer's, so a temporary relation or type of the writer
+  never stands in for a name the owner's code resolves: before a frame opens for a
+  caller without the owner's privileges, a temporary relation or type named like one
+  in another schema refuses the work (`42501`). Creating or replacing a TVIEW is
+  refused (`42P13`) when a function its refresh runs (one its definition calls,
+  directly or through an operator, aggregate or view, or a user trigger on its table)
+  sets a `search_path` that does not end in `pg_temp`; the health check's
+  `function_paths` component lists such functions of TVIEWs registered before the rule.
+- **How values render.** These settings have fixed values in every frame, never the
+  session's or the role's: `TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle`
+  `postgres`, `extra_float_digits` `1`, `bytea_output` `hex`, `lc_monetary`,
+  `lc_numeric` and `lc_time` `C`, `timezone_abbreviations` `Default`, `array_nulls`
+  `on`, `quote_all_identifiers` `off`, `transform_null_equals` `off`,
+  `standard_conforming_strings` `on`, `xmlbinary` `base64`, `xmloption` `content`,
+  `gin_fuzzy_search_limit` `0`, `plan_cache_mode` `auto` and `jit` `off`.
+  `default_text_search_config` is the TVIEW's own, its creator's. The constants a plan
+  stores are rendered under the same settings, and a writer's trigger reads a row key
+  that is not an integer under them too.
+- **What an error reveals.** To a caller without the owner's privileges, an error the
+  owner's work raises arrives with its SQLSTATE and a message naming its condition
+  (`refreshing a TVIEW as its owner <role> failed: <condition>`), without the values it
+  quotes; an error pg_tviews returns keeps its SQLSTATE and drops the rows and the
+  PostgreSQL report it quotes. The server log has the whole error. The owner, its
+  members and superusers get it unchanged.
+
+Stored plans name relations by OID; the names they also hold are for messages. SQL is
+rendered from those OIDs inside the frame, right before it runs, so a renamed relation
+is still the one read and a relation taking its old name never is.
+`scripts/check-name-resolution.sh` fails on SQL built from a stored name.
+
+## Caller visibility
+
+Whatever pg_tviews returns to a caller about rows is decided for the caller, outside any
+owner frame, by one module, `src/visibility.rs`:
+
+- a relation is readable with `SELECT` on it (table-level) and `USAGE` on its schema; a
+  relation that is gone is unreadable, and so is every relation inside an owner frame,
+  where the current user is not the caller;
+- row-level security applies when `check_enable_rls` enables it for the caller.
+
+| Function | What the caller sees |
+|---|---|
+| `pg_tviews_flush_and_report()` | the rows of readable TVIEWs only, the others' types in `omitted_types`; under row security, only the changed rows a read as the caller returns (deleted rows not listed, the type in `invalidated_types`); collections only when the child and parent TVIEWs are readable, and only parents a read as the caller returns |
+| `pg_tviews_show_queue()` | queued keys of readable TVIEWs without row security; the others' types in `omitted_types`; `queue_size` counts every key |
+| `pg_tviews_show_replication()` | `is_empty` read as the caller from the `tv_*` table, by OID; NULL unless readable without row security |
+| `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source` |
+
+The health check plans or reads a TVIEW as its owner (`seq_scans`, `contents`) only for
+a caller with the owner's privileges; the other TVIEWs are counted in the message.
+
+## Effects on other roles
+
+What a role makes happen to another role's objects needs the privilege PostgreSQL would
+require for the same effect.
+
+| Effect | Required |
+|---|---|
+| Attaching work to a table's writes: creating a TVIEW that reads it, another role's `tv_*` table included | `TRIGGER` on that table; a role's own TVIEWs pass, and a replace keeps reading a table it already read |
+| Rebuilding a TVIEW whole (`TRUNCATE`, `ACCESS EXCLUSIVE`) from `pg_tviews_refresh`, which also reaches the TVIEWs reading it, or from a resume | the privileges of its owner; for any other caller its rows are brought to its view one by one, and no reader waits. The `_all` functions rebuild every TVIEW for the operator roles granted them |
+| Locking a whole relation in place of its values (escalation) | `INSERT` or `UPDATE` on that relation, for the caller; otherwise one lock per value, at most 16 times `pg_tviews.lock_escalation_threshold` (`54000`) |
+| Holding the registration lock of an entity | for an existing TVIEW, the right to change it, checked before the lock is taken and again under it; the lock is pg_tviews' own (`objsubid` 21624), which `pg_advisory_lock()` can neither take nor block |
+| Queuing refresh work | `pg_tviews.max_queue_size` holds on every path, keys queued together and `pg_tviews_resync` included (`54000`) |
 
 ## Supply chain and releases
 

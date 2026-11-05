@@ -306,6 +306,15 @@ other reads' mapping went unused.
   it still changes the view (an anti-join on a flag row, `LEFT JOIN tb_flag f ON …
   WHERE f.pk_flag IS NULL`): it is not a guard. In an outer join's own condition,
   before that join NULL-extends anything, it still is.
+  A condition that is not sound in this sense is never recorded as a guard
+  (0.1.0-beta.36); an occurrence left with no guard keeps the table unguarded.
+- **Constants round-trip exactly** (0.1.0-beta.36). A guard is stored as SQL and
+  parsed back at each write. Every constant, cast, element cast and `IN` list the walk
+  renders keeps its type modifier (`exprTypmod`): `'ab'::char(2)` stays `char(2)`, and a
+  type without one renders unconstrained (`bpchar`, `"bit"`), never as `char(1)` or
+  `bit(1)`, which would truncate the value. Constants render under the refresh's pinned
+  settings (ADR 0136, owner frame amendment), so the value parsed back is the one
+  derived, whoever derived it.
 - **A guarded table.** When every `all_keys` occurrence of a table has guards (and a
   trigger watches it), the table's key mapping carries `guard`: a query over the
   changed rows (both images of an `UPDATE`) returning a row when one meets every

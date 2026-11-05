@@ -672,8 +672,16 @@ reports the declarations.
 
 Refreshes run as the TVIEW's owner with `search_path = pg_catalog, pg_temp`: a
 function a definition calls must qualify the tables it reads (`public.tb_setting`) or
-`SET search_path` itself. pg_tviews sees calls, not function bodies: the time a
-function reads (`now()` inside it) is not detected.
+set its own path, with `pg_temp` last: `SET search_path = public, pg_temp`. The
+refresh runs in the writer's session, and PostgreSQL looks up relations and types in
+that session's temporary schema first unless the path names `pg_temp` later: a path
+without `pg_temp` last would let the writer's temporary objects stand in for the
+function's. Creating or replacing a TVIEW whose refresh runs such a function (one its
+definition calls, directly or through an operator, aggregate or view, or a user
+trigger on its table) is refused with `42P13`, whose hint gives the `ALTER FUNCTION`
+that fixes it; the health check's `function_paths` lists the ones TVIEWs registered
+earlier still run. pg_tviews sees calls, not function bodies: the time a function
+reads (`now()` inside it) is not detected.
 
 ### Time-dependent TVIEWs
 
@@ -728,8 +736,21 @@ TVIEW's rows (creation, refreshes on writes, `pg_tviews_refresh()`, the time ref
 | `IntervalStyle` | `postgres` |
 | `extra_float_digits` | `1` |
 | `bytea_output` | `hex` |
+| `lc_monetary`, `lc_numeric`, `lc_time` | `C` |
+| `timezone_abbreviations` | `Default` |
+| `array_nulls` | `on` |
+| `quote_all_identifiers` | `off` |
+| `transform_null_equals` | `off` |
+| `standard_conforming_strings` | `on` |
+| `xmlbinary` | `base64` |
+| `xmloption` | `content` |
+| `gin_fuzzy_search_limit` | `0` |
+| `plan_cache_mode` | `auto` |
+| `jit` | `off` |
+| `default_text_search_config` | the creating session's, kept with the TVIEW |
 
-so a TVIEW's rows don't depend on who wrote last. The session's own settings are left
+so a TVIEW's rows don't depend on who wrote last, nor on settings a role carries
+(`ALTER ROLE … SET`). The session's own settings are left
 as they were. The definition itself is parsed under the caller's settings, as `CREATE
 VIEW` parses it; a text-to-date conversion inside it runs at refresh time and reads
 `ISO, YMD`.

@@ -86,7 +86,15 @@ link** (it inserts and deletes no row, and updates only columns its TVIEWs show,
 columns they join, filter, group or order by) takes no shared value lock: two such
 writes, say two users editing their own `bio`, each refreshing posts that show both
 users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
-those rows would. Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
+those rows would.
+
+Readers of a TVIEW wait only while it is rebuilt whole (`TRUNCATE`, which takes
+`ACCESS EXCLUSIVE`): by `pg_tviews_refresh()` or a resume
+([below](#suspended-refresh)) run with the privileges of its owner, by the operator
+functions `pg_tviews_refresh_all()` and `pg_tviews_rebuild_all(only_empty => false)`,
+and by DDL on its table. Every other refresh changes rows in place. Creating a TVIEW
+takes `SHARE` on the tables its definition reads: their readers don't wait, their
+writers do ([Locks](#locks)).
 
 A statement takes its locks in one pass, in a fixed order: its exclusive locks on the
 values it changed and, after a link change, the shared locks of the rows it reaches.
@@ -146,6 +154,15 @@ transaction locks the relation instead of its values, so a bulk write never exha
 the shared lock table: one transaction renaming 20,000 users holds a few dozen locks, and
 writes linking rows to any of those users wait for it.
 
+A refresh escalates the same way only for a relation the role that called into
+pg_tviews (the writer, not the TVIEW's owner the refresh runs as) may write itself, with
+`INSERT` or `UPDATE`, checked once per relation and transaction: a whole-relation lock
+blocks every writer of that relation. For any other role the refresh keeps one lock per
+value, up to 16 times `pg_tviews.lock_escalation_threshold`; past that the statement
+fails with `54000` ("too many rows linked in one statement"), naming no relation. A
+write's own locks on the values it changed escalate without this check: the writer may
+write those rows.
+
 ```sql
 -- Who waits for whom
 SELECT l.pid, c.relname AS relation,
@@ -156,6 +173,17 @@ JOIN pg_class c ON c.oid = l.classid
 WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
   AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
 ORDER BY l.granted, l.pid;
+```
+
+A superuser finds who holds or waits for the lock on one value, here `pk_user` 1 of
+`tb_user`:
+
+```sql fragment
+SELECT l.pid, l.mode, l.granted, pg_blocking_pids(l.pid) AS blocked_by
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.objsubid = 21622
+  AND l.classid = 'tb_user'::regclass
+  AND l.objid::bigint = tviews.pg_tviews_value_lock_tag('tb_user', 'pk_user', '1');
 ```
 
 `pg_tviews_show_queue()` counts a transaction's `value_locks`,
