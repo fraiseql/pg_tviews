@@ -758,7 +758,8 @@ hides):
 
 - no grant on the table reaches the view (`ON ALL TABLES IN SCHEMA app` and default
   privileges included); readers read `tv_<entity>`;
-- a privilege granted on the view itself is revoked when the TVIEW is created or
+- a privilege granted on the view itself, or on one of its columns, is revoked when
+  the TVIEW is created or
   rebuilt, and after every `GRANT`, `REVOKE`, `ALTER TABLE … OWNER TO` and
   `REASSIGN OWNED`;
 - `ALTER TABLE tv_<entity> OWNER TO` (and `REASSIGN OWNED`) gives the view the new

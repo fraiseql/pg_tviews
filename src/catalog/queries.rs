@@ -312,16 +312,23 @@ pub fn leftover_view(schema: &str, name: &str) -> TViewResult<Option<Oid>> {
 // --- Backing view owners and privileges -------------------------------------
 
 /// For each backing view (of the TVIEW whose table is `$1`, of every one when
-/// `$1` is NULL) on which a role other than its owner holds a privilege, the
-/// statement that revokes them all, as `(view, statement)`.
+/// `$1` is NULL) on which a role other than its owner holds a privilege, on the
+/// view or on one of its columns, the statement that revokes them all, as
+/// `(view, statement)`: `REVOKE ALL` on a relation also revokes its column
+/// privileges.
 const GRANT_REVOCATIONS: &str = "\
     SELECT v.oid, pg_catalog.format('REVOKE ALL ON %I.%I FROM %s CASCADE', n.nspname, v.relname, \
-               pg_catalog.string_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' \
-                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END, ', ')) \
+               pg_catalog.string_agg(DISTINCT CASE WHEN g.grantee = 0 THEN 'PUBLIC' \
+                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(g.grantee)) END, ', ')) \
     FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
-    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace, \
-         pg_catalog.aclexplode(v.relacl) a \
-    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND a.grantee <> v.relowner \
+    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace \
+    CROSS JOIN LATERAL ( \
+        SELECT a.grantee FROM pg_catalog.aclexplode(v.relacl) a \
+        UNION \
+        SELECT c.grantee FROM pg_catalog.pg_attribute att \
+        CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) c \
+        WHERE att.attrelid = v.oid AND att.attnum > 0 AND NOT att.attisdropped) g \
+    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND g.grantee <> v.relowner \
     GROUP BY v.oid, n.nspname, v.relname ORDER BY v.oid";
 
 /// The `REVOKE` statements that leave the backing view of the TVIEW whose table

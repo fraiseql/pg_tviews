@@ -137,6 +137,18 @@ SELECT must(NOT has_schema_privilege('regress_bvp_owner', 'tviews', 'CREATE'),
 GRANT SELECT ON ALL TABLES IN SCHEMA tviews TO regress_bvp_other;
 SELECT must(NOT view_granted('tv_post'), 'a grant on the backing view survived the sync');
 
+-- Nor does a grant on its columns, alone or with one on the view.
+SELECT format('GRANT SELECT (pk_post, data) ON %s TO regress_bvp_reader', backing('tv_post')) \gexec
+SELECT must(NOT has_column_privilege('regress_bvp_reader', backing('tv_post'), 'data', 'SELECT'),
+            'a column grant on the backing view survived the sync');
+SELECT must(rows_as('regress_bvp_reader', backing('tv_post')) = -1,
+            'a column grant let the reader read the backing view');
+SELECT format('GRANT SELECT ON %1$s TO regress_bvp_other; GRANT SELECT (data) ON %1$s TO regress_bvp_reader',
+              backing('tv_post')) \gexec
+SELECT must(NOT has_column_privilege(r, backing('tv_post'), 'data', 'SELECT'),
+            format('a grant to %s on the backing view or its columns survived the sync', r))
+FROM unnest(ARRAY['regress_bvp_reader', 'regress_bvp_other']) r;
+
 -- The probe a reader can no longer run: health's `contents` component names a
 -- TVIEW whose table is empty while its definition yields rows.
 SELECT must(status = 'OK', 'contents on a populated TVIEW: ' || message)
