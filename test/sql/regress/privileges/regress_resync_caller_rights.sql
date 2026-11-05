@@ -63,8 +63,44 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- A TVIEW the caller may not read is listed without its count.
+CREATE TABLE public.tb_open (pk_open int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                             name text);
+INSERT INTO public.tb_open (pk_open, name) VALUES (1, 'o1');
+SELECT tviews.pg_tviews_create('public.tv_open', $q$
+    SELECT o.pk_open, o.id, jsonb_build_object('name', o.name) AS data FROM public.tb_open o $q$);
+GRANT SELECT, UPDATE ON public.tb_open TO regress_rc_writer;
+SET session_replication_role = replica;
+UPDATE public.tb_open SET name = 'o1b' WHERE pk_open = 1;
+SET session_replication_role = DEFAULT;
+SET ROLE regress_rc_writer;
+DO $$ BEGIN
+    IF (SELECT rows_changed FROM tviews.pg_tviews_resync('public.tb_open', ARRAY[1])
+        WHERE tview = 'public.tv_open') IS NOT NULL THEN
+        RAISE EXCEPTION 'resync: a count was returned for a TVIEW the caller may not read';
+    END IF;
+END $$;
+RESET ROLE;
+DO $$ BEGIN
+    IF (SELECT data->>'name' FROM public.tv_open WHERE pk_open = 1) <> 'o1b' THEN
+        RAISE EXCEPTION 'resync: the row was not refreshed';
+    END IF;
+END $$;
+GRANT SELECT ON public.tv_open TO regress_rc_writer;
+SET session_replication_role = replica;
+UPDATE public.tb_open SET name = 'o1c' WHERE pk_open = 1;
+SET session_replication_role = DEFAULT;
+SET ROLE regress_rc_writer;
+DO $$ BEGIN
+    IF (SELECT rows_changed FROM tviews.pg_tviews_resync('public.tb_open', ARRAY[1])
+        WHERE tview = 'public.tv_open') IS DISTINCT FROM 1 THEN
+        RAISE EXCEPTION 'resync: no count for a TVIEW the caller reads';
+    END IF;
+END $$;
+RESET ROLE;
+
 SELECT 'resync: the caller''s rights' AS result;
 
 DROP EXTENSION pg_tviews CASCADE;
-DROP TABLE public.tb_user;
+DROP TABLE public.tb_user, public.tb_open;
 SELECT regress_drop_roles('regress_rc');

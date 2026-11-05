@@ -119,7 +119,12 @@ fn pg_tviews_resync(
     let resynced = crate::delta::resync::resync(source.oid(), &keys)?;
     let mut rows = Vec::with_capacity(resynced.len());
     for r in resynced {
-        rows.push((crate::delta::resync::qualified(r.table)?, r.changed));
+        // How many rows changed is told only to a caller who could count them
+        // by reading the TVIEW.
+        let readable = crate::visibility::may_read_relation(r.table)
+            && !crate::visibility::rls_active_for_caller(r.table).unwrap_or(true);
+        let changed = r.changed.filter(|_| readable);
+        rows.push((crate::delta::resync::qualified(r.table)?, changed));
     }
     Ok(TableIterator::new(rows))
 }

@@ -308,7 +308,8 @@ security applies to the caller is refused (`42501`): ask its owner. Each TVIEW's
 maps the rows it is handed, without reading `source`, and each TVIEW refreshes as its
 owner. More distinct keys than `pg_tviews.max_queue_size` is `54000`, checked before
 anything else. Returns each TVIEW reading `source`, and each other TVIEW the flush
-changed, with the rows changed (`NULL`: rebuilt whole).
+changed, with the rows changed (`NULL`: rebuilt whole, or a TVIEW the caller may not
+read, or reads under row security).
 
 ```sql
 SET session_replication_role = replica;
