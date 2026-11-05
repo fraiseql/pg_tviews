@@ -286,10 +286,13 @@ fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> T
         &format!("tv_{entity}"),
         query,
         schema,
-        declared.group_keys.as_ref(),
-        declared.storage,
-        Some(declared.declarations.clone()),
-        declared.typename.as_deref(),
+        create::Options {
+            group_keys: declared.group_keys.as_ref(),
+            storage: declared.storage,
+            declarations: Some(declared.declarations.clone()),
+            typename: declared.typename.as_deref(),
+            rebuilt_for: None,
+        },
     )?;
     if !declared.indexes.is_empty() {
         let table = TviewMeta::load_by_entity(entity)?

@@ -185,17 +185,18 @@ pub(super) fn rebuild(
         false,
         false,
     )?;
-    create::rebuilt_for(owner, || {
-        create::create_tview_in(
-            &tv_name,
-            query,
-            schema,
-            declared.group_keys.as_ref(),
-            declared.storage,
-            Some(declared.declarations),
-            declared.typename.as_deref(),
-        )
-    })?;
+    create::create_tview_in(
+        &tv_name,
+        query,
+        schema,
+        create::Options {
+            group_keys: declared.group_keys.as_ref(),
+            storage: declared.storage,
+            declarations: Some(declared.declarations),
+            typename: declared.typename.as_deref(),
+            rebuilt_for: Some(owner),
+        },
+    )?;
 
     let rebuilt = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
         name: entity.to_string(),

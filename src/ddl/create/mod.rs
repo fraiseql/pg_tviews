@@ -22,23 +22,6 @@ pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
 #[cfg(test)]
 mod tests;
 
-thread_local! {
-    /// Set by [`rebuilt_for`]: the owner the TVIEW being created is rebuilt for.
-    static REBUILT_FOR: std::cell::Cell<Option<crate::owner::Owner>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Run `create` to rebuild a TVIEW owned by `owner`, which the caller may change
-/// but need not be: its definition is analyzed as `owner`, and its table is left
-/// empty, for the rebuild to fill as the owner once the owner is restored. The
-/// owner's view functions never run with the caller's privileges.
-pub(crate) fn rebuilt_for<T>(owner: crate::owner::Owner, create: impl FnOnce() -> T) -> T {
-    REBUILT_FOR.with(|w| w.set(Some(owner)));
-    let result = create();
-    REBUILT_FOR.with(|w| w.set(None));
-    result
-}
-
 pub use select::ViewColumns;
 
 use super::uncascaded::Declarations;
@@ -74,28 +57,31 @@ pub(crate) fn current_schema() -> TViewResult<String> {
 /// # Errors
 /// Returns an error if the TVIEW exists, the definition is invalid, or creation fails.
 ///
-/// `declarations` are the uncascaded policies to store (a rebuilt TVIEW keeps its
-/// own); `None` stores the defaults. `typename` is the declared GraphQL type
-/// name, `None` for `PascalCase(entity)`: refused when another TVIEW's rows have
-/// the name it makes.
+/// `options` says what it is created with and as whom ([`Options`]); a type
+/// name another TVIEW's rows have is refused.
 pub(crate) fn create_tview_in(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
-    group_keys: Option<&super::aggregate::GroupKeys>,
-    storage: Storage,
-    declarations: Option<Declarations>,
-    typename: Option<&str>,
+    options: Options<'_>,
 ) -> TViewResult<u64> {
-    create_tview_inner(
-        tview_name,
-        select_sql,
-        schema_name,
-        group_keys,
-        storage,
-        declarations.unwrap_or_else(Declarations::defaults),
-        typename,
-    )
+    create_tview_inner(tview_name, select_sql, schema_name, options)
+}
+
+/// What a TVIEW is created with, beside its name, definition and schema.
+pub(crate) struct Options<'a> {
+    pub group_keys: Option<&'a super::aggregate::GroupKeys>,
+    pub storage: Storage,
+    /// The uncascaded policies to store; `None` stores the defaults.
+    pub declarations: Option<Declarations>,
+    /// The declared GraphQL type name; `None` for `PascalCase(entity)`.
+    pub typename: Option<&'a str>,
+    /// The owner of the TVIEW a rebuild restores, which the caller may change but
+    /// need not be: the definition is analyzed as that owner, and the table is
+    /// left empty for the rebuild to fill as the owner once it is restored, so the
+    /// owner's view functions never run with the caller's privileges. `None`: a
+    /// new TVIEW, analyzed as and filled by the creating role.
+    pub rebuilt_for: Option<crate::owner::Owner>,
 }
 
 /// The creation pipeline's normalization of a definition: `SELECT *` expanded to
@@ -173,10 +159,7 @@ fn create_tview_inner(
     tview_name: &str,
     select_sql: &str,
     schema_name: &str,
-    group_keys: Option<&super::aggregate::GroupKeys>,
-    storage: Storage,
-    declarations: Declarations,
-    typename: Option<&str>,
+    options: Options<'_>,
 ) -> TViewResult<u64> {
     crate::revision::check();
     // Its fill reads under the statement's snapshot, after the tables are locked.
@@ -188,7 +171,14 @@ fn create_tview_inner(
     );
     // The role the TVIEW is analyzed as: its owner-to-be, the creating role, or
     // the owner a rebuild restores.
-    let rebuilt_for = REBUILT_FOR.with(std::cell::Cell::get);
+    let Options {
+        group_keys,
+        storage,
+        declarations,
+        typename,
+        rebuilt_for,
+    } = options;
+    let declarations = declarations.unwrap_or_else(Declarations::defaults);
     // It keeps the text search configuration of the session creating it.
     let owner = match rebuilt_for {
         Some(owner) => owner,
