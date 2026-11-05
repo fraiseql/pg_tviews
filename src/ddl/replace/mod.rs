@@ -456,7 +456,7 @@ fn replace_in_place(
     let reads = create::reregister_metadata(entity, schema, definition)?;
     crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
     // The rows are recomputed as the TVIEW's owner, as every refresh is.
-    crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |frame| {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
         crate::refresh::full::reconcile(frame, entity, meta)
     })?;
 

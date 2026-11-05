@@ -308,9 +308,8 @@ impl Flush {
         }
         for ((entity, lookup_col), rows) in groups {
             let meta = self.meta(&entity)?;
-            let changed = crate::owner::AsOwner::run(
-                crate::owner::Owner::of_table(meta.tview_oid)?,
-                |_frame| {
+            let changed =
+                crate::owner::AsOwner::run(crate::owner::Owner::of_tview(&meta)?, |_frame| {
                     if self.max_rows.is_some() {
                         let keys = rows.iter().map(|(key, _)| *key).collect();
                         let children =
@@ -318,8 +317,7 @@ impl Flush {
                         self.charge(&meta, &format!("via {lookup_col}"), children)?;
                     }
                     crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)
-                },
-            )?;
+                })?;
             self.queue_parents_to_recompute(&entity, &changed, &[])?;
         }
         Ok(())

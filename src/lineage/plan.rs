@@ -43,6 +43,10 @@ pub struct TviewPlan {
     /// The TVIEW's row key, `pk_<entity>`, and its type.
     #[serde(default)]
     pub key: PlanKey,
+    /// The `default_text_search_config` it was created under, which its
+    /// refreshes run under (`to_tsvector(text)` reads it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_search: Option<String>,
 }
 
 /// A TVIEW's row key: the integer column `pk_<entity>` (ADR 0169; smallint,
@@ -224,6 +228,7 @@ pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>, key: Pla
         paths,
         references: lineage.references.clone(),
         key,
+        text_search: None,
     }
 }
 

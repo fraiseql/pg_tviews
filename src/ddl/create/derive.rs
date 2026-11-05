@@ -60,7 +60,7 @@ pub(crate) fn derive_as(
     view_oid: pg_sys::Oid,
     declarations: &Declarations,
 ) -> TViewResult<Derivation> {
-    crate::owner::AsOwner::run(owner, |frame| {
+    let mut derivation = crate::owner::AsOwner::run(owner, |frame| {
         derive(
             frame,
             entity_name,
@@ -69,7 +69,9 @@ pub(crate) fn derive_as(
             view_oid,
             declarations,
         )
-    })
+    })?;
+    derivation.plan.text_search = owner.text_search().map(str::to_string);
+    Ok(derivation)
 }
 
 /// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local

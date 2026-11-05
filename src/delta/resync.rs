@@ -198,14 +198,13 @@ fn enqueue(
     }
     let key_type = meta.key_type.clone();
     // Rendered in the owner's frame, by OID, right before it runs.
-    let found =
-        crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |frame| {
-            frame.require_owner_of(meta.tview_oid)?;
-            let Some(keys_sql) = super::mapping_query(meta, source)? else {
-                return Ok(None);
-            };
-            lookup(&key_type, source, rows, &keys_sql).map(Some)
-        })?;
+    let found = crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
+        frame.require_owner_of(meta.tview_oid)?;
+        let Some(keys_sql) = super::mapping_query(meta, source)? else {
+            return Ok(None);
+        };
+        lookup(&key_type, source, rows, &keys_sql).map(Some)
+    })?;
     let Some(mut found) = found else {
         return Ok(false);
     };

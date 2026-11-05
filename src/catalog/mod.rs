@@ -264,7 +264,16 @@ impl crate::owner::Owner {
             TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
                 name: entity.to_string(),
             })?;
-        Self::of_table(meta.tview_oid)
+        Self::of_tview(&meta)
+    }
+
+    /// The owner of the TVIEW `meta` describes, with its text search
+    /// configuration.
+    ///
+    /// # Errors
+    /// Returns an error if its table is gone.
+    pub fn of_tview(meta: &TviewMeta) -> crate::TViewResult<Self> {
+        Ok(Self::of_table(meta.tview_oid)?.with_text_search(meta.plan.text_search.as_deref()))
     }
 }
 

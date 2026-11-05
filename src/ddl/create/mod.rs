@@ -182,10 +182,12 @@ fn create_tview_inner(
     // The role the TVIEW is analyzed as: its owner-to-be, the creating role, or
     // the owner a rebuild restores.
     let rebuilt_for = REBUILT_FOR.with(std::cell::Cell::get);
+    // It keeps the text search configuration of the session creating it.
     let owner = match rebuilt_for {
         Some(owner) => owner,
         None => crate::owner::Owner::current_user()?,
-    };
+    }
+    .with_text_search(crate::owner::session_text_search().as_deref());
     // Calls that register, change or drop one entity run one after the other.
     super::lock_entity(tview_name.strip_prefix("tv_").unwrap_or(tview_name))?;
 
@@ -372,8 +374,15 @@ pub fn reregister_metadata(
     let declarations = Declarations::of(&meta);
     // Analyzed as the TVIEW's owner, whoever re-derives it: planning its mapping
     // queries runs the owner's functions.
+    // It keeps its text search configuration; one registered without takes the
+    // session's.
+    let owner = crate::owner::Owner::of_tview(&meta)?;
+    let owner = match owner.text_search() {
+        Some(_) => owner,
+        None => owner.with_text_search(crate::owner::session_text_search().as_deref()),
+    };
     let derivation = derive_as(
-        crate::owner::Owner::of_table(meta.tview_oid)?,
+        owner,
         entity_name,
         group_keys.as_ref(),
         &base_table_oids,

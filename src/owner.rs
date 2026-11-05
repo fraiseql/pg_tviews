@@ -20,9 +20,13 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 
 /// The role an owner frame runs as: a TVIEW's owner, named by its table or
-/// entity, or the extension's owner, for writes to its catalog.
+/// entity, or the extension's owner, for writes to its catalog. A TVIEW's owner
+/// carries the TVIEW's text search configuration, which its frames pin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Owner(Oid);
+pub struct Owner {
+    role: Oid,
+    text_search: Option<&'static CStr>,
+}
 
 impl Owner {
     /// The owner of the relation `table`.
@@ -30,7 +34,7 @@ impl Owner {
     /// # Errors
     /// Returns an error if the relation does not exist.
     pub fn of_table(table: Oid) -> TViewResult<Self> {
-        relation_owner(table).map(Self)
+        relation_owner(table).map(Self::of_role)
     }
 
     /// The owner of the `pg_tviews` extension, who owns its catalog.
@@ -56,7 +60,7 @@ impl Owner {
             operation: "Look up the owner of pg_tviews".to_string(),
             pg_error: "extension pg_tviews is not installed".to_string(),
         })?;
-        Ok(Self(owner))
+        Ok(Self::of_role(owner))
     }
 
     /// The current user, the owner-to-be of a TVIEW it creates.
@@ -69,20 +73,68 @@ impl Owner {
             return Err(frame_error("the caller is read inside an owner frame"));
         }
         // SAFETY: reads backend-global state.
-        Ok(Self(unsafe { pg_sys::GetUserId() }))
+        Ok(Self::of_role(unsafe { pg_sys::GetUserId() }))
     }
 
     /// The role's OID.
     #[must_use]
     pub const fn oid(self) -> Oid {
-        self.0
+        self.role
     }
 
     /// The role `role`: one read with [`relation_owner`].
     #[must_use]
     pub const fn of_role(role: Oid) -> Self {
-        Self(role)
+        Self {
+            role,
+            text_search: None,
+        }
     }
+
+    /// This owner, with `default_text_search_config` pinned to `config` in its
+    /// frames (a TVIEW's, its creator's value), or left as it is (`None`).
+    #[must_use]
+    pub fn with_text_search(self, config: Option<&str>) -> Self {
+        Self {
+            text_search: config.and_then(intern),
+            ..self
+        }
+    }
+
+    /// The text search configuration its frames pin.
+    #[must_use]
+    pub fn text_search(self) -> Option<&'static str> {
+        self.text_search.and_then(|c| c.to_str().ok())
+    }
+}
+
+/// The session's `default_text_search_config`: what a TVIEW created now keeps.
+#[must_use]
+pub fn session_text_search() -> Option<String> {
+    // SAFETY: a setting that exists; the result is copied before it can change.
+    let value =
+        unsafe { pg_sys::GetConfigOption(c"default_text_search_config".as_ptr(), false, false) };
+    (!value.is_null()).then(|| {
+        // SAFETY: NUL-terminated when not null.
+        unsafe { CStr::from_ptr(value) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+/// `config` as a string that lives as long as the backend: one per distinct
+/// configuration name, a handful in a database.
+fn intern(config: &str) -> Option<&'static CStr> {
+    let config = CString::new(config).ok()?;
+    INTERNED.with(|interned| {
+        let mut interned = interned.borrow_mut();
+        if let Some(found) = interned.iter().find(|c| **c == config.as_c_str()) {
+            return Some(*found);
+        }
+        let leaked: &'static CStr = Box::leak(config.into_boxed_c_str());
+        interned.push(leaked);
+        Some(leaked)
+    })
 }
 
 /// Runs work in an owner frame. SQL derived from a TVIEW, planned or run, runs
@@ -105,8 +157,8 @@ impl AsOwner {
     ) -> TViewResult<T> {
         // SAFETY: reads backend-global state; no frame of this call is open yet.
         let caller = unsafe { pg_sys::GetUserId() };
-        check_temp_shadows(caller, owner.0)?;
-        let mut frame = OwnerFrame::enter(owner.0);
+        check_temp_shadows(caller, owner.role)?;
+        let mut frame = OwnerFrame::enter(owner);
         work(&mut frame)
     }
 }
@@ -226,7 +278,8 @@ pub struct OwnerFrame {
 }
 
 impl OwnerFrame {
-    fn enter(owner: Oid) -> Self {
+    fn enter(spec: Owner) -> Self {
+        let owner = spec.role;
         let mut saved_user = pg_sys::InvalidOid;
         let mut saved_context = 0;
         // SAFETY: plain backend-global state, as REFRESH MATERIALIZED VIEW sets it;
@@ -243,6 +296,9 @@ impl OwnerFrame {
             let level = pg_sys::NewGUCNestLevel();
             set_local(c"search_path", c"pg_catalog, pg_temp");
             pin_settings();
+            if let Some(config) = spec.text_search {
+                pin(c"default_text_search_config", config);
+            }
             level
         };
         // The owner resolves no name the caller wrote.
@@ -327,15 +383,46 @@ impl Drop for OwnerFrame {
     }
 }
 
-/// The settings a value's text rendering depends on, and the values every
-/// refresh renders under: a TVIEW's rows then do not depend on the
-/// session that wrote last. `CURRENT_DATE` in a refresh is the UTC day.
-pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
+/// The settings that change how a value renders as text or how SQL parses, and
+/// the values every refresh runs under: a TVIEW's rows then do not depend on
+/// the session that wrote last, nor on the settings its role carries.
+/// `CURRENT_DATE` in a refresh is the UTC day. Each, and why:
+/// - `TimeZone`: timestamptz output and input without an offset.
+/// - `DateStyle`: date and timestamp output, and the field order of input.
+/// - `IntervalStyle`: interval output.
+/// - `extra_float_digits`: float output precision.
+/// - `bytea_output`: bytea output.
+/// - `lc_monetary`: money output and input, `to_char`'s `L`.
+/// - `lc_numeric`: `to_char`'s `D` and `G`.
+/// - `lc_time`: `to_char`'s `TM` day and month names.
+/// - `timezone_abbreviations`: what an abbreviation in timestamptz input means.
+/// - `array_nulls`: whether `NULL` in array input is a null element.
+/// - `quote_all_identifiers`: `quote_ident`, `format('%I')` and deparsed SQL.
+/// - `transform_null_equals`: whether `x = NULL` parses as `x IS NULL`.
+/// - `standard_conforming_strings`: what a backslash in a string literal means.
+/// - `xmlbinary`: how bytea renders in XML.
+/// - `xmloption`: whether text casts to XML as a document or as content.
+/// - `gin_fuzzy_search_limit`: how many rows a GIN index scan returns.
+///
+/// `default_text_search_config` is a TVIEW's own: its creator's, pinned by the
+/// frames of its [`Owner`].
+pub const RENDER_SETTINGS: [(&CStr, &CStr); 16] = [
     (c"TimeZone", c"UTC"),
     (c"DateStyle", c"ISO, YMD"),
     (c"IntervalStyle", c"postgres"),
     (c"extra_float_digits", c"1"),
     (c"bytea_output", c"hex"),
+    (c"lc_monetary", c"C"),
+    (c"lc_numeric", c"C"),
+    (c"lc_time", c"C"),
+    (c"timezone_abbreviations", c"Default"),
+    (c"array_nulls", c"on"),
+    (c"quote_all_identifiers", c"off"),
+    (c"transform_null_equals", c"off"),
+    (c"standard_conforming_strings", c"on"),
+    (c"xmlbinary", c"base64"),
+    (c"xmloption", c"content"),
+    (c"gin_fuzzy_search_limit", c"0"),
 ];
 
 /// How the statements of a refresh are planned: as each says when it is kept
@@ -443,6 +530,8 @@ thread_local! {
     static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
     /// How many owner frames are open, the innermost last.
     static OPEN_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The text search configurations owners carry ([`Owner::with_text_search`]).
+    static INTERNED: RefCell<Vec<&'static CStr>> = const { RefCell::new(Vec::new()) };
     /// The temporary schema found to shadow no name, until a name changes.
     static TEMP_CHECKED: std::cell::Cell<Option<Oid>> = const { std::cell::Cell::new(None) };
 }
@@ -520,6 +609,22 @@ unsafe fn set_local(name: &CStr, value: &CStr) {
 unsafe fn pin_settings() {
     for (name, value) in RENDER_SETTINGS.into_iter().chain(PLAN_SETTINGS) {
         // SAFETY: the caller opened the nest level.
+        unsafe { pin(name, value) };
+    }
+}
+
+/// Set `name` to `value` at the open nest level, unless it has that value
+/// already: setting some (`timezone_abbreviations` reads a file, the `lc_*`
+/// settings call `setlocale`) costs more than comparing.
+///
+/// SAFETY: the caller opened the nest level.
+unsafe fn pin(name: &CStr, value: &CStr) {
+    // SAFETY: a NUL-terminated name of a setting that exists; the result, when
+    // not null, is a NUL-terminated string valid until the setting changes.
+    let current = unsafe { pg_sys::GetConfigOption(name.as_ptr(), false, false) };
+    // SAFETY: as above.
+    if current.is_null() || unsafe { CStr::from_ptr(current) } != value {
+        // SAFETY: forwarded.
         unsafe { set_local(name, value) };
     }
 }

@@ -179,7 +179,7 @@ pub(super) fn rebuild(
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let user_indexes = user_indexes(meta.tview_oid)?;
 
-    let owner = crate::owner::Owner::of_table(meta.tview_oid)?;
+    let owner = crate::owner::Owner::of_tview(meta)?;
     crate::ddl::drop::drop_tview(
         &format!("{}.{tv_name}", ident::quoted(schema)),
         false,

@@ -181,7 +181,7 @@ fn seq_scan_check() -> Check {
             }
             Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
         }
-        let Ok(owner) = crate::owner::Owner::of_table(meta.tview_oid) else {
+        let Ok(owner) = crate::owner::Owner::of_tview(meta) else {
             continue;
         };
         let scanned = crate::owner::AsOwner::run(owner, |frame| {
@@ -312,7 +312,7 @@ fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Optio
     if !acts_for_owner(meta)? {
         return Ok(None);
     }
-    crate::owner::AsOwner::run(crate::owner::Owner::of_table(meta.tview_oid)?, |_frame| {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |_frame| {
         let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
         let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
         let has_rows = |relation: &str| {
