@@ -83,11 +83,14 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
         crate::utils::qualified_relname_from_oid(view)?,
         crate::utils::ident::quoted(&wanted)
     );
-    {
-        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+    // Renaming in the extension's schema needs CREATE there, which the view's
+    // owner is granted for the statement, as when it created the view.
+    let owner = crate::owner::relation_owner(view)?;
+    in_extension_schema_for(owner, || {
+        crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |_frame| {
             crate::utils::spi::run_ddl(&sql)
-        })?;
-    }
+        })
+    })?;
     // Names are cached by OID: here at once, in other backends at commit.
     crate::cache::invalidate_all();
     // SAFETY: `table` is the TVIEW's existing table.

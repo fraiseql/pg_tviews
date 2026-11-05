@@ -44,7 +44,22 @@ UPDATE rbo.tb_post SET title = 'two';
 SELECT must((SELECT data->>'title' FROM rbo.tv_post_live) = 'two', 'tv_post_live is not refreshed');
 SELECT must(NOT EXISTS (SELECT 1 FROM rbo.tv_post), 'the other role''s table was written');
 
+-- A TVIEW owner without CREATE on the extension's schema renames its table:
+-- the backing view follows.
+GRANT USAGE ON SCHEMA rbo TO regress_rbo_other;
+SET ROLE regress_rbo_other;
+CREATE TABLE rbo.tb_tag (pk_tag int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                         label text);
+INSERT INTO rbo.tb_tag (pk_tag, label) VALUES (1, 't');
+SELECT tviews.pg_tviews_create('rbo.tv_tag', $$
+    SELECT pk_tag, id, jsonb_build_object('label', label) AS data FROM rbo.tb_tag $$) \g /dev/null
+ALTER TABLE rbo.tv_tag RENAME TO tv_tag_live;
+RESET ROLE;
+SELECT must((SELECT view FROM tviews.registry WHERE name = 'tv_tag_live') IS NOT NULL,
+            'the backing view did not follow the rename');
+
 DROP TABLE rbo.tv_post;
+SELECT tviews.pg_tviews_drop('tag');
 DROP EXTENSION pg_tviews CASCADE;
 DROP SCHEMA rbo CASCADE;
 DROP ROLE regress_rbo_other;
