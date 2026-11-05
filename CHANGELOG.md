@@ -53,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Work on another role's objects needs the privilege PostgreSQL would require.**
   Reading another role's TVIEW in a definition needs `TRIGGER` on its table. Catching up
   a suspended TVIEW rebuilds it whole only for its owner. A refresh escalates to a
-  table-wide value lock only for a role that may write that table. Creating a TVIEW
-  locks only tables its creator may attach triggers to. The registration lock lives in
+  table-wide value lock only for a role that may write that table. Creating or
+  replacing a TVIEW locks only tables its caller may attach triggers to. The registration lock lives in
   pg_tviews' own advisory-lock space, and a refused call takes none.
 - **Lock tags in `pg_locks` are keyed with a per-server secret** (value, relation and
   registration tags), so they cannot be mapped back to the values they lock.
