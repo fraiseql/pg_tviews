@@ -54,9 +54,15 @@ impl<K: Eq + Hash, V: Clone> Memo<K, V> {
         self.map.borrow().get(key).cloned()
     }
 
-    /// Remember `value` for `key`.
+    /// Remember `value` for `key`, read since the lookup that missed it: unless
+    /// an invalidation arrived since that lookup, when what was read may predate
+    /// it (but a key the memo keeps across invalidations).
     pub fn insert(&self, key: K, value: V) {
+        let read_in = self.epoch.get();
         self.sync();
+        if self.epoch.get() != read_in && !(self.keep)(&key) {
+            return;
+        }
         let mut map = self.map.borrow_mut();
         if map.len() >= MAX_ENTRIES {
             map.clear();
@@ -248,5 +254,42 @@ mod tests {
         assert_eq!((kept.get(&1), kept.get(&2)), (None, Some(2)));
         invalidate_all();
         assert!(!CATALOG_WATCHED.with(Cell::get));
+    }
+
+    #[test]
+    fn a_value_loaded_across_an_invalidation_is_not_remembered() {
+        let memo: Memo<u32, u32> = Memo::new();
+        let outer: Memo<u32, u32> = Memo::new();
+        let invalidating = |value| {
+            invalidate_all();
+            Ok(value)
+        };
+        assert_eq!(memo.get_or_load(1, || invalidating(10)).unwrap(), 10);
+        assert_eq!(memo.get(&1), None);
+        // A load nested in another's: neither value is remembered.
+        let value = outer
+            .get_or_load(1, || memo.get_or_load(2, || invalidating(20)))
+            .unwrap();
+        assert_eq!(value, 20);
+        assert_eq!((outer.get(&1), memo.get(&2)), (None, None));
+        // A lookup, then a separate insert after an invalidation.
+        assert_eq!(memo.get(&3), None);
+        invalidate_all();
+        memo.insert(3, 30);
+        assert_eq!(memo.get(&3), None);
+        // A load no invalidation crossed is remembered.
+        assert_eq!(memo.get_or_load(4, || Ok(40)).unwrap(), 40);
+        assert_eq!(memo.get(&4), Some(40));
+    }
+
+    #[test]
+    fn a_kept_entry_loaded_across_an_invalidation_is_remembered() {
+        let kept: Memo<u32, u32> = Memo::keeping(|k| *k > 1);
+        let loaded = kept.get_or_load(2, || {
+            invalidate_all();
+            Ok(2)
+        });
+        assert_eq!(loaded.unwrap(), 2);
+        assert_eq!(kept.get(&2), Some(2));
     }
 }
