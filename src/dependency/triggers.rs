@@ -301,7 +301,9 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
 /// caller may not do: a table it did not read before (`read_before`) and holds
 /// no `TRIGGER` privilege on (creating the first TVIEW over it creates the
 /// triggers; a later one shares them, and may no more attach refreshes to the
-/// table's writes), or one a logical replication subscription writes.
+/// table's writes; another TVIEW's table needs no trigger, but its writes
+/// refresh `entity`'s just the same), or one a logical replication subscription
+/// writes.
 ///
 /// # Errors
 /// [`TViewError::PermissionDenied`] or [`TViewError::DefinitionRefused`] naming
@@ -311,8 +313,12 @@ pub fn check_installable(
     read_before: &[pg_sys::Oid],
     entity: &str,
 ) -> TViewResult<()> {
+    let tviews = crate::catalog::tview_tables()?;
     for &(table_oid, set) in plan {
-        if set == TriggerSet::None {
+        // Another TVIEW's table needs no trigger of its own, but its writes
+        // refresh this TVIEW: the same privilege as a base table's.
+        let embedded = tviews.contains(&table_oid);
+        if set == TriggerSet::None && !embedded {
             continue;
         }
         let (schema, relname, _) = get_table_name(table_oid)?;
@@ -334,12 +340,20 @@ pub fn check_installable(
             pg_error: e.to_string(),
         })?;
         if may_trigger != Some(true) && !read_before.contains(&table_oid) {
+            let how = if embedded {
+                format!("this TVIEW's writes would refresh tv_{entity}")
+            } else {
+                format!("pg_tviews maintains tv_{entity} with triggers on the tables it reads")
+            };
             return Err(TViewError::PermissionDenied {
                 reason: format!(
-                    "permission denied for table {qi_table}: pg_tviews maintains tv_{entity} \
-                     with triggers on the tables it reads, which needs the TRIGGER privilege"
+                    "permission denied for table {qi_table}: {how}, which needs the TRIGGER \
+                     privilege"
                 ),
             });
+        }
+        if set == TriggerSet::None {
+            continue;
         }
         if subscribed == Some(true) {
             return Err(TViewError::DefinitionRefused {

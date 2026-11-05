@@ -94,6 +94,9 @@ controls exist today. How the extension works is in
 - Superusers and the extension's owner are trusted.
 - TVIEW owners are trusted with the code their definitions call; the guarantees above
   stop that code from running with another role's privileges.
+- A role that may attach work to a table's writes holds `TRIGGER` on it: a TVIEW's
+  creator holds it on every table its definition reads, base tables and other
+  TVIEWs' tables alike.
 
 ## Reporting
 

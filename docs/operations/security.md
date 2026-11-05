@@ -44,7 +44,7 @@ ALTER TABLE app.tb_user OWNER TO docs_sec_owner;
 | Superuser | `CREATE EXTENSION pg_tviews` (its script creates event triggers and C functions); set the `pg_tviews.*` settings |
 | Extension owner | everything a TVIEW owner may, on every TVIEW; run the `_all` functions; read and prune the audit log |
 | A TVIEW's owner (or a member of the owning role) | `pg_tviews_create_or_replace`, `pg_tviews_drop`, `pg_tviews_refresh`, `pg_tviews_refresh_time_dependent`, `pg_tviews_reregister`, `pg_tviews_ensure_propagation_indexes`, `pg_tviews_reset_stats`, `pg_tviews_show_cascade_path`, `pg_tviews_show_mapping_query`, `pg_tviews_show_read_sets` on that TVIEW |
-| A role with `CREATE` on a schema | create a TVIEW there (`pg_tviews_create`, `CREATE TABLE tv_x AS …`); it becomes the owner |
+| A role with `CREATE` on a schema | create a TVIEW there (`pg_tviews_create`, `CREATE TABLE tv_x AS …`); it becomes the owner. It needs `TRIGGER` on every table the definition reads, another TVIEW's `tv_*` table included (its own TVIEWs' tables pass): their writes refresh the new TVIEW. A replace keeps reading a table it already read |
 | An operator role | the `_all` functions it was granted |
 | Everyone | the read-only functions (`pg_tviews_check_health`, `pg_tviews_profile`, `pg_tviews_resolve`, `pg_tviews_show_replication`, …), its own session's functions (`pg_tviews_suspend_triggers`, `pg_tviews_resume_triggers`, `pg_tviews_show_suspended`, `pg_tviews_show_queue`, `pg_tviews_flush_and_report`), and the views `tviews.registry` and `tviews.stats`; the read-only functions show row data (`is_empty`, queued keys, reported rows) only from the `tv_*` tables the caller may read |
 
