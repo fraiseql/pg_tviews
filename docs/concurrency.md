@@ -6,7 +6,7 @@ be retried.** The exceptions are listed [below](#exceptions); the design is
 [ADR 0207](adr/0207-concurrent-maintenance.md).
 
 A transaction at `REPEATABLE READ` or `SERIALIZABLE` that writes to a table a TVIEW
-reads, or refreshes or rebuilds TVIEWs, is refused with `0A000` before it writes: its
+reads, or creates, refreshes or rebuilds TVIEWs, is refused with `0A000` before it writes: its
 snapshot cannot see what it would wait for, so pg_tviews could only fail it after the
 fact. Reads of TVIEWs work at every level (reports, `pg_dump`). fraiseql's mutation
 functions keep rules that span rows with constraints (`UNIQUE`, `CHECK`, exclusion) and

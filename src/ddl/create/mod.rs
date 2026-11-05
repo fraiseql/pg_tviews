@@ -179,6 +179,8 @@ fn create_tview_inner(
     typename: Option<&str>,
 ) -> TViewResult<u64> {
     crate::revision::check();
+    // Its fill reads under the statement's snapshot, after the tables are locked.
+    crate::concurrency::require_read_committed();
     log_debug!(
         "create_tview start for '{}' in schema '{}'",
         tview_name,

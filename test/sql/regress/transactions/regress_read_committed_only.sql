@@ -3,8 +3,9 @@
 -- A transaction snapshot cannot see what a writer waited for, so pg_tviews cannot
 -- keep a TVIEW fresh from a REPEATABLE READ or SERIALIZABLE writer without failing
 -- it after the fact. It refuses such a writer at once, with 0A000 and a hint,
--- before anything is written: a write to a table a TVIEW reads, and every refresh
--- or rebuild call. Reads are not affected at any level, and neither are writes to
+-- before anything is written: a write to a table a TVIEW reads, every refresh
+-- or rebuild call, and creating a TVIEW (its fill would miss a row committed
+-- after the transaction's snapshot and before its triggers exist). Reads are not affected at any level, and neither are writes to
 -- tables no TVIEW reads.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_read_committed_only.sql
@@ -63,6 +64,12 @@ SELECT must(refused('SELECT tviews.pg_tviews_rebuild_all()', 'rr') = '0A000',
             'pg_tviews_rebuild_all at REPEATABLE READ was not refused');
 SELECT must(refused('TRUNCATE tb_post', 'rr') = '0A000',
             'a TRUNCATE at REPEATABLE READ was not refused');
+SELECT must(refused($q$SELECT tviews.pg_tviews_create('tv_note', 'SELECT pk_note, gen_random_uuid() AS id, jsonb_build_object(''b'', body) AS data FROM tb_note')$q$, 'rr') = '0A000',
+            'pg_tviews_create at REPEATABLE READ was not refused');
+SELECT must(refused($q$SELECT tviews.pg_tviews_create_or_replace('tv_note', 'SELECT pk_note, gen_random_uuid() AS id, jsonb_build_object(''b'', body) AS data FROM tb_note')$q$, 'rr') = '0A000',
+            'pg_tviews_create_or_replace (create) at REPEATABLE READ was not refused');
+SELECT must(refused($q$SELECT tviews.pg_tviews_create_or_replace('tv_user', 'SELECT pk_user, id, jsonb_build_object(''n'', name) AS data FROM tb_user')$q$, 'rr') = '0A000',
+            'pg_tviews_create_or_replace (replace) at REPEATABLE READ was not refused');
 -- Reads, and writes no TVIEW maintains, are not affected.
 SELECT must((SELECT count(*) FROM tv_post) = 1, 'a read of tv_post at REPEATABLE READ failed');
 SELECT must(refused('INSERT INTO tb_note VALUES (1, ''n'')', 'rr') = 'ok',
@@ -74,6 +81,8 @@ SELECT must(refused('UPDATE tb_user SET name = ''x'' WHERE pk_user = 1', 'ser') 
             'a write at SERIALIZABLE was not refused');
 SELECT must(refused('SELECT tviews.pg_tviews_refresh(''tv_user'')', 'ser') = '0A000',
             'pg_tviews_refresh at SERIALIZABLE was not refused');
+SELECT must(refused($q$SELECT tviews.pg_tviews_create('tv_note', 'SELECT pk_note, gen_random_uuid() AS id, jsonb_build_object(''b'', body) AS data FROM tb_note')$q$, 'ser') = '0A000',
+            'pg_tviews_create at SERIALIZABLE was not refused');
 COMMIT;
 
 -- The hint names the fix.

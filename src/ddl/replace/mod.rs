@@ -45,6 +45,7 @@ pub(crate) fn create_or_replace(
     query: &str,
     options: &serde_json::Value,
 ) -> TViewResult<&'static str> {
+    crate::concurrency::require_read_committed();
     let Name { schema, entity } = resolve::parse(name)?;
     let options = parse_options(options)?;
     let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
