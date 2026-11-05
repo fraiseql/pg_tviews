@@ -35,7 +35,7 @@ fn attnum_of(tupdesc: &PgTupleDesc<'_>, name: &str, hint: Option<i16>) -> Option
 }
 
 /// The value of column `name` of `tuple` as a TVIEW key: `Int` for an integer
-/// column, the type's output text for any other.
+/// column, the type's output text under [`crate::owner::RENDER_SETTINGS`] for any other.
 ///
 /// SAFETY: `tuple` is a valid heap tuple of `tupdesc`.
 unsafe fn tuple_key(
@@ -69,6 +69,9 @@ unsafe fn tuple_key(
             pg_sys::INT4OID => i32::from_datum(datum, false).map(i64::from),
             pg_sys::INT8OID => i64::from_datum(datum, false),
             _ => {
+                // Read as the refresh parses it back: under the pinned settings,
+                // not the writer's. Integer keys need none.
+                let _pin = crate::owner::RenderPin::new();
                 let mut output = pg_sys::InvalidOid;
                 let mut varlena = false;
                 pg_sys::getTypeOutputInfo(typid, &raw mut output, &raw mut varlena);
