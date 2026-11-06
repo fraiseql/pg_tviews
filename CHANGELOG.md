@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Creating a TVIEW waits for writes in flight to the tables it reads**, so a write
   committed during the create is never missed. Creating or replacing a TVIEW now needs
   `READ COMMITTED`, like writing to its tables.
+- **Replacing a TVIEW that another TVIEW embeds works in autocommit.** The embedding
+  TVIEW's rows are recomputed before the replace returns; an implicit commit failed with
+  "queued refreshes … were never applied".
 - **`pg_tviews_resync` on a partition resyncs through its partitioned table**; a table no
   TVIEW reads is refused (`22023`). Resync and bulk enqueues respect
   `pg_tviews.max_queue_size`.

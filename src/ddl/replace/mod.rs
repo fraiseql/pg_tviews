@@ -496,7 +496,10 @@ fn replace_in_place(
             crate::refresh::full::reconcile(frame, dependent, &meta)
         })?;
     }
-    Ok(())
+    // The rows recomputed above queued refreshes of the TVIEWs embedding them:
+    // they are applied now, as after any write, not left to a commit that may
+    // run no flush.
+    crate::flush::flush_refresh_queue()
 }
 
 #[cfg(test)]
