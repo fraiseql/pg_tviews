@@ -2,7 +2,9 @@
 -- of its own, created with the PREVIOUS release. psql variable `case`:
 --
 -- - typename_clash: tv_post and tv_post_ both have the GraphQL type name Post;
---   the update names both.
+--   the update names both. A release that refuses the clash at create time cannot
+--   hold one: the database then records why in upgrade_unreachable, and the check
+--   reports the case instead of updating it.
 -- - lost_privilege: upgrade_lost_owner's TVIEW reads a table it may no longer
 --   read; the update names the TVIEW, its owner and the privilege.
 
@@ -21,8 +23,15 @@ SELECT :'case' = 'typename_clash' AS typename_clash \gset
 \if :typename_clash
 SELECT pg_tviews_create('tv_post', $$
     SELECT pk_post, id, jsonb_build_object('title', title) AS data FROM tb_post $$);
-SELECT pg_tviews_create('tv_post_', $$
-    SELECT pk_post AS pk_post_, id, jsonb_build_object('title', title) AS data FROM tb_post $$);
+DO $do$ BEGIN
+    PERFORM pg_tviews_create('tv_post_', $$
+        SELECT pk_post AS pk_post_, id, jsonb_build_object('title', title) AS data FROM tb_post $$);
+EXCEPTION WHEN duplicate_object THEN
+    IF SQLERRM NOT LIKE '%is already the type of tv_post''s rows%' THEN
+        RAISE;
+    END IF;
+    CREATE TABLE public.upgrade_unreachable AS SELECT SQLERRM AS reason;
+END $do$;
 \else
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'upgrade_lost_owner') THEN
