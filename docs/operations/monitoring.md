@@ -27,10 +27,12 @@ WHERE severity <> 'info';
 ```
 
 `severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
-`metadata`, `plans`, `columns`, `seq_scans`, `contents`, `function_paths`, `reregister`,
+`metadata`, `plans`, `columns`, `seq_scans`, `contents`, `function_paths`, `owner_reads`, `reregister`,
 `triggers` and `tviews`. `contents` warns about TVIEWs that are empty while their
 definition yields rows. `function_paths` is an error naming each function a refresh runs
-whose `search_path` does not end in `pg_temp`, with the fixed setting.
+whose `search_path` does not end in `pg_temp`, with the fixed setting. `owner_reads` is
+an error naming each TVIEW whose owner, or the owner of a view it reads through, may no
+longer read what it reads, with the role and the privilege.
 `seq_scans` warns about TVIEWs whose mapping query (how writes to a base table map to
 TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows; it is
 planned again on each call with the current indexes and statistics, so an index

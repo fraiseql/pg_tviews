@@ -42,10 +42,12 @@ Do it in each database that has the extension.
    the role running the update runs none of a TVIEW's code. The rows are not touched. A TVIEW that no longer analyses
    fails the whole update, named with its error, and nothing is changed: fix or drop it
    and update again. `tviews.registry.needs_reregister` is false for every TVIEW after it.
-   Before it re-derives anything, the update refuses, naming every case in one error:
-   GraphQL type names shared by several TVIEWs (`42710`: give all but one a `typename`
-   option), and TVIEW or view owners that may no longer read a relation their view reads
-   (`42501`, naming the TVIEW, the owner and the privilege: grant it or drop the TVIEW).
+   Re-deriving a TVIEW refuses it when its owner, or the owner of a view it reads
+   through, may no longer read a relation that view reads, or a table a declared
+   function reads (`42501`, naming the TVIEW, the role and the privilege: grant it or
+   drop the TVIEW). The update then fails as above; `pg_tviews_reregister_all()` lists
+   every TVIEW refused, and the health check's `owner_reads` names them beforehand.
+   GraphQL type names are unique in the catalog, so no two TVIEWs share one.
    Re-deriving also takes every privilege on a backing view (its columns included) from
    the roles other than its owner, and warns about each function a refresh runs whose
    `search_path` does not end in `pg_temp` (the health check's `function_paths`).

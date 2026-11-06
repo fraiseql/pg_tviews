@@ -569,7 +569,7 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `function_paths`, `reregister`
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`, `reregister`
 (TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
@@ -578,6 +578,12 @@ definition calls, through operators, aggregates and views, and the user triggers
 table) whose `search_path` setting does not end in `pg_temp`, with the setting that
 fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
 before the rule stays, and is reported here and warned about whenever it is re-derived.
+
+`owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
+what it reads: the TVIEW's owner or the owner of a view it reads through, lacking
+`SELECT` on a relation or `USAGE` on its schema (a privilege revoked after the create).
+Such a TVIEW's next refresh fails, and re-deriving it (`pg_tviews_reregister()`, every
+update) refuses it (`42501`): grant each privilege named, or drop the TVIEW.
 
 `contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
 yields rows (a restore that left the data out, a table emptied by hand). It reads each
