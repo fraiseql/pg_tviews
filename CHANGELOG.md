@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The change report names the type of every change it does not list.**
+  `pg_tviews_flush_and_report()` lists a changed row of a readable TVIEW, or puts its
+  type in `invalidated_types` (and `truncated` is true): under row security, a row a read
+  as the caller does not return names its type, as a deleted row already did. A
+  collection whose parent TVIEW the caller may not read, or naming a parent a read as
+  the caller does not return, puts its child type there, which stands for all its
+  collections. The type is named, never the row.
+
 ## [0.1.0-beta.36] - 2026-11-06
 
 ### Security
