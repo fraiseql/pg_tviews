@@ -91,25 +91,13 @@ pub fn patch_stands_for_read(meta: &super::TviewMeta) -> bool {
 
 /// Whether `owner` reads every row of `relid` (see [`patch_stands_for_read`]).
 fn owner_reads_all_of(owner: Oid, relid: Oid) -> bool {
-    // SAFETY: catalog lookups and ACL checks by OID. Each check after the
-    // relation's namespace lookup reports a relation or schema that is gone
-    // instead of raising (`_ext`, `noError`).
+    if !crate::visibility::schema_usable(relid, owner) {
+        return false;
+    }
+    // SAFETY: ACL checks by OID. The table's reports a relation that is gone
+    // instead of raising, and the column check runs only on one found.
     unsafe {
-        let schema = pg_sys::get_rel_namespace(relid);
-        if schema == pg_sys::InvalidOid {
-            return false;
-        }
         let mut missing = false;
-        let usage = pg_sys::object_aclcheck_ext(
-            pg_sys::NamespaceRelationId,
-            schema,
-            owner,
-            pg_sys::AclMode::from(pg_sys::ACL_USAGE),
-            &raw mut missing,
-        );
-        if missing || usage != pg_sys::AclResult::ACLCHECK_OK {
-            return false;
-        }
         // SELECT on the table, else on one of its columns, as
         // has_any_column_privilege(): the column check alone sees neither the
         // table's grants nor a superuser.
@@ -119,12 +107,11 @@ fn owner_reads_all_of(owner: Oid, relid: Oid) -> bool {
             return false;
         }
         if on_table != pg_sys::AclResult::ACLCHECK_OK
-            && pg_sys::pg_attribute_aclcheck_all_ext(
+            && pg_sys::pg_attribute_aclcheck_all(
                 relid,
                 owner,
                 select,
                 pg_sys::AclMaskHow::ACLMASK_ANY,
-                &raw mut missing,
             ) != pg_sys::AclResult::ACLCHECK_OK
         {
             return false;
