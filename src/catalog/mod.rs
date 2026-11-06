@@ -3,6 +3,7 @@ pub mod collections;
 pub mod function_paths;
 pub mod graph;
 pub(crate) mod indexes;
+pub mod owner_reads;
 mod partition;
 pub mod plan;
 pub mod queries;

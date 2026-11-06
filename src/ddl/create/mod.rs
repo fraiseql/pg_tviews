@@ -429,6 +429,18 @@ pub fn reregister_tview(entity: &str) -> TViewResult<()> {
         }
     })?;
     crate::owner::require_owner(meta.tview_oid, &format!("tv_{entity}"))?;
+    // Re-deriving plans the definition and reads no row, so a read its owner may
+    // no longer make would fail only at the next refresh: refused here instead.
+    let lacking = crate::catalog::owner_reads::lacking(&meta)?;
+    if !lacking.is_empty() {
+        return Err(TViewError::PermissionDenied {
+            reason: format!(
+                "the roles reading for it may no longer read what they read: tv_{entity} ({}); \
+                 grant each privilege named, or drop the TVIEW",
+                lacking.join("; ")
+            ),
+        });
+    }
     rederive(entity)
 }
 

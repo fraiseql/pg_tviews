@@ -268,8 +268,11 @@ impl Flush {
             };
             for parent in parent_keys {
                 let derived = match &chain {
+                    // The parent's patch stands for its owner's read of the child.
                     Some(chain) => self.cached_meta(&parent.entity)?.and_then(|m| {
-                        crate::refresh::direct::derive_parent_chain(&m, entity, chain)
+                        crate::catalog::owner_reads::patch_stands_for_read(&m)
+                            .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
+                            .flatten()
                     }),
                     None => None,
                 };

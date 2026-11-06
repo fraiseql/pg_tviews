@@ -266,8 +266,11 @@ fn apply(
             }
         }
         Route::Mapped { delta } => {
+            // A fan-out copies the write for the owner's read: only where that
+            // read returns the same.
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
+                && crate::catalog::owner_reads::patch_stands_for_read(meta)
                 && fan_out(trigger, entity, table_oid, mapping)?
             {
                 return Ok(());

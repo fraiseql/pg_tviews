@@ -346,6 +346,10 @@ fn try_capture_direct_patch(
     if direct.is_empty() || !changed.iter().all(|c| data_key(c).is_some()) {
         return None;
     }
+    // The copy stands for the owner's read: recomputed where that read differs.
+    if !crate::catalog::owner_reads::patch_stands_for_read(&meta) {
+        return None;
+    }
     let new_tuple = trigger.new()?;
     let mut fields = serde_json::Map::with_capacity(changed.len());
     for col in changed {
