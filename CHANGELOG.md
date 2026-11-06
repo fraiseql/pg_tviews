@@ -70,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows that given rows of a base table reach, as an `UPDATE` of them would, without
   writing them or firing a trigger, for writes made while pg_tviews' triggers did not
   fire. A key whose row is gone deletes the row of each TVIEW keyed by it. Needs `UPDATE`
-  on the table; returns the rows changed per TVIEW.
+  and `SELECT` on the table and `USAGE` on its schema; returns the rows changed per TVIEW.
 
 ### Changed
 

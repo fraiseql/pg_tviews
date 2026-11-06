@@ -1,5 +1,5 @@
 -- pg_tviews_resync reads the resynced rows as the caller: it needs SELECT on
--- the table as well as UPDATE, and refuses a table whose row security applies to
+-- the table as well as UPDATE, and USAGE on its schema, and refuses a table whose row security applies to
 -- the caller, whose read would miss the rows its policies hide.
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_resync_caller_rights.sql
@@ -99,8 +99,24 @@ DO $$ BEGIN
 END $$;
 RESET ROLE;
 
+-- SELECT and UPDATE on a table in a schema the caller may not use, named by OID.
+CREATE SCHEMA hidden;
+CREATE TABLE hidden.tb_secret (pk_secret int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                               name text);
+SELECT tviews.pg_tviews_create('hidden.tv_secret', $q$
+    SELECT s.pk_secret, s.id, jsonb_build_object('name', s.name) AS data
+    FROM hidden.tb_secret s $q$) \g /dev/null
+GRANT SELECT, UPDATE ON hidden.tb_secret TO regress_rc_writer;
+SELECT 'hidden.tb_secret'::regclass::oid AS secret_oid \gset
+SET ROLE regress_rc_writer;
+SELECT refused(format('SELECT * FROM tviews.pg_tviews_resync(%s::oid::regclass, ARRAY[1])',
+                      :secret_oid),
+               '%USAGE on its schema%');
+RESET ROLE;
+
 SELECT 'resync: the caller''s rights' AS result;
 
 DROP EXTENSION pg_tviews CASCADE;
 DROP TABLE public.tb_user, public.tb_open;
+DROP SCHEMA hidden CASCADE;
 SELECT regress_drop_roles('regress_rc');

@@ -16,33 +16,13 @@ pub fn may_read_relation(relid: Oid) -> bool {
         return false;
     };
     let user = caller.oid();
+    if !schema_usable(relid, user) {
+        return false;
+    }
     let mut missing = false;
-    // SAFETY: catalog lookups and ACL checks by OID. The schema's ACL check
-    // follows a syscache probe that found it, with no invalidation processed in
-    // between; the relation's `_ext` check reports a missing one instead of
-    // raising.
+    // SAFETY: an ACL check by OID; the `_ext` check reports a relation that is
+    // gone instead of raising.
     unsafe {
-        let schema = pg_sys::get_rel_namespace(relid);
-        if schema == pg_sys::InvalidOid
-            || !pg_sys::SearchSysCacheExists(
-                pg_sys::SysCacheIdentifier::NAMESPACEOID.cast_signed(),
-                pg_sys::Datum::from(schema),
-                pg_sys::Datum::from(0),
-                pg_sys::Datum::from(0),
-                pg_sys::Datum::from(0),
-            )
-        {
-            return false;
-        }
-        let usage = pg_sys::object_aclcheck(
-            pg_sys::NamespaceRelationId,
-            schema,
-            user,
-            pg_sys::AclMode::from(pg_sys::ACL_USAGE),
-        );
-        if usage != pg_sys::AclResult::ACLCHECK_OK {
-            return false;
-        }
         let select = pg_sys::pg_class_aclcheck_ext(
             relid,
             user,
@@ -50,6 +30,61 @@ pub fn may_read_relation(relid: Oid) -> bool {
             &raw mut missing,
         );
         !missing && select == pg_sys::AclResult::ACLCHECK_OK
+    }
+}
+
+/// Whether the caller holds `mode` (`SELECT`, `UPDATE`) on `relid`, or on each
+/// of its columns, and `USAGE` on its schema: what acting on the table's rows as
+/// the caller needs. False for a relation that is gone, and inside an owner
+/// frame.
+#[must_use]
+pub fn may_act_on_rows(relid: Oid, mode: u32) -> bool {
+    let Ok(caller) = crate::owner::Owner::current_user() else {
+        return false;
+    };
+    let user = caller.oid();
+    let mode = pg_sys::AclMode::from(mode);
+    if !schema_usable(relid, user) {
+        return false;
+    }
+    let mut missing = false;
+    // SAFETY: ACL checks by OID. The relation's `_ext` check reports one that is
+    // gone instead of raising; the columns' check finds no privilege on it.
+    unsafe {
+        let on_table = pg_sys::pg_class_aclcheck_ext(relid, user, mode, &raw mut missing);
+        !missing
+            && (on_table == pg_sys::AclResult::ACLCHECK_OK
+                || pg_sys::pg_attribute_aclcheck_all(
+                    relid,
+                    user,
+                    mode,
+                    pg_sys::AclMaskHow::ACLMASK_ALL,
+                ) == pg_sys::AclResult::ACLCHECK_OK)
+    }
+}
+
+/// Whether `user` holds `USAGE` on the schema of `relid`. False for a relation
+/// or schema that is gone.
+fn schema_usable(relid: Oid, user: Oid) -> bool {
+    // SAFETY: catalog lookups and an ACL check by OID. The schema's ACL check
+    // follows a syscache probe that found it, with no invalidation processed in
+    // between.
+    unsafe {
+        let schema = pg_sys::get_rel_namespace(relid);
+        schema != pg_sys::InvalidOid
+            && pg_sys::SearchSysCacheExists(
+                pg_sys::SysCacheIdentifier::NAMESPACEOID.cast_signed(),
+                pg_sys::Datum::from(schema),
+                pg_sys::Datum::from(0),
+                pg_sys::Datum::from(0),
+                pg_sys::Datum::from(0),
+            )
+            && pg_sys::object_aclcheck(
+                pg_sys::NamespaceRelationId,
+                schema,
+                user,
+                pg_sys::AclMode::from(pg_sys::ACL_USAGE),
+            ) == pg_sys::AclResult::ACLCHECK_OK
     }
 }
 
