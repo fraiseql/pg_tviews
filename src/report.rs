@@ -34,13 +34,13 @@ use std::collections::{BTreeSet, HashMap};
 /// Rows of a TVIEW the caller may not read ([`crate::visibility`]) are left out
 /// the same way, asked for or not, and its type listed in `omitted_types` (#270):
 /// the report tells no more than reading the TVIEW would. So are the rows of a
-/// TVIEW dropped since. Under row security, a row is listed only when a read as
-/// the caller returns it, with or without `include_data`; a deleted row cannot
-/// be read any more, so the deleted rows of such a TVIEW are not listed and its
-/// type is in `invalidated_types`. A collection is listed only when the caller
-/// may read both its child and its parent TVIEW, and the child without row
-/// security (its type is in `invalidated_types` otherwise), and names only the
-/// parents a read as the caller returns.
+/// TVIEW dropped since. Every other change is listed, or its type is in
+/// `invalidated_types`: the type stands for the rows the report cannot name.
+/// Under row security, a row is listed only when a read as the caller returns
+/// it, with or without `include_data` (a deleted row cannot be read any more).
+/// A collection is listed only when the caller may read both its child and its
+/// parent TVIEW, the child without row security, and a read as the caller
+/// returns every parent it names.
 ///
 /// When the rows were written with `pg_tviews.publish_changes = 'rows'`,
 /// `collections` names the parents whose child lists they left or joined (#244),
@@ -253,8 +253,6 @@ fn build_report(
     // tells, a row journaled before a rebuild may name one that is gone. The
     // change feed publishes such a type by name, without its rows, too.
     let listed = |c: &&NetChange| include_data || !overflow.contains(&c.entity);
-    // Flush order is not deterministic across runs, so report in a fixed order:
-    // entity, then key.
     let changes: Vec<&NetChange> = changes
         .iter()
         .filter(|c| asked(&c.entity))
@@ -270,6 +268,8 @@ fn build_report(
                 || (c.change != Change::Deleted && rows.contains_key(&(c.entity.clone(), c.pk)))
         });
     let mut unlisted: BTreeSet<String> = unlisted.iter().map(|c| typename(&c.entity)).collect();
+    // Flush order is not deterministic across runs, so report in a fixed order:
+    // entity, then key.
     let mut changes: Vec<NetChange> = changes.into_iter().cloned().collect();
     changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));
     let (reported, left_out) = changes.split_at(changes.len().min(max_entities));
