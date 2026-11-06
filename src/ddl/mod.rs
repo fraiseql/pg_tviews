@@ -218,13 +218,3 @@ pub(crate) fn lock_tables_read(plan: &crate::dependency::TriggerPlan) -> TViewRe
         .into_iter()
         .try_for_each(|table| lock_as_owner(table, "SHARE"))
 }
-
-/// Whether the current user holds `TRIGGER` on `table`: it may attach work to
-/// the table's writes, and so lock them out while it does.
-pub(crate) fn may_trigger(table: pg_sys::Oid) -> TViewResult<bool> {
-    crate::utils::spi::one::<bool>(
-        "SELECT pg_catalog.has_table_privilege($1, 'TRIGGER')",
-        &[crate::utils::spi::oid(table)],
-    )
-    .map(|may| may == Some(true))
-}

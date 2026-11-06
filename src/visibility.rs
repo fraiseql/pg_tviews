@@ -63,6 +63,25 @@ pub fn may_act_on_rows(relid: Oid, mode: u32) -> bool {
     }
 }
 
+/// Whether the caller ([`crate::owner::caller`], inside an owner frame too)
+/// holds `TRIGGER` on `relid`: it may attach work to the table's writes, and so
+/// lock them out while it does. False for a relation that is gone.
+#[must_use]
+pub fn caller_may_trigger(relid: Oid) -> bool {
+    let mut missing = false;
+    // SAFETY: an ACL check by OID; the `_ext` check reports a relation that is
+    // gone instead of raising.
+    let may = unsafe {
+        pg_sys::pg_class_aclcheck_ext(
+            relid,
+            crate::owner::caller(),
+            pg_sys::AclMode::from(pg_sys::ACL_TRIGGER),
+            &raw mut missing,
+        )
+    };
+    !missing && may == pg_sys::AclResult::ACLCHECK_OK
+}
+
 /// Whether `user` holds `USAGE` on the schema of `relid`. False for a relation
 /// or schema that is gone.
 fn schema_usable(relid: Oid, user: Oid) -> bool {

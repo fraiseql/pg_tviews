@@ -455,7 +455,7 @@ fn replace_in_place(
     // is refused below if it needs triggers.
     let mut read_tables = Vec::new();
     for &table in read.iter().chain(new_base_tables) {
-        if !tv_tables.contains(&table) && super::may_trigger(table)? {
+        if !tv_tables.contains(&table) && crate::visibility::caller_may_trigger(table) {
             read_tables.push(table);
         }
     }
