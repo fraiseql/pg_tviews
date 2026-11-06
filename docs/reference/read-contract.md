@@ -37,7 +37,7 @@ Every role can read all three.
 | `entity` | `text` | entity (`post`); unique across the database |
 | `query` | `text` | the normalized definition (below) |
 | `options` | `jsonb` | every option of the TVIEW, defaults included (below); NULL when the table is gone |
-| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Whoever can `SELECT` from the TVIEW's table can `SELECT` from it ([privileges](ddl.md#privileges)) |
+| `view` | `regclass` | the backing view, `tviews.<schema>__<tv table>` (`tviews.public__tv_post`); NULL when the view is gone. Only its owner, the TVIEW's, may read it: no grant on the table reaches it, and any privilege granted on it, or on one of its columns, is revoked ([privileges](ddl.md#privileges)); readers read the TVIEW's table |
 | `identity` | `text[]` | the column that names the TVIEW's rows and is its table's primary key: `{pk_<entity>}`, or a `DISTINCT ON` TVIEW's key (below) |
 | `base_tables` | `regclass[]` | the tables the backing view reads (below) |
 | `cascade_kinds` | `jsonb` | each base table (as `regclass` text) → how its writes map to TVIEW keys: `local`, `mapped`, `propagated` or `all_keys` (below) |
@@ -46,7 +46,7 @@ Every role can read all three.
 | `managed_indexes` | `regclass[]` | the indexes pg_tviews created on the table and still owns, sorted by name, not counting one that backs a constraint (the primary key); NULL when the table is gone (below) |
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it, and so does `ALTER EXTENSION pg_tviews UPDATE`, which re-derives every TVIEW |
 | `references` | `jsonb` | each output column that holds another TVIEW's key, proven by a `FOREIGN KEY` → that TVIEW and how to read by it (below); `{}` for none. `references` is a reserved word: qualify it (`r.references`) or quote it |
-| `typename` | `text` | the GraphQL type name of the rows, as `pg_tviews_flush_and_report()` and the change feed name them: the `typename` option, else the PascalCase of the entity. A collection key is `<child typename>.<reference column>` |
+| `typename` | `text` | the GraphQL type name of the rows, as `pg_tviews_flush_and_report()` and the change feed name them: the `typename` option, else the PascalCase of the entity; unique among TVIEWs. A collection key is `<child typename>.<reference column>` |
 
 Columns removed in contract version 2, now `options` keys:
 
@@ -341,8 +341,10 @@ on the database (granted to `PUBLIC` by default), and a transaction that called 
 an existing TVIEW cannot be prepared with `PREPARE TRANSACTION`.
 
 **Serialization.** Every call that registers, changes or drops a TVIEW holds
-`pg_advisory_xact_lock(<class>, hashtext(entity))` until the transaction ends, so two
-calls for one entity run one after the other.
+pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624,
+which `pg_advisory_lock()` can neither take nor block) until the transaction ends, so
+two calls for one entity run one after the other. A caller that may not change an
+existing TVIEW is refused before it takes the lock.
 
 It works in any transaction, `DO` block or multi-statement batch (including the one that
 runs `CREATE EXTENSION`). Like every pg_tviews function it needs the library in

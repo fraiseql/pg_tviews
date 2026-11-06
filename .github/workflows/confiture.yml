@@ -13,15 +13,18 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
   CONFITURE_REPO: "https://github.com/fraiseql/confiture.git"
   # The confiture commit whose suites this release must pass (a full SHA: fetching
   # by commit needs all 40 characters). A release cannot be tagged while it is empty.
-  CONFITURE_REF: "6fbb47cb6e79c4c185fc9c0718a92dbdcb075ed6"
+  CONFITURE_REF: "87c785d71963aeacefac152ceb97fa0ec53dc4cd"  # v1.45.0
 
 jobs:
   confiture:
@@ -29,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check the pinned confiture ref
         id: pin
@@ -64,7 +67,7 @@ jobs:
           sudo pg_ctlcluster "${PG_MAJOR}" main restart
           psql -d postgres -c "CREATE DATABASE confiture_test"
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: steps.pin.outputs.skip != 'true'
 
       - name: Run confiture's TVIEW suites

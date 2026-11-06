@@ -643,6 +643,44 @@ impl QueryGraph {
         }
     }
 
+    /// The query over [`DELTA`] returning a row when a changed row meets the
+    /// guards of one of the `all_keys` occurrences of a table (each `AND`ed); `None`
+    /// when one of them has no guard, or no trigger watches it.
+    fn guard_sql(&self, kinds: &[(usize, Kind)]) -> Option<String> {
+        let mut reads = Vec::new();
+        for (occ, kind) in kinds {
+            if !matches!(kind, Kind::AllKeys(_)) {
+                continue;
+            }
+            let o = &self.occurrences[*occ];
+            let atoms = self.guards.get(occ).filter(|a| !a.is_empty())?;
+            if o.unwatched.is_some() {
+                return None;
+            }
+            let render = |sql: &Sql| {
+                sql.0
+                    .iter()
+                    .map(|p| match p {
+                        Piece::Text(t) => escape_template(t),
+                        Piece::Column { occ, attnum } => {
+                            format!("d.{{c:{}:{attnum}}}", self.occurrences[*occ].relid)
+                        }
+                    })
+                    .collect::<String>()
+            };
+            let read = atoms.iter().map(render).collect::<Vec<_>>().join(" AND ");
+            if !reads.contains(&read) {
+                reads.push(read);
+            }
+        }
+        (!reads.is_empty()).then(|| {
+            format!(
+                "SELECT 1::pg_catalog.int8 FROM {DELTA} d WHERE ({})",
+                reads.join(") OR (")
+            )
+        })
+    }
+
     /// Classify every base table, combining the kinds of its occurrences: any
     /// `AllKeys` wins, keeping the mapping of the occurrences that can be traced;
     /// occurrences propagation covers need nothing more; the rest are `Local` when
@@ -662,12 +700,14 @@ impl QueryGraph {
             .map(|(relid, kinds)| {
                 let o = &self.occurrences[kinds[0].0];
                 let mut paths = Vec::new();
+                let mut guard = None;
                 let kind = if let Some(reason) = kinds.iter().find_map(|(_, k)| match k {
                     Kind::AllKeys(r) => Some(r.clone()),
                     _ => None,
                 }) {
                     // The reads that can be traced keep refreshing; only the rest
                     // is left to the TVIEW's uncascaded_policy.
+                    guard = self.guard_sql(&kinds);
                     for (occ, k) in &kinds {
                         if matches!(k, Kind::Local(_) | Kind::Mapped(_) | Kind::Branches(_)) {
                             for path in self.occurrence_paths(*occ, k) {
@@ -760,6 +800,7 @@ impl QueryGraph {
                         .roots
                         .iter()
                         .any(|r| self.occurrences[r.key.occ].relid == relid),
+                    guard,
                 }
             })
             .collect()

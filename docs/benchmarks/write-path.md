@@ -274,8 +274,9 @@ planned depends on what it looks rows up by:
   one. The planner counts the elements of an `ARRAY[…]` of parameters, and estimates
   each as the rows of one value, the assumption `= $1` makes for one key: the estimate
   is within twice the keys' own. Each width has one generic plan, made once per
-  backend: a statement has at most eight. A session's `plan_cache_mode` doesn't apply:
-  writes run under `auto`, so each statement is planned as it was kept.
+  backend: a statement has at most eight. A session's `plan_cache_mode` and `jit` don't
+  apply: writes run under `auto` and `jit = off`, so each statement is planned as it was
+  kept and never JIT-compiled.
 - **More keys**: the statement takes them as an array and is planned at each
   execution, for their count (about 30 µs to a few ms; `per_execution_plans` in
   `pg_tviews_show_queue()` counts them). Wider shapes would cost memory and time: a

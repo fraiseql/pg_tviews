@@ -1,7 +1,7 @@
 //! Parent discovery for the flush: the rows of the TVIEWs that embed a changed
 //! TVIEW's rows, found through the lookup columns of their plans.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::catalog::KeyType;
 use crate::queue::RefreshKey;
@@ -30,13 +30,13 @@ pub fn find_parents_batch(
     appeared: &[i64],
     graph: &crate::catalog::EntityDepGraph,
 ) -> crate::TViewResult<HashMap<i64, Vec<RefreshKey>>> {
-    let mut result: HashMap<i64, Vec<RefreshKey>> = HashMap::with_capacity(pks.len());
+    let mut found: HashMap<i64, ParentKeys> = HashMap::with_capacity(pks.len());
     if pks.is_empty() {
-        return Ok(result);
+        return Ok(HashMap::new());
     }
     let parents = graph.parents.get(child).cloned().unwrap_or_default();
     if parents.is_empty() {
-        return Ok(result);
+        return Ok(HashMap::new());
     }
     let child_table = crate::catalog::TviewMeta::load_by_entity(child)?
         .ok_or_else(|| crate::TViewError::TviewNotFound {
@@ -52,10 +52,11 @@ pub fn find_parents_batch(
         if unpruned.is_empty() {
             continue;
         }
+        let kept: HashSet<i64> = unpruned.iter().copied().collect();
         let appeared: Vec<i64> = appeared
             .iter()
             .copied()
-            .filter(|pk| unpruned.contains(pk))
+            .filter(|pk| kept.contains(pk))
             .collect();
         // A parent being computed from these child rows meets this lookup on
         // their keys (ADR 0207): locked before the lookup runs.
@@ -69,18 +70,32 @@ pub fn find_parents_batch(
             for (child_pk, keys) in
                 find_affected_keys_batch(&parent, lookup_col, &unpruned, &appeared)?
             {
-                let found = result
-                    .entry(child_pk)
-                    .or_insert_with(|| Vec::with_capacity(keys.len()));
-                for key in keys.into_iter().map(|k| RefreshKey::new(&parent, k)) {
-                    if !found.contains(&key) {
-                        found.push(key);
-                    }
+                let found = found.entry(child_pk).or_default();
+                for key in keys {
+                    found.add(RefreshKey::new(&parent, key));
                 }
             }
         }
     }
-    Ok(result)
+    Ok(found
+        .into_iter()
+        .map(|(child_pk, keys)| (child_pk, keys.keys))
+        .collect())
+}
+
+/// The parent keys found for one child row: each once, in the order found.
+#[derive(Default)]
+struct ParentKeys {
+    keys: Vec<RefreshKey>,
+    seen: HashSet<RefreshKey>,
+}
+
+impl ParentKeys {
+    fn add(&mut self, key: RefreshKey) {
+        if self.seen.insert(key.clone()) {
+            self.keys.push(key);
+        }
+    }
 }
 
 /// Whether propagation from `child`'s row `pk` to `parent` can be skipped: the
@@ -125,39 +140,69 @@ fn find_affected_keys_batch(
     };
     // The lookup column can be the parent's own key (an embedded aggregate keyed by
     // it), so the two outputs are aliased.
-    let select = |relation: &str, keys: &LookupKeys, param: usize| {
-        format!(
-            "SELECT {qi_fk}::pg_catalog.int8 AS child_key, {qi_key}::{key_type} AS parent_key \
-             FROM {relation} WHERE {}",
-            keys.predicate(&qi_fk, param)
-        )
-    };
-    let mut query = select(&qi_parent, &children, 1);
+    let columns =
+        format!("{qi_fk}::pg_catalog.int8 AS child_key, {qi_key}::{key_type} AS parent_key");
+    let mut query = format!(
+        "SELECT {columns} FROM {qi_parent} WHERE {}",
+        children.predicate(&qi_fk, 1)
+    );
     let mut args = children.args();
     if let Some(appeared) = LookupKeys::of_with(in_view.to_vec(), child_pks.len()) {
+        // The backing view joins: the keys drive its lookup.
         let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
         query = format!(
             "{query} UNION {}",
-            select(&qi_view, &appeared, 1 + children.width())
+            appeared.select_joined(&columns, &qi_view, &qi_fk, 1 + children.width())
         );
         args.extend(appeared.args());
     }
-    let _owner = crate::owner::AsOwner::of_entity(parent)?;
-    // Read-write: a fresh snapshot, which sees what the locks waited for.
-    crate::utils::spi::connect_mut(|client| {
-        let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
-        for row in crate::utils::spi::kept_update(client, &query, &args)? {
-            let Some(child_pk) = row["child_key"].value::<i64>()? else {
-                continue;
-            };
-            let key = match parent_key_type {
-                KeyType::Int => row["parent_key"].value::<i64>()?.map(KeyValue::Int),
-                KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
-            };
-            if let Some(key) = key {
-                result.entry(child_pk).or_default().push(key);
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(parent)?, |_frame| {
+        // Read-write: a fresh snapshot, which sees what the locks waited for.
+        crate::utils::spi::connect_mut(|client| {
+            let mut result: HashMap<i64, Vec<KeyValue>> = HashMap::with_capacity(child_pks.len());
+            for row in crate::utils::spi::kept_update(client, &query, &args)? {
+                let Some(child_pk) = row["child_key"].value::<i64>()? else {
+                    continue;
+                };
+                let key = match parent_key_type {
+                    KeyType::Int => row["parent_key"].value::<i64>()?.map(KeyValue::Int),
+                    KeyType::Text(_) => row["parent_key"].value::<String>()?.map(KeyValue::Text),
+                };
+                if let Some(key) = key {
+                    result.entry(child_pk).or_default().push(key);
+                }
             }
-        }
-        Ok::<_, crate::TViewError>(result)
+            Ok::<_, crate::TViewError>(result)
+        })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParentKeys;
+    use crate::queue::RefreshKey;
+    use crate::queue::key::KeyValue;
+
+    #[test]
+    fn parent_keys_keep_the_first_of_each_in_order() {
+        let mut keys = ParentKeys::default();
+        for k in [3, 1, 3, 2, 1] {
+            keys.add(RefreshKey::new("post", KeyValue::Int(k)));
+        }
+        let order: Vec<_> = keys.keys.iter().map(|k| k.key.clone()).collect();
+        assert_eq!(order, [3, 1, 2].map(KeyValue::Int));
+    }
+
+    /// One child row embedded by many parent rows (fan-in): collecting their keys
+    /// takes time linear in their number.
+    #[test]
+    fn parent_keys_of_a_wide_fan_in_collect_in_linear_time() {
+        let started = std::time::Instant::now();
+        let mut keys = ParentKeys::default();
+        for k in 0..100_000 {
+            keys.add(RefreshKey::new("post", KeyValue::Int(k)));
+        }
+        assert_eq!(keys.keys.len(), 100_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
 }

@@ -9,7 +9,10 @@
 pub mod feed;
 pub mod report;
 
-pub use report::{Change, NetChange, Recorded, Summary, begin_flush, changed_in_flush, summarize};
+pub use report::{
+    Change, NetChange, Recorded, Summary, begin_flush, changed_in_flush,
+    changed_in_flush_by_entity, summarize,
+};
 
 /// Record that a refresh write changed a TVIEW row: in the flush's changed rows,
 /// `tviews.stats`, the report and the feed.

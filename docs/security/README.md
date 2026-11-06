@@ -171,21 +171,22 @@ GPG key management and verification procedures.
 - **Discussions**: [GitHub Discussions](https://github.com/fraiseql/pg_tviews/discussions)
 - **Documentation**: [Main Documentation](../../README.md)
 
-## 📈 Security Metrics
+## Reviews
 
-### Current Status (as of 2025-12-11)
-- **Vulnerability Scans**: ✅ Daily automated (0 critical vulnerabilities)
-- **Audit Coverage**: ✅ 100% dependencies vetted
-- **Build Reproducibility**: ✅ 100% reproducible
-- **SLSA Compliance**: ✅ Level 3 achieved
-- **SBOM Generation**: ✅ Automated for all releases
-- **Cryptographic Signing**: ✅ All artifacts signed
+### 0.1.0-beta.34 review (2026-10)
 
-### Key Performance Indicators
-- **Mean Time to Patch**: <24 hours for critical vulnerabilities
-- **Security Test Coverage**: 100% of security-critical code
-- **Compliance Rate**: 100% across all standards
-- **Incident Response**: <4 hours for critical incidents
+A review of every path by which one role's SQL can run with another role's privileges,
+against 0.1.0-beta.34 before its release. All findings are fixed:
+
+| Finding | Fix | Since |
+|---|---|---|
+| The write path read the catalog under the writer's `search_path`: a function or operator the writer planted could run as a TVIEW's owner | Every entry point pins `search_path = pg_catalog, pg_temp` (`owner::CatalogPath`); names the caller wrote resolve under the caller's path, before the pin (`owner::CallerPath`) | 0.1.0-beta.34 |
+| The rebuild worker ran under a database's `search_path` setting | The worker pins `pg_catalog, pg_temp` | 0.1.0-beta.34 |
+| Catalog SQL compared values (an `oid` with a `regclass`) for which an exact operator in any schema on the path wins over pg_catalog's | Covered by the pin above; `scripts/check-name-resolution.sh` checks that every entry point pins it; `regress_caller_search_path.sql`, `regress_hostile_search_path.sql` | 0.1.0-beta.34, 0.1.0-beta.36 |
+| The change feed's parent ids were read as the writer | Read as the TVIEW's owner | 0.1.0-beta.34 |
+| Any role could attach pg_tviews' trigger functions to its own table and make them work on TVIEWs (#269) | The triggers take no argument and find their TVIEWs from the firing table: on a table no TVIEW reads they do nothing | 0.1.0-beta.35 |
+| The change report listed ids of TVIEWs the caller may not read, and failed 42501 with data (#270) | Rows of an unreadable TVIEW are left out and its type listed in `omitted_types` | 0.1.0-beta.36 |
+| Hardening (#271): the name check missed forms of a name resolved to an object; workflow actions pinned by tag; two audit documents out of date | The check reads whole SQL literals and flags every form (fixture in CI); actions pinned by commit, tools by version; the stale documents removed | 0.1.0-beta.36 |
 
 ## 🔄 Continuous Improvement
 

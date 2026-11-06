@@ -102,11 +102,15 @@ tviews.pg_tviews_flush_and_report(
   declaration: a replace that leaves `typename` out puts the default back.
 - **Only the types asked for**: `types` names the GraphQL types the response selects
   (`__typename` values). Rows of other types are left out before `max_entities` applies,
-  and their types are listed in `omitted_types` (present only when `types` is given),
-  apart from `invalidated_types`. They were still refreshed, and `reset` clears them too.
+  and their types are listed in `omitted_types` (present when `types` is given or a type
+  was not readable, below), apart from `invalidated_types`. They were still refreshed, and `reset` clears them too.
   `'{}'` reports nothing and omits every changed type. A name no TVIEW has fails with
   `22023`, before anything is reported or reset. `types` filters the report only, never
   the [change feed](change-feed.md): a cache elsewhere needs every change.
+- **Only what the caller may read**: the refreshes run as each TVIEW's owner, but the
+  report runs as the caller. Rows of a TVIEW the caller has no table-level `SELECT` on are
+  left out, ids included, and its type listed in `omitted_types`. Grant the mutation's
+  role `SELECT` on the TVIEWs its response selects.
 - **Collections**: when the rows were written with `pg_tviews.publish_changes = 'rows'`,
   the report also carries `collections`, the parents whose composed child lists the
   reported rows changed, as

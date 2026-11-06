@@ -15,14 +15,14 @@ permissions:
 
 env:
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
   SQL_COVERAGE_FLOOR: "91"
 
 jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain and llvm-tools
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -38,7 +38,7 @@ jobs:
       - name: Install pgrx and cargo-llvm-cov
         run: |
           cargo install --locked cargo-pgrx --version 0.17.0
-          cargo install --locked cargo-llvm-cov
+          cargo install --locked cargo-llvm-cov --version 0.9.1
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       # Linked as clippy.yml's unit job links its tests: PostgreSQL symbols only
@@ -59,7 +59,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: |
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain and llvm-tools
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -91,7 +91,7 @@ jobs:
           cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
       - name: Fetch jsonb_delta
-        run: git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+        run: git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
 
       # A throwaway cluster of its own: the regression and isolation suites against
       # an instrumented build, then the unit tests, one report.
@@ -111,7 +111,7 @@ jobs:
 
       - name: Upload SQL-suite coverage
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sql-coverage
           path: |

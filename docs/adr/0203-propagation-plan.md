@@ -132,8 +132,9 @@ through one registry of reset functions that those modules register into.
 ### Upgrade
 
 This is the one catalog break of the series. The upgrade script to 0.1.0-beta.27 adds `plan`,
-re-derives every TVIEW (`pg_tviews_reregister_all(strict => true)`, which runs each
-registration as the TVIEW's owner), then drops the replaced columns and the removed functions.
+re-derives every TVIEW (`pg_tviews_reregister_all(strict => true)`), then drops the replaced
+columns and the removed functions. Re-derivation analyzes each definition in its TVIEW's
+owner frame ([security architecture](../security/architecture.md#owner-frame)).
 A TVIEW that no longer analyses fails `ALTER EXTENSION … UPDATE` and is named in the error;
 nothing is left half-migrated. This overrides, for this release only, the versioning rules
 that upgrade scripts never re-derive and never drop a column

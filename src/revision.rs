@@ -15,7 +15,7 @@ use std::cell::Cell;
 /// Revision of the catalog this library works with. Bumped by a change to the
 /// extension SQL, together with the upgrade script that redefines
 /// `pg_tviews_catalog_revision()`.
-pub const CATALOG_REVISION: i32 = 11;
+pub const CATALOG_REVISION: i32 = 12;
 
 /// Whether the library was loaded from `shared_preload_libraries`, the only
 /// supported mode: set by `_PG_init` in the postmaster, inherited by its backends.
@@ -100,11 +100,11 @@ pub fn is_current() -> bool {
     MATCHED.get() || in_own_script() || matches!(installed(), Installed::Matches)
 }
 
-/// The revision of the one release this library updates from (0.1.0-beta.34).
-pub const PREVIOUS_REVISION: i32 = 10;
+/// The revision of the one release this library updates from (0.1.0-beta.35).
+pub const PREVIOUS_REVISION: i32 = 11;
 
 /// What fixes a catalog this library has no update for.
-pub const RECREATE: &str = "this release updates only from 0.1.0-beta.34: DROP EXTENSION \
+pub const RECREATE: &str = "this release updates only from 0.1.0-beta.35: DROP EXTENSION \
      pg_tviews CASCADE, CREATE EXTENSION pg_tviews and create the TVIEWs again \
      (docs/operations/upgrade.md)";
 
@@ -195,5 +195,30 @@ pub(crate) fn in_own_script() -> bool {
         pg_sys::creating_extension
             && pg_sys::CurrentExtensionObject
                 == pg_sys::get_extension_oid(c"pg_tviews".as_ptr(), true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_previous_release_updates() {
+        assert_eq!(PREVIOUS_REVISION, 11);
+        assert_eq!(
+            remedy(PREVIOUS_REVISION),
+            "run ALTER EXTENSION pg_tviews UPDATE"
+        );
+    }
+
+    #[test]
+    fn an_older_release_is_recreated() {
+        assert_eq!(remedy(PREVIOUS_REVISION - 1), RECREATE);
+        assert!(RECREATE.contains("updates only from 0.1.0-beta.35"));
+    }
+
+    #[test]
+    fn a_newer_catalog_needs_the_matching_library() {
+        assert!(remedy(CATALOG_REVISION + 1).starts_with("the installed extension is newer"));
     }
 }

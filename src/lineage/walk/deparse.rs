@@ -42,15 +42,18 @@ impl Walker<'_> {
                 }
                 pg_sys::NodeTag::T_RelabelType => {
                     let r = expr.cast::<pg_sys::RelabelType>();
-                    self.deparse_cast((*r).arg.cast(), (*r).resulttype, term_of, next_var)
+                    let ty = ((*r).resulttype, pg_sys::exprTypmod(expr));
+                    self.deparse_cast((*r).arg.cast(), ty, term_of, next_var)
                 }
                 pg_sys::NodeTag::T_ArrayCoerceExpr => {
                     let r = expr.cast::<pg_sys::ArrayCoerceExpr>();
-                    self.deparse_cast((*r).arg.cast(), (*r).resulttype, term_of, next_var)
+                    let ty = ((*r).resulttype, pg_sys::exprTypmod(expr));
+                    self.deparse_cast((*r).arg.cast(), ty, term_of, next_var)
                 }
                 pg_sys::NodeTag::T_CoerceViaIO => {
                     let r = expr.cast::<pg_sys::CoerceViaIO>();
-                    self.deparse_cast((*r).arg.cast(), (*r).resulttype, term_of, next_var)
+                    let ty = ((*r).resulttype, pg_sys::exprTypmod(expr));
+                    self.deparse_cast((*r).arg.cast(), ty, term_of, next_var)
                 }
                 pg_sys::NodeTag::T_BoolExpr => self.deparse_bool(expr.cast(), term_of, next_var),
                 _ => None,
@@ -64,7 +67,7 @@ impl Walker<'_> {
     unsafe fn deparse_const(&mut self, c: *mut pg_sys::Const) -> Option<Sql> {
         // SAFETY: fields of a valid Const; the output function is its type's.
         unsafe {
-            let ty = self.type_name((*c).consttype);
+            let ty = self.type_name((*c).consttype, (*c).consttypmod);
             if (*c).constisnull {
                 return Some(Sql::text(format!("NULL::{ty}")));
             }
@@ -150,7 +153,8 @@ impl Walker<'_> {
                 && (*f).funcformat != pg_sys::CoercionForm::COERCE_SQL_SYNTAX
             {
                 let [arg, ..] = args[..] else { return None };
-                return self.deparse_cast(arg, (*f).funcresulttype, term_of, next_var);
+                let ty = ((*f).funcresulttype, pg_sys::exprTypmod(f.cast()));
+                return self.deparse_cast(arg, ty, term_of, next_var);
             }
             let (name, _) = self.function((*f).funcid);
             let mut sql = Sql::text(format!("{name}("));
@@ -165,20 +169,20 @@ impl Walker<'_> {
         }
     }
 
-    /// `(arg)::type`.
+    /// `(arg)::type`, `ty` the type and its modifier.
     ///
     /// SAFETY: `arg` is a valid expression.
     unsafe fn deparse_cast(
         &mut self,
         arg: *mut pg_sys::Node,
-        ty: Oid,
+        ty: (Oid, i32),
         term_of: &dyn Fn(*mut pg_sys::Node) -> Option<Resolved>,
         next_var: &mut dyn FnMut(),
     ) -> Option<Sql> {
         let mut sql = Sql::text("(");
         // SAFETY: the caller's valid expression.
         sql.push_sql(unsafe { self.deparse(arg, term_of, next_var)? });
-        sql.push_text(&format!(")::{}", self.type_name(ty)));
+        sql.push_text(&format!(")::{}", self.type_name(ty.0, ty.1)));
         Some(sql)
     }
 
@@ -216,12 +220,14 @@ impl Walker<'_> {
         }
     }
 
-    pub(super) fn type_name(&mut self, ty: Oid) -> String {
+    /// Type `ty` with modifier `typmod`, for SQL ([`crate::utils::qualified_type_name`]):
+    /// a constant or a cast keeps its length (`char(2)`, `bit(3)`), and a type
+    /// without one is unconstrained (`bpchar`, not `character`, which is `char(1)`).
+    pub(super) fn type_name(&mut self, ty: Oid, typmod: i32) -> String {
         self.catalog
             .types
-            .entry(ty.to_u32())
-            // SAFETY: a catalog lookup by OID.
-            .or_insert_with(|| cstr(unsafe { pg_sys::format_type_be_qualified(ty) }))
+            .entry((ty.to_u32(), typmod))
+            .or_insert_with(|| crate::utils::qualified_type_name(ty, typmod))
             .clone()
     }
 

@@ -25,7 +25,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         crate::revision::check();
     }
     let relname = relation_name(relid)?;
-    for (entity, schema_name, view_oid) in affected {
+    for (entity, _, view_oid) in affected {
         let viewdef: String = crate::utils::spi::one(
             "SELECT pg_get_viewdef($1)",
             &[crate::utils::spi::oid(view_oid)],
@@ -39,7 +39,7 @@ pub fn handle_column_rename(relid: Oid, old_name: &str, new_name: &str) -> TView
         // extension's owner.
         crate::catalog::queries::rename_group_key(&entity, &relname, old_name, new_name)?;
 
-        crate::ddl::create::reregister_metadata(&entity, &schema_name, definition)?;
+        crate::ddl::create::reregister_metadata(&entity, definition)?;
     }
     Ok(())
 }

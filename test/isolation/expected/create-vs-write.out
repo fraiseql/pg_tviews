@@ -1,0 +1,58 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_begin w_update c_create w_commit c_check
+step w_begin: BEGIN;
+step w_update: UPDATE tb_post SET title = 'second' WHERE pk_post = 2;
+step c_create: 
+  SELECT tviews.pg_tviews_create('tv_post', $$
+    SELECT p.pk_post, p.id, jsonb_build_object('title', p.title) AS data FROM tb_post p $$);
+ <waiting ...>
+step w_commit: COMMIT;
+step c_create: <... completed>
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step c_check: 
+  SELECT NOT EXISTS (SELECT 1 FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
+                     WHERE t.data IS DISTINCT FROM v.data) AS in_sync;
+
+in_sync
+-------
+t      
+(1 row)
+
+
+starting permutation: c_other w_begin w_update c_create w_commit c_check
+step c_other: 
+  SELECT tviews.pg_tviews_create('tv_other', $$
+    SELECT p.pk_post AS pk_other, p.id, jsonb_build_object('t', p.title) AS data FROM tb_post p $$);
+
+pg_tviews_create             
+-----------------------------
+TVIEW public.tv_other created
+(1 row)
+
+step w_begin: BEGIN;
+step w_update: UPDATE tb_post SET title = 'second' WHERE pk_post = 2;
+step c_create: 
+  SELECT tviews.pg_tviews_create('tv_post', $$
+    SELECT p.pk_post, p.id, jsonb_build_object('title', p.title) AS data FROM tb_post p $$);
+ <waiting ...>
+step w_commit: COMMIT;
+step c_create: <... completed>
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_post created
+(1 row)
+
+step c_check: 
+  SELECT NOT EXISTS (SELECT 1 FROM tv_post t FULL JOIN tviews.public__tv_post v USING (pk_post)
+                     WHERE t.data IS DISTINCT FROM v.data) AS in_sync;
+
+in_sync
+-------
+t      
+(1 row)
+

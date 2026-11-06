@@ -14,12 +14,14 @@ on:
   # The release runs it before building anything.
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
-  GH_TOKEN: ${{ github.token }}
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
 
 jobs:
   upgrade-path:
@@ -40,10 +42,12 @@ jobs:
           - from: v0.1.0-beta.25
             pg: "18"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Find the release to upgrade from
         id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ matrix.from }}" = previous ]; then
             tag="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 \

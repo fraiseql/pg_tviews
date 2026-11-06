@@ -526,6 +526,7 @@ fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
         unwatched: None,
         tview: None,
         links: None,
+        guard: None,
     }
 }
 

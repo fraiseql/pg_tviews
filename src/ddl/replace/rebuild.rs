@@ -179,21 +179,24 @@ pub(super) fn rebuild(
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let user_indexes = user_indexes(meta.tview_oid)?;
 
+    let owner = crate::owner::Owner::of_tview(meta)?;
     crate::ddl::drop::drop_tview(
         &format!("{}.{tv_name}", ident::quoted(schema)),
         false,
         false,
     )?;
-    create::without_rows(|| {
-        create::create_tview_in(
-            &tv_name,
-            query,
-            schema,
-            declared.group_keys.as_ref(),
-            declared.storage,
-            Some(declared.declarations),
-        )
-    })?;
+    create::create_tview_in(
+        &tv_name,
+        query,
+        schema,
+        create::Options {
+            group_keys: declared.group_keys.as_ref(),
+            storage: declared.storage,
+            declarations: Some(declared.declarations),
+            typename: declared.typename.as_deref(),
+            rebuilt_for: Some(owner),
+        },
+    )?;
 
     let rebuilt = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
         name: entity.to_string(),
@@ -204,9 +207,6 @@ pub(super) fn rebuild(
     );
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
-    if declared.typename.is_some() {
-        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
-    }
     recreate_user_indexes(&tv_name, user_indexes)?;
     create::apply_json_indexes(entity, schema, rebuilt.tview_oid, &declared.indexes)?;
     // Filled as its owner, now that the owner is back.

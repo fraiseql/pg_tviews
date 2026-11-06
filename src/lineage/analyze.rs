@@ -199,6 +199,7 @@ impl Lineage {
                     table.fanout = None;
                     // What the function reads of it is unknown.
                     table.links = None;
+                    table.guard = None;
                 }
                 None => self.tables.push(TableLineage {
                     relid: read.relid,
@@ -219,6 +220,7 @@ impl Lineage {
                     unwatched: read.unwatched,
                     tview: read.tview.clone(),
                     links: None,
+                    guard: None,
                 }),
             }
         }
@@ -236,10 +238,18 @@ impl Lineage {
                 TableKind::AllKeys(reason) => Some((
                     t.relid,
                     t.qualified.clone(),
-                    if t.sql.is_some() {
-                        format!("{reason}; the rows its other reads reach are still refreshed")
-                    } else {
-                        reason.clone()
+                    {
+                        let mut reason = reason.clone();
+                        if t.guard.is_some() {
+                            reason.push_str(
+                                "; only a write of a row meeting that read's conditions on \
+                                 constants takes the policy",
+                            );
+                        }
+                        if t.sql.is_some() {
+                            reason.push_str("; the rows its other reads reach are still refreshed");
+                        }
+                        reason
                     },
                     t.unwatched.is_none_or(super::Unwatched::followed),
                 )),
@@ -326,6 +336,7 @@ fn check_tables_agree(
 /// Returns an error if the view cannot be analyzed, or if the analysis and
 /// `pg_depend` disagree on the tables the view reads.
 pub fn analyze(
+    frame: &crate::owner::OwnerFrame,
     entity: &str,
     view_oid: pgrx::pg_sys::Oid,
     base_tables: &[pgrx::pg_sys::Oid],
@@ -424,7 +435,7 @@ pub fn analyze(
                 .collect();
         }
         if let Some(sql) = &table.sql {
-            explain(entity, table, sql)?;
+            explain(frame, entity, table, sql)?;
         }
     }
     let references = match graph.root_columns() {
@@ -488,12 +499,14 @@ pub(super) const LARGE_TABLE_ROWS: f64 = 1000.0;
 /// sequential scan of a large table. Fails when the query does not plan: a
 /// mapping `pg_tviews` cannot run must not be registered.
 pub(super) fn explain(
+    frame: &crate::owner::OwnerFrame,
     entity: &str,
     table: &TableLineage,
     template: &str,
 ) -> crate::TViewResult<()> {
     use pgrx::prelude::*;
-    for (relation, rows) in large_seq_scans(&table.qualified, template)? {
+    let relid = pgrx::pg_sys::Oid::from(table.relid);
+    for (relation, rows) in large_seq_scans(frame, relid, &table.qualified, template)? {
         let mut advice: Vec<String> = table
             .lookups
             .iter()
@@ -527,23 +540,32 @@ pub(super) fn explain(
 
 /// `(relation, estimated rows)` of each sequential scan of a table above
 /// [`LARGE_TABLE_ROWS`] rows, once per relation, in the plan of the mapping query
-/// `template` of `table` (qualified). Fails when the query does not plan.
+/// `template` of the table `relid` (`table` names it in messages). Fails when the
+/// query does not plan.
 ///
 /// # Errors
 /// Returns an error if a relation the template names is gone or the query does
 /// not plan.
-pub fn large_seq_scans(table: &str, template: &str) -> crate::TViewResult<Vec<(String, f64)>> {
-    let sql = render_template(template)
-        .map_err(|e| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {table}"),
-            pg_error: e.to_string(),
-        })?
-        .ok_or_else(|| crate::TViewError::CatalogError {
-            operation: format!("Name the relations of the mapping of {table}"),
-            pg_error: "a relation or column it reads is gone".to_string(),
-        })?;
-    let explain =
-        format!("EXPLAIN (FORMAT JSON) WITH {DELTA} AS (SELECT * FROM {table} LIMIT 0) {sql}");
+pub fn large_seq_scans(
+    frame: &crate::owner::OwnerFrame,
+    relid: pgrx::pg_sys::Oid,
+    table: &str,
+    template: &str,
+) -> crate::TViewResult<Vec<(String, f64)>> {
+    frame.require_current()?;
+    let sql = render_template(&format!(
+        "WITH {DELTA} AS (SELECT * FROM {{r:{}}} LIMIT 0) {template}",
+        relid.to_u32()
+    ))
+    .map_err(|e| crate::TViewError::CatalogError {
+        operation: format!("Name the relations of the mapping of {table}"),
+        pg_error: e.to_string(),
+    })?
+    .ok_or_else(|| crate::TViewError::CatalogError {
+        operation: format!("Name the relations of the mapping of {table}"),
+        pg_error: "a relation or column it reads is gone".to_string(),
+    })?;
+    let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
     let plan = crate::utils::spi::one::<pgrx::Json>(&explain, &[])
         .map_err(|e| crate::TViewError::SpiError {
             query: explain.clone(),

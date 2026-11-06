@@ -47,6 +47,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             columns_check(),
             seq_scan_check(),
             contents_check(),
+            function_paths_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -163,46 +164,74 @@ fn columns_check() -> Check {
 
 /// Mapping queries that scan a large table: the advice registration printed,
 /// re-evaluated with today's indexes and statistics (an index dropped later).
-/// Each is planned as its TVIEW's owner, as the trigger runs it.
+/// Each is planned as its TVIEW's owner, as the trigger runs it, for the TVIEWs
+/// whose owner's privileges the caller has: planning runs the owner's code.
 fn seq_scan_check() -> Check {
     let mut found = Vec::new();
     let metas = match crate::catalog::TviewMeta::load_all() {
         Ok(metas) => metas,
         Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
     };
+    let mut skipped = 0;
     for meta in &metas {
-        let Ok(_owner) = crate::owner::AsOwner::of_entity(&meta.entity_name) else {
+        match acts_for_owner(meta) {
+            Ok(true) => {}
+            Ok(false) => {
+                skipped += 1;
+                continue;
+            }
+            Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
+        }
+        let Ok(owner) = crate::owner::Owner::of_tview(meta) else {
             continue;
         };
-        for mapping in &meta.plan.tables {
-            let Some(template) = mapping
-                .sql
-                .as_deref()
-                .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
-            else {
-                continue;
-            };
-            match crate::lineage::large_seq_scans(&mapping.table, template) {
-                Ok(scans) => found.extend(scans.into_iter().map(|(relation, rows)| {
-                    format!(
-                        "tv_{} (writes to {} scan {relation}, about {rows} rows)",
-                        meta.entity_name, mapping.table
-                    )
-                })),
-                Err(e) => {
-                    return error(
-                        "seq_scans",
+        let scanned = crate::owner::AsOwner::run(owner, |frame| {
+            let mut scans = Vec::new();
+            for mapping in &meta.plan.tables {
+                let Some(template) = mapping
+                    .sql
+                    .as_deref()
+                    .filter(|_| mapping.kind == crate::lineage::MappingKind::Mapped)
+                else {
+                    continue;
+                };
+                let relid = pgrx::pg_sys::Oid::from(mapping.relid);
+                match crate::lineage::large_seq_scans(frame, relid, &mapping.table, template) {
+                    Ok(found) => scans.extend(found.into_iter().map(|(relation, rows)| {
                         format!(
+                            "tv_{} (writes to {} scan {relation}, about {rows} rows)",
+                            meta.entity_name, mapping.table
+                        )
+                    })),
+                    Err(e) => {
+                        return Ok(Err(format!(
                             "the mapping of {} in tv_{}: {e}",
                             mapping.table, meta.entity_name
-                        ),
-                    );
+                        )));
+                    }
                 }
             }
+            Ok(Ok(scans))
+        });
+        match scanned {
+            Ok(Ok(scans)) => found.extend(scans),
+            Ok(Err(why)) => return error("seq_scans", why),
+            Err(e) => return error("seq_scans", format!("could not be checked: {e}")),
         }
     }
+    let unchecked = if skipped == 0 {
+        String::new()
+    } else {
+        format!(
+            " ({skipped} TVIEW{} of other owners not checked)",
+            if skipped == 1 { "" } else { "s" }
+        )
+    };
     if found.is_empty() {
-        ok("seq_scans", "No mapping query scans a large table")
+        ok(
+            "seq_scans",
+            format!("No mapping query scans a large table{unchecked}"),
+        )
     } else {
         warning(
             "seq_scans",
@@ -211,7 +240,7 @@ fn seq_scan_check() -> Check {
                  joins on makes them cheaper (SELECT * FROM \
                  tviews.pg_tviews_ensure_propagation_indexes(tview) creates the propagation ones)",
                 sample(&found)
-            ),
+            ) + &unchecked,
         )
     }
 }
@@ -261,6 +290,60 @@ fn contents_check() -> Check {
     }
 }
 
+/// TVIEWs whose refresh runs a function whose `search_path` does not end in
+/// `pg_temp` (registered before such functions were refused): the function
+/// resolves unqualified names in the writer's temporary schema first. Reads the
+/// catalog only.
+fn function_paths_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("function_paths", format!("could not be checked: {e}")),
+    };
+    let mut found = Vec::new();
+    for meta in &metas {
+        match crate::catalog::function_paths::issues(meta.view_oid, Some(meta.tview_oid)) {
+            Ok(issues) => found.extend(issues.into_iter().map(|issue| {
+                format!(
+                    "tv_{} runs {} (search_path = {}; set it to {})",
+                    meta.entity_name, issue.function, issue.path, issue.fix
+                )
+            })),
+            Err(e) => {
+                return error(
+                    "function_paths",
+                    format!("tv_{} could not be checked: {e}", meta.entity_name),
+                );
+            }
+        }
+    }
+    if found.is_empty() {
+        ok(
+            "function_paths",
+            "Every function a refresh runs sets no search_path, or one ending in pg_temp",
+        )
+    } else {
+        error(
+            "function_paths",
+            format!(
+                "functions whose search_path does not end in pg_temp: {}; fix each with \
+                 ALTER FUNCTION … SET search_path = <schemas>, pg_temp",
+                sample(&found)
+            ),
+        )
+    }
+}
+
+/// Whether the caller has the privileges of the owner of `meta`'s TVIEW: only
+/// then is the TVIEW's own code run as its owner on the caller's behalf.
+fn acts_for_owner(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> {
+    let member = crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
+         WHERE c.oid = $1",
+        &[crate::utils::spi::oid(meta.tview_oid)],
+    )?;
+    Ok(member == Some(true))
+}
+
 /// The TVIEW's qualified name when its table is empty and its backing view is
 /// not, read as its owner; `None` too for a TVIEW not checked ([`contents_check`]).
 fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
@@ -270,22 +353,21 @@ fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Optio
     {
         return Ok(None);
     }
-    let callers = crate::utils::spi::one::<bool>(
-        "SELECT pg_catalog.pg_has_role(c.relowner, 'USAGE') FROM pg_catalog.pg_class c \
-         WHERE c.oid = $1",
-        &[crate::utils::spi::oid(meta.tview_oid)],
-    )?;
-    if callers != Some(true) {
+    if !acts_for_owner(meta)? {
         return Ok(None);
     }
-    let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-    let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-    let has_rows = |relation: &str| {
-        crate::utils::spi::one::<bool>(&format!("SELECT EXISTS (SELECT 1 FROM {relation})"), &[])
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |_frame| {
+        let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+        let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+        let has_rows = |relation: &str| {
+            crate::utils::spi::one::<bool>(
+                &format!("SELECT EXISTS (SELECT 1 FROM {relation})"),
+                &[],
+            )
             .map(|exists| exists.unwrap_or(false))
-    };
-    Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
+        };
+        Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
+    })
 }
 
 /// TVIEWs registered before a release that changed what registration derives.
@@ -364,11 +446,17 @@ fn count_check() -> Check {
 }
 
 /// The session's refresh counters, and the keys queued in the transaction
-/// (`queued`).
-pub(crate) fn queue_stats() -> serde_json::Value {
+/// (`queued`) of the TVIEWs the caller may read without row security applying;
+/// the others are named by type in `omitted_types`. `queue_size` counts every
+/// key, as `tviews.stats` does.
+///
+/// # Errors
+/// A failed catalog read.
+pub(crate) fn queue_stats() -> crate::TViewResult<serde_json::Value> {
+    let (queued, omitted) = queued()?;
     let stats = crate::metrics::metrics_api::get_queue_stats(crate::queue::get_queue_size());
 
-    let json_value = serde_json::json!({
+    let mut json_value = serde_json::json!({
         "queue_size": stats.queue_size,
         "flushes": stats.flushes,
         "total_refreshes": stats.total_refreshes,
@@ -394,16 +482,50 @@ pub(crate) fn queue_stats() -> serde_json::Value {
         "plans_prepared": stats.plans_prepared,
         "per_execution_plans": stats.per_execution_plans,
         "propagation_pruned": stats.propagation_pruned,
-        "queued": queued(),
+        "queued": queued,
     });
+    if !omitted.is_empty() {
+        json_value["omitted_types"] = serde_json::json!(omitted);
+    }
+    #[cfg(feature = "test-hooks")]
+    {
+        json_value["cache_resets"] = crate::cache::resets().into();
+        json_value["stats_slots_by_database"] = crate::stats::slots_by_database()
+            .into_iter()
+            .map(|(db, n)| (db.to_string(), serde_json::Value::from(n)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
 
-    json_value
+    Ok(json_value)
 }
 
-/// The keys queued in the transaction, as `{entity, pk}`.
-fn queued() -> Vec<serde_json::Value> {
-    crate::queue::get_queue_contents()
+/// The keys queued in the transaction, as `{entity, pk}`, of the TVIEWs the
+/// caller may read without row security applying, and the types of the others.
+///
+/// # Errors
+/// A failed catalog read.
+fn queued() -> crate::TViewResult<(Vec<serde_json::Value>, std::collections::BTreeSet<String>)> {
+    let keys = crate::queue::get_queue_contents();
+    let entities: std::collections::BTreeSet<String> =
+        keys.iter().map(|key| key.entity.clone()).collect();
+    let mut shown = std::collections::HashSet::new();
+    let mut omitted = std::collections::BTreeSet::new();
+    for (entity, typename, _, oid) in
+        crate::catalog::queries::typenames_and_tables(entities.into_iter().collect())?
+    {
+        // Unknown counts as active.
+        if crate::visibility::may_read_relation(oid)
+            && !crate::visibility::rls_active_for_caller(oid).unwrap_or(true)
+        {
+            shown.insert(entity);
+        } else {
+            omitted.insert(typename);
+        }
+    }
+    let listed = keys
         .into_iter()
+        .filter(|key| shown.contains(&key.entity))
         .map(|key| {
             serde_json::json!({
                 "entity": key.entity,
@@ -413,7 +535,8 @@ fn queued() -> Vec<serde_json::Value> {
                 }
             })
         })
-        .collect()
+        .collect();
+    Ok((listed, omitted))
 }
 
 /// `1 orphaned trigger`, `2 orphaned triggers`.

@@ -153,7 +153,14 @@ impl Walker<'_> {
         strict
             || terms()
                 .flat_map(Resolved::occs)
-                .all(|occ| !self.nullable.contains(&occ))
+                .all(|occ| !self.null_extended(occ))
+    }
+
+    /// Whether an outer join walked so far (one below the condition being
+    /// walked) may NULL-extend the rows of occurrence `occ`: a condition that a
+    /// NULL-extended row meets is then met by rows no table holds.
+    pub(super) fn null_extended(&self, occ: usize) -> bool {
+        self.nullable.contains(&occ)
     }
 
     /// `lhs op Param` of an `IN (SELECT …)`: the Param stands for the subquery's

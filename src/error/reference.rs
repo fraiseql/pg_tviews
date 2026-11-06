@@ -19,6 +19,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
     match e {
         TViewError::TviewNotFound { .. } => "TviewNotFound",
         TViewError::RelationExists { .. } => "RelationExists",
+        TViewError::TypenameTaken { .. } => "TypenameTaken",
         TViewError::InvalidInput { .. } => "InvalidInput",
         TViewError::DefinitionRefused { .. } => "DefinitionRefused",
         TViewError::TriggerMisused { .. } => "TriggerMisused",
@@ -26,6 +27,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::ColumnDdlRefused { .. } => "ColumnDdlRefused",
         TViewError::IndexNameReserved { .. } => "IndexNameReserved",
         TViewError::PermissionDenied { .. } => "PermissionDenied",
+        TViewError::FunctionSearchPath { .. } => "FunctionSearchPath",
         TViewError::DependencyCycle { .. } => "DependencyCycle",
         TViewError::DepthExceeded { .. } => "DepthExceeded",
         TViewError::InvalidSelectStatement { .. } => "InvalidSelectStatement",
@@ -46,6 +48,10 @@ fn examples() -> Vec<TViewError> {
     vec![
         TViewError::TviewNotFound { name: p("tview") },
         TViewError::RelationExists { name: p("name") },
+        TViewError::TypenameTaken {
+            typename: p("typename"),
+            holder: p("entity"),
+        },
         TViewError::InvalidInput {
             parameter: p("parameter"),
             reason: p("reason"),
@@ -70,6 +76,11 @@ fn examples() -> Vec<TViewError> {
         },
         TViewError::PermissionDenied {
             reason: p("reason"),
+        },
+        TViewError::FunctionSearchPath {
+            function: p("function"),
+            path: p("search_path"),
+            fix: p("search_path, pg_temp"),
         },
         TViewError::DependencyCycle {
             entities: vec![p("relation"), p("relation")],
@@ -149,6 +160,14 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
          was written. Reads of TVIEWs work at any level.",
     ),
     (
+        "src/refresh/diag.rs",
+        PgSqlErrorCode::ERRCODE_CARDINALITY_VIOLATION,
+        "PostgreSQL's `ON CONFLICT DO UPDATE command cannot affect row a second time` from a \
+         refresh's upsert: seen once under the concurrency fuzzer, never reproduced (#278). \
+         Retry the transaction, and report it: test builds log what conflicted \
+         (`pg_tviews.test_diag_21000`).",
+    ),
+    (
         "src/flush/xact.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "A transaction commits with refresh work still queued (a missing or disabled flush \
@@ -198,12 +217,7 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
     ),
 ];
 
-/// `undefined_object` for `ERRCODE_UNDEFINED_OBJECT`.
-fn condition(code: PgSqlErrorCode) -> String {
-    format!("{code:?}")
-        .trim_start_matches("ERRCODE_")
-        .to_lowercase()
-}
+use super::condition;
 
 /// `text` in a Markdown table cell: pipes escaped, and `<placeholder>`s kept as
 /// text rather than read as HTML.
@@ -275,7 +289,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 20, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 22, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].

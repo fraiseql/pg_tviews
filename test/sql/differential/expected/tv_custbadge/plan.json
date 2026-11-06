@@ -83,5 +83,6 @@
       "table": "public.tb_badge"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

@@ -8,6 +8,7 @@
 //! private advisory tag and are held to the end of the transaction. Writers run
 //! at READ COMMITTED: a transaction snapshot could not see what it waited for.
 
+pub mod key;
 mod pass;
 pub mod reads;
 mod registry;
@@ -19,6 +20,9 @@ pub use registry::Mark;
 use registry::{Held, REGISTRY};
 
 thread_local! {
+    /// `(relid, role)` → whether the role may write the relation, this transaction.
+    static WRITABLE: std::cell::RefCell<std::collections::HashMap<(u32, pg_sys::Oid), bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     /// `(relid, attnum)` → how a value of a column writers lock values of is locked.
     static LOCK_VALUES: crate::cache::Memo<(u32, i16), Option<LockValue>> = crate::cache::Memo::new();
 }
@@ -27,6 +31,8 @@ thread_local! {
 pub const VALUE_TAG: u16 = 0x5476;
 /// `field4` of a relation's intent and escalated locks.
 pub const RELATION_TAG: u16 = 0x5477;
+/// `field4` of a TVIEW's registration lock.
+pub const REGISTRATION_TAG: u16 = 0x5478;
 
 /// Which end of the protocol takes a lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -101,19 +107,74 @@ const fn value_mode(side: Side) -> pg_sys::LOCKMODE {
     }
 }
 
-/// FNV-1a (32 bits) of the columns' attnums, a zero byte and the value's text:
-/// computable without a server, stable across releases. A collision only makes
+/// SipHash-2-4, keyed with the server's `key`, of the columns' attnums, a zero
+/// byte and the value's text, truncated to 32 bits: the same in every backend
+/// of the server, and not computable without its key. A collision only makes
 /// two values share a lock.
 #[must_use]
-pub fn value_hash(attnums: &[i16], value: &str) -> u32 {
-    const OFFSET: u32 = 0x811c_9dc5;
-    const PRIME: u32 = 0x0100_0193;
-    attnums
-        .iter()
-        .flat_map(|a| a.to_le_bytes())
-        .chain(std::iter::once(0))
-        .chain(value.bytes())
-        .fold(OFFSET, |h, b| (h ^ u32::from(b)).wrapping_mul(PRIME))
+pub fn value_hash(key: &key::Key, attnums: &[i16], value: &str) -> u32 {
+    use std::hash::Hasher;
+    let mut hasher = siphasher::sip::SipHasher24::new_with_key(key);
+    for attnum in attnums {
+        hasher.write(&attnum.to_le_bytes());
+    }
+    hasher.write(&[0]);
+    hasher.write(value.as_bytes());
+    #[allow(clippy::cast_possible_truncation)] // Reason: a lock tag field holds 32 bits
+    let hash = hasher.finish() as u32;
+    hash
+}
+
+/// The tag (`objid` in `pg_locks`) of the value lock on `value` of `column` of
+/// `relid`, or of the key `value` of the TVIEW table `relid` being created when
+/// `column` is `None`. Superusers only: the tag is keyed with the server's
+/// secret, so that no other role can tell which value a lock in `pg_locks` is
+/// on.
+///
+/// # Errors
+/// `PermissionDenied` for a caller that is not a superuser; `InvalidInput` for
+/// a column `relid` lacks; `WrongState` without the server's key; a failed
+/// conversion of `value` to the column's type.
+pub fn value_lock_tag(
+    relid: pg_sys::Oid,
+    column: Option<&str>,
+    value: &str,
+) -> crate::TViewResult<i64> {
+    // SAFETY: a role check of the current user.
+    if !unsafe { pg_sys::superuser() } {
+        return Err(crate::TViewError::PermissionDenied {
+            reason: "only a superuser may compute value-lock tags".to_string(),
+        });
+    }
+    let key = key::current()?;
+    let Some(column) = column else {
+        return Ok(i64::from(value_hash(&key, &[-1], value)));
+    };
+    let relation = crate::utils::qualified_relname_from_oid(relid)?;
+    let invalid = || crate::TViewError::InvalidInput {
+        parameter: "column_name".to_string(),
+        reason: format!("{relation} has no column {column}"),
+    };
+    let name = std::ffi::CString::new(column).map_err(|_| invalid())?;
+    // SAFETY: a syscache lookup by OID and column name; InvalidAttrNumber when
+    // there is no such column.
+    let attnum = unsafe { pg_sys::get_attnum(relid, name.as_ptr()) };
+    if attnum <= 0 {
+        return Err(invalid());
+    }
+    let lock = lock_value(relid.to_u32(), attnum)?.ok_or_else(invalid)?;
+    let _path = crate::owner::CatalogPath::pin();
+    let text = crate::utils::spi::one::<String>(
+        &format!("SELECT {}", lock.of("$1")),
+        &[crate::utils::spi::text(value)],
+    )?
+    .unwrap_or_default();
+    Ok(i64::from(value_hash(&key, &[attnum], &text)))
+}
+
+/// The server's value-lock key, or the error raised without it.
+fn lock_key() -> key::Key {
+    key::current().unwrap_or_else(|e| e.raise())
 }
 
 #[allow(clippy::cast_possible_truncation)] // Reason: lock tag types and lock method ids fit a uint8 (lock.h)
@@ -140,6 +201,40 @@ pub const fn relation_tag(database: u32, relid: u32, space: Space) -> pg_sys::LO
     tag(database, relid, space.field3(), RELATION_TAG)
 }
 
+/// The tag of the registration lock of the entity whose name hashes to `hash`.
+#[must_use]
+pub const fn registration_tag(database: u32, hash: u32) -> pg_sys::LOCKTAG {
+    tag(database, hash, 0, REGISTRATION_TAG)
+}
+
+/// The registration lock's hash of `entity`, keyed with the server's secret
+/// `key` as value tags are: no role can find, offline, a name of its own whose
+/// tag is another entity's.
+#[must_use]
+fn registration_hash(key: &key::Key, entity: &str) -> u32 {
+    value_hash(key, &[], entity)
+}
+
+/// Hold the registration lock of `entity` until the transaction ends: calls
+/// registering, changing or dropping one entity run one after the other. The
+/// tag is private to `pg_tviews` (`pg_advisory_lock()` never takes it), so no
+/// other role can hold it; two entities sharing a hash only take turns.
+pub fn lock_registration(entity: &str) {
+    let hash = registration_hash(&lock_key(), entity);
+    // SAFETY: a transaction is in progress (DDL runs in one) and the tag is a
+    // well-formed advisory tag; the lock belongs to the current resource owner
+    // and ends with the transaction. Waiting honours lock_timeout and deadlock
+    // detection, which raise an ERROR.
+    unsafe {
+        pg_sys::LockAcquire(
+            &registration_tag(database(), hash),
+            pg_sys::ExclusiveLock.cast_signed(),
+            false,
+            false,
+        );
+    }
+}
+
 fn database() -> u32 {
     // SAFETY: MyDatabaseId is set once the backend is connected to a database.
     unsafe { pg_sys::MyDatabaseId }.to_u32()
@@ -155,7 +250,17 @@ pub fn take(pass: &Pass) {
         return;
     }
     let threshold = crate::config::lock_escalation_threshold();
-    let (ops, escalations) = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold));
+    let caller = crate::owner::caller();
+    let may_lock_whole = |relid: u32| may_write(relid, caller);
+    let key = lock_key();
+    let planned = REGISTRY.with_borrow(|r| pass::plan(pass, r, threshold, &may_lock_whole, &key));
+    let (ops, escalations) = match planned {
+        Ok(planned) => planned,
+        Err(pass::TooManyLinks { max }) => crate::TViewError::RefreshLimit {
+            limit: crate::error::Limit::Links { max },
+        }
+        .raise(),
+    };
     for _ in 0..escalations {
         crate::metrics::metrics_api::record_value_lock_escalation();
     }
@@ -224,7 +329,12 @@ pub fn lock_values_unescalated(target: &LockTarget, side: Side, values: &[String
     let mut pass = Pass::default();
     pass.values(target, side, values);
     let threshold = crate::config::lock_escalation_threshold();
-    if REGISTRY.with_borrow(|r| pass::plan(&pass, r, threshold).1) > 0 {
+    // Asked as if the relation could be locked whole: whether it would be.
+    let whole = REGISTRY.with_borrow(|r| {
+        pass::plan(&pass, r, threshold, &|_| true, &lock_key())
+            .map_or(true, |(_, escalations)| escalations > 0)
+    });
+    if whole {
         return false;
     }
     take(&pass);
@@ -241,7 +351,7 @@ pub fn holds_new_key(tview: pg_sys::Oid, key: &str) -> bool {
         relid,
         space: Space::Keys,
         side: Side::Writer,
-        hash: value_hash(&[-1], key),
+        hash: value_hash(&lock_key(), &[-1], key),
     };
     REGISTRY.with_borrow(|r| r.escalated(relid, Space::Keys, Side::Writer) || r.holds(&held))
 }
@@ -471,27 +581,84 @@ pub fn note_write(
     }
 }
 
+/// Whether `role` may write `relid` (`INSERT` or `UPDATE`): only then does a
+/// refresh it caused lock the whole relation, which blocks every writer of it.
+/// Answered once per relation and role in a transaction.
+fn may_write(relid: u32, role: pg_sys::Oid) -> bool {
+    if let Some(known) = WRITABLE.with_borrow(|w| w.get(&(relid, role)).copied()) {
+        return known;
+    }
+    let mut missing = false;
+    // SAFETY: an ACL check by OID; the `_ext` check reports a missing relation
+    // instead of raising. Any of the two privileges passes.
+    let may = unsafe {
+        pg_sys::pg_class_aclcheck_ext(
+            pg_sys::Oid::from(relid),
+            role,
+            pg_sys::AclMode::from(pg_sys::ACL_INSERT | pg_sys::ACL_UPDATE),
+            &raw mut missing,
+        )
+    } == pg_sys::AclResult::ACLCHECK_OK
+        && !missing;
+    WRITABLE.with_borrow_mut(|w| w.insert((relid, role), may));
+    may
+}
+
 /// The transaction ended: every lock was released.
 pub fn clear() {
     REGISTRY.with_borrow_mut(registry::Registry::clear);
+    WRITABLE.with_borrow_mut(std::collections::HashMap::clear);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const KEY: key::Key = [7; 16];
+
     #[test]
-    fn the_hash_is_stable() {
-        // FNV-1a over [1, 0] (attnum 1), 0x00, "42".
-        assert_eq!(value_hash(&[1], "42"), value_hash(&[1], "42"));
-        assert_eq!(value_hash(&[1], "42"), 0x0538_46ce);
+    fn siphash_matches_its_reference_vector() {
+        // SipHash-2-4 paper, appendix A: key 00..0f, message 00..0e.
+        use std::hash::Hasher;
+        let key: key::Key = std::array::from_fn(|i| u8::try_from(i).unwrap());
+        let message: Vec<u8> = (0..15).collect();
+        let mut hasher = siphasher::sip::SipHasher24::new_with_key(&key);
+        hasher.write(&message);
+        assert_eq!(hasher.finish(), 0xa129_ca61_49be_45e5);
+    }
+
+    #[test]
+    fn the_hash_depends_on_the_key() {
+        assert_eq!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[1], "42"));
+        assert_ne!(
+            value_hash(&KEY, &[1], "42"),
+            value_hash(&[8; 16], &[1], "42")
+        );
+        // The unkeyed FNV-1a of the same input.
+        assert_ne!(value_hash(&KEY, &[1], "42"), 0x0538_46ce);
     }
 
     #[test]
     fn the_columns_are_part_of_the_value() {
-        assert_ne!(value_hash(&[1], "42"), value_hash(&[2], "42"));
-        assert_ne!(value_hash(&[1, 2], "42"), value_hash(&[1], "42"));
-        assert_ne!(value_hash(&[1], "42"), value_hash(&[1], "43"));
+        assert_ne!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[2], "42"));
+        assert_ne!(
+            value_hash(&KEY, &[1, 2], "42"),
+            value_hash(&KEY, &[1], "42")
+        );
+        assert_ne!(value_hash(&KEY, &[1], "42"), value_hash(&KEY, &[1], "43"));
+    }
+
+    #[test]
+    fn a_registration_hash_depends_on_the_server_key() {
+        let (one, other) = ([1; 16], [2; 16]);
+        assert_eq!(
+            super::registration_hash(&one, "post"),
+            super::registration_hash(&one, "post")
+        );
+        assert_ne!(
+            super::registration_hash(&one, "post"),
+            super::registration_hash(&other, "post")
+        );
     }
 
     #[test]
@@ -518,6 +685,20 @@ mod tests {
         assert_eq!(relation.locktag_field4, 0x5477);
         assert_eq!(relation.locktag_field3, 0);
         assert_eq!(relation_tag(5, 16_384, Space::Keys).locktag_field3, 1);
+        let registration = registration_tag(5, 99);
+        assert_eq!(registration.locktag_field4, 0x5478);
+        assert_eq!(
+            u32::from(registration.locktag_type),
+            pg_sys::LockTagType::LOCKTAG_ADVISORY
+        );
+        assert_eq!(
+            u32::from(registration.locktag_lockmethodid),
+            pg_sys::USER_LOCKMETHOD
+        );
+        assert_eq!(
+            (registration.locktag_field1, registration.locktag_field2),
+            (5, 99)
+        );
     }
 
     #[test]

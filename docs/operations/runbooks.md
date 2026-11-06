@@ -50,6 +50,8 @@ SELECT tviews.pg_tviews_show_suspended() IS NOT NULL;
    ```sql
    SELECT * FROM tviews.pg_tviews_reregister_all();
    ```
+   `pg_tviews_reregister_all()` is safe to run as a superuser: it re-derives each TVIEW
+   in its owner's frame, so no TVIEW's code runs as the superuser.
 2. Bring the TVIEW up to date now:
    ```sql
    SELECT tviews.pg_tviews_refresh('user');
@@ -181,6 +183,9 @@ DROP TRIGGER trg_tview_row_on_app_tb_user ON app.tb_user;
 -- Missing triggers, or triggers of an older release (one per TVIEW): re-install them
 SELECT * FROM tviews.pg_tviews_reregister_all();
 ```
+
+`pg_tviews_reregister_all()` is safe to run as a superuser: it re-derives each TVIEW in
+its owner's frame, so no TVIEW's code runs as the superuser.
 
 Drop TVIEWs with `SELECT tviews.pg_tviews_drop('tv_post');` (or `DROP TABLE tv_post`) so
 their triggers are removed with them.

@@ -21,6 +21,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::lifecycle::validity::forget_claims,
     crate::stats::merge,
     crate::cache::end_transaction,
+    crate::owner::forget_temp_check,
 ];
 
 /// What an abort resets besides: the caches and the revision check, when the
@@ -135,6 +136,7 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
                 fail_unflushed();
                 fail_suspended();
                 crate::publish::at_pre_commit();
+                crate::stats::merge_committing();
             }
             crate::suspend::clear_changed_entities();
             crate::suspend::force_resume();

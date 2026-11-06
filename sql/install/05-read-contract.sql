@@ -157,20 +157,7 @@ SELECT
          FROM @extschema@.references x
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
-    -- The type name the report and the change feed use, as crate::catalog::typename
-    -- derives it: the typename option, else the PascalCase of the entity, capitalising
-    -- ASCII letters only (translate, not upper(): no locale changes the name).
-    COALESCE(m.graphql_typename,
-             (SELECT pg_catalog.string_agg(
-                         pg_catalog.translate(pg_catalog.left(p.part, 1),
-                                              'abcdefghijklmnopqrstuvwxyz',
-                                              'ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-                         || pg_catalog.substr(p.part, 2),
-                         '' ORDER BY p.n)
-              FROM pg_catalog.unnest(pg_catalog.string_to_array(m.entity, '_'))
-                   WITH ORDINALITY AS p(part, n)
-              WHERE p.part <> ''),
-             '') AS typename
+    m.typename
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

@@ -37,10 +37,18 @@ Do it in each database that has the extension.
    ```sql
    ALTER EXTENSION pg_tviews UPDATE;
    ```
-   It re-derives every TVIEW's plan and triggers from its definition, as the TVIEW's
-   owner, inside the update; the rows are not touched. A TVIEW that no longer analyses
+   It re-derives every TVIEW's plan and triggers from its definition inside the update,
+   each in its owner's frame ([owner frame](../security/architecture.md#owner-frame)):
+   the role running the update runs none of a TVIEW's code. The rows are not touched. A TVIEW that no longer analyses
    fails the whole update, named with its error, and nothing is changed: fix or drop it
    and update again. `tviews.registry.needs_reregister` is false for every TVIEW after it.
+   Before it re-derives anything, the update refuses, naming every case in one error:
+   GraphQL type names shared by several TVIEWs (`42710`: give all but one a `typename`
+   option), and TVIEW or view owners that may no longer read a relation their view reads
+   (`42501`, naming the TVIEW, the owner and the privilege: grant it or drop the TVIEW).
+   Re-deriving also takes every privilege on a backing view (its columns included) from
+   the roles other than its owner, and warns about each function a refresh runs whose
+   `search_path` does not end in `pg_temp` (the health check's `function_paths`).
    0.1.0-beta.35 also replaces every per-TVIEW trigger on the base tables by one set per
    table (`trg_tview_<role>_on_<schema>_<table>`); a per-TVIEW trigger restored later from
    an older dump fails the writes to its table until `pg_tviews_reregister_all()`.

@@ -122,6 +122,8 @@ pub(super) unsafe fn strip_relabel(mut node: *mut pg_sys::Node) -> *mut pg_sys::
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Cast {
     pub(super) type_oid: Oid,
+    /// The type's modifier (`char(2)`: 6), -1 when it has none.
+    pub(super) type_mod: i32,
     pub(super) strict: bool,
 }
 
@@ -141,6 +143,7 @@ pub(super) unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::N
                         (*r).arg.cast(),
                         Cast {
                             type_oid: (*r).resulttype,
+                            type_mod: pg_sys::exprTypmod(node),
                             strict: true,
                         },
                     )
@@ -151,6 +154,7 @@ pub(super) unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::N
                         (*r).arg.cast(),
                         Cast {
                             type_oid: (*r).resulttype,
+                            type_mod: pg_sys::exprTypmod(node),
                             strict: true,
                         },
                     )
@@ -173,6 +177,7 @@ pub(super) unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::N
                         arg,
                         Cast {
                             type_oid: (*f).funcresulttype,
+                            type_mod: pg_sys::exprTypmod(node),
                             strict,
                         },
                     )

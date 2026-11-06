@@ -12,14 +12,15 @@ fn write(entries: Vec<serde_json::Value>) -> crate::TViewResult<()> {
         return Ok(());
     }
     let payload = serde_json::Value::Array(entries).to_string();
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "SELECT {}.pg_tviews_audit_write($1::jsonb)",
-            crate::utils::ext_schema()
-        ),
-        &[crate::utils::spi::text(&payload)],
-    )
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "SELECT {}.pg_tviews_audit_write($1::jsonb)",
+                crate::utils::ext_schema()
+            ),
+            &[crate::utils::spi::text(&payload)],
+        )
+    })
 }
 
 fn entry(

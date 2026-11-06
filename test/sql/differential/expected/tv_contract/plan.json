@@ -51,5 +51,6 @@
       "table": "public.tb_contract"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

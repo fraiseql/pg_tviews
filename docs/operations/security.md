@@ -44,9 +44,9 @@ ALTER TABLE app.tb_user OWNER TO docs_sec_owner;
 | Superuser | `CREATE EXTENSION pg_tviews` (its script creates event triggers and C functions); set the `pg_tviews.*` settings |
 | Extension owner | everything a TVIEW owner may, on every TVIEW; run the `_all` functions; read and prune the audit log |
 | A TVIEW's owner (or a member of the owning role) | `pg_tviews_create_or_replace`, `pg_tviews_drop`, `pg_tviews_refresh`, `pg_tviews_refresh_time_dependent`, `pg_tviews_reregister`, `pg_tviews_ensure_propagation_indexes`, `pg_tviews_reset_stats`, `pg_tviews_show_cascade_path`, `pg_tviews_show_mapping_query`, `pg_tviews_show_read_sets` on that TVIEW |
-| A role with `CREATE` on a schema | create a TVIEW there (`pg_tviews_create`, `CREATE TABLE tv_x AS …`); it becomes the owner |
+| A role with `CREATE` on a schema | create a TVIEW there (`pg_tviews_create`, `CREATE TABLE tv_x AS …`); it becomes the owner. It needs `TRIGGER` on every table the definition reads, another TVIEW's `tv_*` table included (its own TVIEWs' tables pass): their writes refresh the new TVIEW. A replace keeps reading a table it already read |
 | An operator role | the `_all` functions it was granted |
-| Everyone | the read-only functions (`pg_tviews_check_health`, `pg_tviews_profile`, `pg_tviews_resolve`, `pg_tviews_show_replication`, …), its own session's functions (`pg_tviews_suspend_triggers`, `pg_tviews_resume_triggers`, `pg_tviews_show_suspended`, `pg_tviews_show_queue`, `pg_tviews_flush_and_report`), and the views `tviews.registry` and `tviews.stats` |
+| Everyone | the read-only functions (`pg_tviews_check_health`, `pg_tviews_profile`, `pg_tviews_resolve`, `pg_tviews_show_replication`, …), its own session's functions (`pg_tviews_suspend_triggers`, `pg_tviews_resume_triggers`, `pg_tviews_show_suspended`, `pg_tviews_show_queue`, `pg_tviews_flush_and_report`), and the views `tviews.registry` and `tviews.stats`; the read-only functions show row data (`is_empty`, queued keys, reported rows) only from the `tv_*` tables the caller may read |
 
 Every function acting on or showing one TVIEW checks ownership first, before taking
 any lock: the caller must have the privileges of the `tv_*` table's owner or of the
@@ -132,11 +132,20 @@ MATERIALIZED VIEW` does (`src/owner.rs`):
 - in a security-restricted operation: code it runs cannot `SET ROLE`, create
   temporary tables or otherwise change the session;
 - with `search_path = pg_catalog, pg_temp`, so no name resolves to an object the
-  writer planted in a schema on its own path;
-- with the rendering settings pinned (`TimeZone` `UTC`, `DateStyle` `ISO, YMD`,
-  `IntervalStyle` `postgres`, `extra_float_digits` `1`, `bytea_output` `hex`), so a
-  TVIEW's rows do not depend on the session that wrote last;
-- with `plan_cache_mode = auto`.
+  writer planted in a schema on its own path; a writer whose session holds a
+  temporary relation or type named like one in another schema is refused (`42501`)
+  unless it has the owner's privileges;
+- with every setting a value renders or SQL parses under pinned to a fixed value
+  (`TimeZone` `UTC`, `DateStyle` `ISO, YMD`, `IntervalStyle` `postgres`,
+  `extra_float_digits` `1`, `bytea_output` `hex`, the `lc_*` settings and the others
+  listed in the [security architecture](../security/architecture.md#owner-frame)), and
+  the TVIEW's own `default_text_search_config`, so a TVIEW's rows depend neither on
+  the session that wrote last nor on the settings its role carries;
+- with `plan_cache_mode = auto` and `jit = off`: a refresh reads a few rows by key or
+  rebuilds a TVIEW once, which JIT compilation slows down (#283);
+- with its errors redacted for a writer without the owner's privileges: the writer
+  gets the SQLSTATE and the condition, not the values the error quotes; the server
+  log has the whole error.
 
 The writer therefore needs only what the write needs without pg_tviews: the DML
 privilege on the base table and `USAGE` on its schema (and `USAGE` on `tviews`,
@@ -164,7 +173,13 @@ replaced: the backing view stores the objects it found, not their names.
 
 A function body is resolved when it runs, during the refresh, under the pinned path.
 A function a definition calls must therefore schema-qualify the tables and functions
-it reads, or set its own `search_path`:
+it reads, or set its own `search_path` with `pg_temp` last (`SET search_path = app,
+pg_temp`). The refresh runs in the writer's session, whose temporary schema
+PostgreSQL searches first unless the path names `pg_temp` later; with `pg_temp` last,
+the writer's temporary relations and types never stand in for the function's.
+Creating or replacing a TVIEW whose refresh runs a function with another path is
+refused (`42P13`), and `pg_tviews_check_health()` reports such functions of existing
+TVIEWs (`function_paths`):
 
 ```sql fragment
 CREATE FUNCTION app.label_suffix() RETURNS text
@@ -227,6 +242,15 @@ at commit.
 - **Triggers off means stale.** `session_replication_role = replica` (superuser) or
   `ALTER TABLE … DISABLE TRIGGER` (table owner) skips the refresh;
   `pg_tviews_check_health()` reports disabled triggers.
+- **Open transactions hold their locks.** A write holds the value locks of what it
+  linked until its transaction ends, as row locks are held: set
+  `idle_in_transaction_session_timeout` (or `transaction_timeout`) for writer roles.
+  A refresh by keys locks a whole table it reads only for a role that may write that
+  table; any other role locks one value per linked row, at most 16 times
+  `pg_tviews.lock_escalation_threshold` per table and transaction (`54000` past that).
+  A full refresh (`TRUNCATE` of a base table, catching up after
+  `pg_tviews_resume_triggers()`) locks every table its TVIEW reads, whatever the
+  caller may write, until its transaction ends.
 
 ```sql
 BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -273,9 +297,11 @@ DELETE FROM tviews.pg_tview_audit_log WHERE performed_at < now() - interval '90 
 - [ ] Readers have `SELECT` on the `tv_*` tables they need, and nothing else.
 - [ ] TVIEWs leave secrets out of `data`.
 - [ ] Functions called by definitions schema-qualify what they read or set their
-      own `search_path`, and are declared in `function_reads`.
+      own `search_path` with `pg_temp` last, and are declared in `function_reads`;
+      `pg_tviews_check_health()` reports no `function_paths` error.
 - [ ] Only operator roles hold `EXECUTE` on the `_all` functions.
 - [ ] Writers run at `READ COMMITTED`; no TVIEW reads a subscribed table.
+- [ ] Writer roles have `idle_in_transaction_session_timeout` set.
 - [ ] `pg_tviews.*` settings are set in `postgresql.conf` or by a superuser.
 - [ ] `pg_tviews_check_health()` reports no disabled triggers.
 - [ ] If auditing is required, `pg_tviews.audit_enabled = on` and old rows are

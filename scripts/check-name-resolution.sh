@@ -9,57 +9,185 @@
 # schemas it never touches (#251). Catalog SQL matches by OID, or by name through
 # pg_class/pg_namespace. A cast of an OID (`x.oid::regclass`,
 # `$1::pg_catalog.oid::pg_catalog.regclass`) resolves nothing; a literal in
-# pg_catalog cannot fail. Comments do not count.
+# pg_catalog cannot fail. Comments do not count. test/scripts/check-name-resolution-test.sh
+# runs it on a fixture of every form it must flag.
 set -u
 cd "$(dirname "$0")/.."
 
-# Allowed sites, `file|text on the line|reason`: DDL, restore and install time,
-# which run as the role doing them, and the extension's own catalog.
+# Allowed sites, `file|text in the string literal|reason`: DDL, restore and
+# install time, which run as the role doing them, and the extension's own catalog.
 allowed=(
-  "src/catalog/plan.rs|\"SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid \\|restore: runs as the restorer"
+  "src/catalog/plan.rs|SELECT pg_catalog.to_regclass(t.q)::pg_catalog.oid|restore: runs as the restorer"
   "src/ddl/replace/options.rs|pg_catalog.to_regclass(\$1)|options: DDL, names the creator passed"
   "src/ddl/replace/options.rs|pg_catalog.to_regprocedure(\$1)|options: DDL, names the creator passed"
   "src/ddl/replace/rebuild.rs|c.oid IN (\$1::pg_catalog.regclass, \$2::pg_catalog.regclass)|rebuild: DDL, the TVIEW being replaced"
-  "src/ddl/replace/mod.rs|\"SELECT \$1::pg_catalog.regclass::pg_catalog.oid, \\|replace: DDL, own temp view"
-  "src/ddl/replace/mod.rs|\$1::pg_catalog.regclass::pg_catalog.oid, 0\"|replace: DDL, own temp view"
+  "src/ddl/replace/mod.rs|SELECT \$1::pg_catalog.regclass::pg_catalog.oid,|replace: DDL, own temp view"
   "src/ddl/replace/mod.rs|'pg_temp.pg_tviews_candidate'::pg_catalog.regclass|replace: DDL, own temp view"
   "src/ddl/mod.rs|pg_catalog.to_regclass(\$1) IS NOT NULL|DDL: the table the creator names"
   "src/ddl/create/select.rs|pg_catalog.to_regtype(\$1)|create: DDL, a type the definition names"
   "src/catalog/queries.rs|pg_catalog.to_regclass(\$1) IS NOT NULL|the extension's own catalog table"
-  "src/catalog/queries.rs|pg_catalog.to_regclass('{}')|the extension's own catalog table"
   "src/catalog/queries.rs|'{}'::pg_catalog.regnamespace|the extension's own schema"
   "src/dependency/triggers.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
+  "src/lineage/analyze.rs|CREATE INDEX ON {} USING {}|advice in a notice, never run"
 )
 
-reg='reg(class|proc|procedure|type|oper|operator|namespace|role|collation|config|dictionary)'
-# A literal, a format placeholder or a parameter, maybe cast to a text type
-# first, cast to reg*; or to_reg*(). Any case.
-text_cast='([[:space:]]*::[[:space:]]*(pg_catalog\.)?(text|varchar|name|"char"))?'
-pattern="to_${reg}[[:space:]]*\(|(\\\$[0-9]+|'[^']*'|\{[a-z0-9_]*\})${text_cast}[[:space:]]*::[[:space:]]*(pg_catalog\.)?${reg}\b"
-bad=""
-while IFS= read -r hit; do
-  file=${hit%%:*}
-  line=${hit#*:}; line=${line#*:}
-  [[ "$line" =~ ^[[:space:]]*// ]] && continue
-  # Every match on the line must be a pg_catalog literal, or inside an allowed
-  # site's text.
-  while IFS= read -r match; do
-    [[ -z "$match" ]] && continue
-    shopt -s nocasematch
-    [[ "$match" =~ ^\'pg_catalog(\.[a-z0-9_]+)?\' ]] && { shopt -u nocasematch; continue; }
-    shopt -u nocasematch
-    ok=""
-    for entry in "${allowed[@]}"; do
-      IFS='|' read -r afile atext _ <<<"$entry"
-      [[ "$file" == "$afile" && "$line" == *"$atext"* && "$atext" == *"$match"* ]] && { ok=1; break; }
-    done
-    [[ -z "$ok" ]] && { bad+="$hit"$'\n'; break; }
-  done < <(grep -oiE "$pattern" <<<"$line")
-done < <(grep -rniE "$pattern" src --include='*.rs')
+# The SQL is in Rust string literals: each is read whole (a `\` continuation
+# joins its lines; raw strings too), outside comments, and every form below is
+# looked for in it:
+#   to_regclass(…) and the other to_reg*() functions;
+#   a cast to a reg* type, `::regclass`, `::pg_catalog."regclass"`, `::regclass[]`,
+#     `CAST(… AS regclass)`, unless what is cast is an OID: a column (`c.oid`,
+#     `o.tgrelid`), a value cast to oid first (`$1::pg_catalog.oid`), or a literal
+#     in pg_catalog;
+#   the call form `pg_catalog.regclass($1)`;
+#   the input functions `regclassin(…)` and the other reg*in();
+#   a text literal or a format placeholder passed where a function takes a
+#     regclass or another object's name (`pg_relation_size('…')`, `nextval('…')`,
+#     `has_table_privilege(…)`, `pg_partition_root('…')`, `pg_get_viewdef('…')`,
+#     `has_function_privilege(…)`);
+#   a name stored in the catalog or a plan (`mapping.table`, `meta.source_table`)
+#     passed to a format!() whose string is SQL.
+bad=$(ROOT="${NAME_CHECK_ROOT:-src}" python3 - "${allowed[@]}" <<'EOF'
+import os, re, sys
 
+REG = r'reg(?:class|proc|procedure|type|oper|operator|namespace|role|collation|config|dictionary)'
+SCHEMA = r'(?:"?pg_catalog"?\s*\.\s*)?'
+TYPE = SCHEMA + r'"?' + REG + r'"?(?:\s*\[\s*\])?'
+CAST = re.compile(r'::\s*' + TYPE + r'(?![a-z0-9_])', re.I)
+CAST_AS = re.compile(r'\bCAST\s*\(\s*(.+?)\s+AS\s+' + TYPE + r'(?![a-z0-9_])', re.I)
+TO_REG = re.compile(r'\bto_' + REG + r'\s*\(', re.I)
+CALL = re.compile(r'(?<![:\w"])' + SCHEMA + r'"?' + REG + r'(?:in)?"?\s*\(', re.I)
+TAKES_REGCLASS = (r'pg_relation_size|pg_total_relation_size|pg_table_size|pg_indexes_size|'
+                  r'pg_relation_filenode|pg_relation_filepath|nextval|currval|setval|'
+                  r'has_table_privilege|has_column_privilege|has_any_column_privilege|'
+                  r'has_sequence_privilege|pg_get_serial_sequence|pg_partition_root|'
+                  r'pg_partition_tree|pg_partition_ancestors|pg_get_viewdef|'
+                  r'has_function_privilege|has_type_privilege')
+# The table is the first argument, or the second of three (a role first).
+NAME_ARG = re.compile(r'\b(?:' + TAKES_REGCLASS + r')\s*\(\s*(?:[^,()\']*,\s*(?=[\'{](?:[^,()]|\([^()]*\))*,))?[\'{]',
+                      re.I)
+# What may be cast to a reg* type: an OID column, a value cast to oid, a literal
+# in pg_catalog.
+OID_COLUMN = re.compile(r'(?<![\w$.\'"{}])[a-z_][a-z0-9_]*\s*\.\s*(?:[a-z_]*(?:oid|relid|objid)|inhparent|amproc|rel)\s*$', re.I)
+OID_CAST = re.compile(r'::\s*(?:pg_catalog\s*\.\s*)?oid(?:\s*\[\s*\])?\s*$', re.I)
+CATALOG_LITERAL = re.compile(r"'pg_catalog(?:\.[a-z0-9_]+)?'\s*$", re.I)
+
+def oid_operand(before):
+    return any(p.search(before) for p in (OID_COLUMN, OID_CAST, CATALOG_LITERAL))
+
+def literals(text):
+    """(line, content, start, end) of each string literal outside comments."""
+    i, n, line = 0, len(text), 1
+    while i < n:
+        c = text[i]
+        if c == '\n':
+            line += 1; i += 1
+        elif text.startswith('//', i):
+            j = text.find('\n', i); i = n if j < 0 else j
+        elif text.startswith('/*', i):
+            j = text.find('*/', i + 2); j = n if j < 0 else j + 2
+            line += text.count('\n', i, j); i = j
+        elif c == "'" and re.match(r"'(\\.|[^\\'])'", text[i:]):
+            i += len(re.match(r"'(\\.|[^\\'])'", text[i:]).group(0))
+        elif re.match(r'b?r#*"', text[i:]) and (i == 0 or not (text[i-1].isalnum() or text[i-1] == '_')):
+            m = re.match(r'b?r(#*)"', text[i:]); end = '"' + m.group(1)
+            j = text.find(end, i + len(m.group(0))); j = n if j < 0 else j
+            yield line, text[i + len(m.group(0)):j], i, j + len(end)
+            line += text.count('\n', i, j); i = j + len(end)
+        elif c == '"' or (c == 'b' and text.startswith('b"', i)):
+            j = i + (2 if c == 'b' else 1); out = []
+            while j < n and text[j] != '"':
+                if text[j] == '\\' and j + 1 < n:
+                    if text[j + 1] == '\n':
+                        j += 2
+                        while j < n and text[j] in ' \t\n':
+                            j += 1
+                        continue
+                    out.append(text[j:j + 2]); j += 2
+                else:
+                    out.append(text[j]); j += 1
+            yield line, ''.join(out).replace('\\"', '"'), i, j + 1
+            line += text.count('\n', i, j); i = j + 1
+        else:
+            i += 1
+
+# A name stored in the catalog or a plan (`mapping.table`, `meta.source_table`,
+# `x.relname`) names whatever holds that name now: SQL gets the relation's OID
+# (`{r:relid}`), never the stored name.
+STORED_NAME = re.compile(r'\.\s*(?:table|source_table|relname|tview_name|qualified\s*\()(?![\w])', re.I)
+SQL_LIKE = re.compile(r'\b(?:SELECT|FROM|JOIN|UPDATE|INSERT|DELETE|EXPLAIN|TRUNCATE|LOCK|ALTER|CREATE|DROP)\b')
+FORMAT = re.compile(r'\b(?:format|write|writeln)!\s*\(\s*(?:[\w.&]+\s*,\s*)?$')
+
+def format_args(text, end):
+    """The arguments after a format string literal ending at `end`, to the call's ')'."""
+    depth, i, n = 0, end, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == '\\' else 1
+            i = j + 1
+            continue
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            if depth == 0:
+                return text[end:i]
+            depth -= 1
+        i += 1
+    return text[end:]
+
+def stored_names(text, start, end, sql):
+    if not SQL_LIKE.search(sql) or not FORMAT.search(text[max(start - 80, 0):start]):
+        return
+    m = STORED_NAME.search(format_args(text, end))
+    if m:
+        yield 'stored name ' + m.group(0).strip()
+
+def hits(sql):
+    for m in TO_REG.finditer(sql):
+        yield m.group(0)
+    for m in CAST.finditer(sql):
+        if not oid_operand(sql[:m.start()]):
+            start = max(sql.rfind(' ', 0, m.start()), 0)
+            yield sql[start:m.end()].strip()
+    for m in CAST_AS.finditer(sql):
+        if not oid_operand(m.group(1)):
+            yield m.group(0)
+    for m in CALL.finditer(sql):
+        if not TO_REG.match(sql, max(m.start() - 3, 0)) and not sql[:m.start()].rstrip().lower().endswith('to_'):
+            yield m.group(0)
+    for m in NAME_ARG.finditer(sql):
+        yield m.group(0)
+
+allowed = [entry.split('|')[:2] for entry in sys.argv[1:]]
+used = set()
+for dirpath, _, files in os.walk(os.environ['ROOT']):
+    for name in sorted(files):
+        if not name.endswith('.rs'):
+            continue
+        path = os.path.join(dirpath, name)
+        text = open(path, encoding='utf-8').read()
+        for line, sql, start, end in literals(text):
+            for hit in [*hits(sql), *stored_names(text, start, end, sql)]:
+                site = next((i for i, (f, t) in enumerate(allowed)
+                             if path == f and t in sql
+                             and (hit in t or t in hit or hit.startswith('stored name'))), None)
+                if site is not None:
+                    used.add(site)
+                    continue
+                print(f'{path}:{line}: {hit}  in  "{" ".join(sql.split())[:160]}"')
+                break
+if os.environ['ROOT'] == 'src':
+    for i, (f, t) in enumerate(allowed):
+        if i not in used:
+            print(f'{f}: allowed site matches nothing, remove it: {t}')
+EOF
+)
 if [[ -n "$bad" ]]; then
   echo "SQL resolving a name to an object (match by OID, or through pg_class/pg_namespace; see the header of $0):"
-  printf '%s' "$bad"
+  printf '%s\n' "$bad"
   exit 1
 fi
 echo "no SQL resolves an object name outside the allowed DDL, restore and install sites"

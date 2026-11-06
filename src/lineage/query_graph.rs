@@ -247,6 +247,11 @@ pub struct QueryGraph {
     pub links_unknown: bool,
     /// Plain tables read with their inheritance children (no `ONLY`).
     pub inherited_reads: std::collections::BTreeSet<u32>,
+    /// Per occurrence, conditions on its own columns against constants that its
+    /// rows must meet to be read at all (`c.name = 'default'`, `c.kind IN (…)`,
+    /// `c.retired_at IS NULL`; ANDed): a written row meeting none of them, before
+    /// or after the write, changes nothing that occurrence reads (#284).
+    pub guards: BTreeMap<usize, Vec<Sql>>,
 }
 
 /// Columns copied unchanged into `data`, each with its path there: a column
@@ -360,6 +365,12 @@ pub struct TableLineage {
     /// The columns of the table the rows are linked by ([`QueryGraph::links`]),
     /// sorted; `None` when unknown (every column is one).
     pub links: Option<Vec<i16>>,
+    /// `all_keys` because of reads linked to no key that each read only rows
+    /// meeting conditions against constants ([`QueryGraph::guards`]): the query
+    /// over [`DELTA`] returning a row when a changed row meets one read's
+    /// conditions. Only then does the uncascaded policy apply; otherwise `sql`
+    /// maps the rows the linked reads reach.
+    pub guard: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

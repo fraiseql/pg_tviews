@@ -3,6 +3,7 @@
 use crate::TViewResult;
 use crate::catalog::EntityDepGraph;
 use crate::catalog::TviewMeta;
+use crate::owner::OwnerFrame;
 use crate::queue::key::KeyValue;
 use crate::queue::patch::{FanoutMap, PatchEntry, PatchState};
 use crate::queue::{RefreshKey, patch};
@@ -81,23 +82,29 @@ impl Flush {
     pub(super) fn apply_entity(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
         // The entity is read and written as the owner of its tv_* table, whoever
         // wrote to the base table.
-        let _owner = crate::owner::AsOwner::of_entity(entity)?;
-        // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
-        crate::lifecycle::validity::ensure(entity)?;
-        if keys.iter().any(RefreshKey::is_all) {
-            self.refresh_all(entity)?;
-            crate::lifecycle::validity::refreshed_whole(entity);
-        } else {
-            self.apply_keys(entity, keys)?;
-        }
-        // One restored without its rows holds the write's rows only: filled.
-        crate::lifecycle::validity::refill_if_restored_empty(entity)?;
-        Ok(())
+        crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
+            // An UNLOGGED TVIEW reset by a crash or a promotion is filled first.
+            crate::lifecycle::validity::ensure(entity)?;
+            if keys.iter().any(RefreshKey::is_all) {
+                self.refresh_all(frame, entity)?;
+                crate::lifecycle::validity::refreshed_whole(entity);
+            } else {
+                self.apply_keys(frame, entity, keys)?;
+            }
+            // One restored without its rows holds the write's rows only: filled.
+            crate::lifecycle::validity::refill_if_restored_empty(entity)?;
+            Ok(())
+        })
     }
 
     /// Bring `entity`'s rows named by `keys` to what its view computes, as
     /// [`Self::apply_entity`] does when no key names every row.
-    fn apply_keys(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
+    fn apply_keys(
+        &mut self,
+        frame: &OwnerFrame,
+        entity: &str,
+        keys: Vec<RefreshKey>,
+    ) -> TViewResult<()> {
         let meta = self.meta(entity)?;
         self.charge(&meta, "by key", keys.len() as u64)?;
         // Writers of what these rows read meet them on its values (ADR 0207):
@@ -134,7 +141,7 @@ impl Flush {
             }
         }
         if !recompute.is_empty() {
-            self.recompute(entity, recompute)?;
+            self.recompute(frame, entity, recompute)?;
         }
         if !applied.is_empty() {
             self.derive_parent_patches(entity, &applied.into_iter().collect::<Vec<_>>())?;
@@ -198,18 +205,13 @@ impl Flush {
 
     /// A write to a table no cascade maps (`full_refresh` policy): bring the whole TVIEW to its view once, which covers every other key
     /// of the entity, and queue the parents of the rows that changed.
-    fn refresh_all(&mut self, entity: &str) -> TViewResult<()> {
+    fn refresh_all(&mut self, frame: &OwnerFrame, entity: &str) -> TViewResult<()> {
         let meta = self.meta(entity)?;
         if self.max_rows.is_some() {
             let rows = crate::utils::spi::count_rows(meta.tview_oid)?;
             self.charge(&meta, "by a full refresh", rows)?;
         }
-        // Every row may change: refreshes of any of them wait, and are waited for.
-        crate::concurrency::lock_relation(
-            meta.tview_oid.to_u32(),
-            crate::concurrency::Side::Writer,
-        );
-        let changed = crate::refresh::full::reconcile(entity, &meta)?;
+        let changed = crate::refresh::full::reconcile_locked(frame, entity, &meta)?;
         // A full refresh may bring rows back: look their parents up in the
         // parents' views too.
         self.queue_parents_to_recompute(entity, &changed, &changed)?;
@@ -222,9 +224,14 @@ impl Flush {
 
     /// Recompute `keys` from the view, and queue the parents of the rows touched
     /// to recompute too: their child's whole document changed.
-    fn recompute(&mut self, entity: &str, keys: Vec<RefreshKey>) -> TViewResult<()> {
+    fn recompute(
+        &mut self,
+        frame: &OwnerFrame,
+        entity: &str,
+        keys: Vec<RefreshKey>,
+    ) -> TViewResult<()> {
         let keys: Vec<KeyValue> = keys.into_iter().map(|k| k.key).collect();
-        let touched = crate::refresh::recompute(&*self.meta(entity)?, &keys)?;
+        let touched = crate::refresh::recompute(frame, &*self.meta(entity)?, &keys)?;
         self.queue_parents_to_recompute(entity, &touched.pks, &touched.appeared)
     }
 
@@ -296,14 +303,16 @@ impl Flush {
         }
         for ((entity, lookup_col), rows) in groups {
             let meta = self.meta(&entity)?;
-            let owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-            if self.max_rows.is_some() {
-                let keys = rows.iter().map(|(key, _)| *key).collect();
-                let children = crate::refresh::direct::count_fanout(&meta, &lookup_col, keys)?;
-                self.charge(&meta, &format!("via {lookup_col}"), children)?;
-            }
-            let changed = crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)?;
-            drop(owner);
+            let changed =
+                crate::owner::AsOwner::run(crate::owner::Owner::of_tview(&meta)?, |_frame| {
+                    if self.max_rows.is_some() {
+                        let keys = rows.iter().map(|(key, _)| *key).collect();
+                        let children =
+                            crate::refresh::direct::count_fanout(&meta, &lookup_col, keys)?;
+                        self.charge(&meta, &format!("via {lookup_col}"), children)?;
+                    }
+                    crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)
+                })?;
             self.queue_parents_to_recompute(&entity, &changed, &[])?;
         }
         Ok(())

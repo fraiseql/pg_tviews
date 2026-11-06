@@ -12,7 +12,11 @@
 CREATE OR REPLACE FUNCTION fresh_diff(tv regclass, key text) RETURNS text
 LANGUAGE plpgsql
 SET TimeZone = 'UTC' SET DateStyle = 'ISO, YMD' SET IntervalStyle = 'postgres'
-SET extra_float_digits = 1 SET bytea_output = 'hex'
+SET extra_float_digits = 1 SET bytea_output = 'hex' SET lc_monetary = 'C' SET lc_numeric = 'C'
+SET lc_time = 'C' SET timezone_abbreviations = 'Default' SET array_nulls = on
+SET quote_all_identifiers = off SET transform_null_equals = off
+SET standard_conforming_strings = on SET xmlbinary = 'base64' SET xmloption = 'content'
+SET gin_fuzzy_search_limit = 0
 AS $$
 DECLARE
     v regclass;

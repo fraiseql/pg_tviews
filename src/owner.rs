@@ -14,31 +14,32 @@
 //! catalog write run as the extension's owner, the same way.
 
 use crate::error::{TViewError, TViewResult};
+use pgrx::pg_sys::panic::{CaughtError, ErrorReport};
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
+use pgrx::{PgLogLevel, PgTryBuilder};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 
-/// While alive, the current user is a TVIEW's owner. Dropping it restores the
-/// previous user, security context and `search_path`. On an error, the
-/// (sub)transaction abort restores them instead, so the guard leaves them alone
-/// while unwinding.
-pub struct AsOwner {
-    saved_user: Oid,
-    saved_context: i32,
-    guc_level: i32,
+/// The role an owner frame runs as: a TVIEW's owner, named by its table or
+/// entity, or the extension's owner, for writes to its catalog. A TVIEW's owner
+/// carries the TVIEW's text search configuration, which its frames pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Owner {
+    role: Oid,
+    text_search: Option<&'static CStr>,
 }
 
-impl AsOwner {
-    /// Switch to the owner of the relation `table`.
+impl Owner {
+    /// The owner of the relation `table`.
     ///
     /// # Errors
     /// Returns an error if the relation does not exist.
     pub fn of_table(table: Oid) -> TViewResult<Self> {
-        Ok(Self::role(relation_owner(table)?))
+        relation_owner(table).map(Self::of_role)
     }
 
-    /// Switch to the owner of the `pg_tviews` extension, to write its catalog.
+    /// The owner of the `pg_tviews` extension, who owns its catalog.
     ///
     /// # Errors
     /// Returns an error if the extension's row cannot be read.
@@ -61,16 +62,324 @@ impl AsOwner {
             operation: "Look up the owner of pg_tviews".to_string(),
             pg_error: "extension pg_tviews is not installed".to_string(),
         })?;
-        Ok(Self::role(owner))
+        Ok(Self::of_role(owner))
     }
 
-    /// Switch to `owner`, a TVIEW's owner read with [`relation_owner`].
+    /// The current user, the owner-to-be of a TVIEW it creates.
+    ///
+    /// # Errors
+    /// An internal error inside an owner frame, where the current user is the
+    /// frame's owner, not the caller.
+    pub fn current_user() -> TViewResult<Self> {
+        if OPEN_FRAMES.with(std::cell::Cell::get) > 0 {
+            return Err(frame_error("the caller is read inside an owner frame"));
+        }
+        // SAFETY: reads backend-global state.
+        Ok(Self::of_role(unsafe { pg_sys::GetUserId() }))
+    }
+
+    /// Whether this role has the privileges of `other` (is it, a member of it,
+    /// or a superuser), as `ALTER TABLE` on a table `other` owns would require.
     #[must_use]
-    pub fn of_role(owner: Oid) -> Self {
-        Self::role(owner)
+    pub fn has_privileges_of(self, other: Self) -> bool {
+        // SAFETY: a role membership check by OID.
+        unsafe { pg_sys::has_privs_of_role(self.role, other.role) }
     }
 
-    fn role(owner: Oid) -> Self {
+    /// The role's OID.
+    #[must_use]
+    pub const fn oid(self) -> Oid {
+        self.role
+    }
+
+    /// The role `role`: one read with [`relation_owner`].
+    #[must_use]
+    pub const fn of_role(role: Oid) -> Self {
+        Self {
+            role,
+            text_search: None,
+        }
+    }
+
+    /// This owner, with `default_text_search_config` pinned to `config` in its
+    /// frames (a TVIEW's, its creator's value), or left as it is (`None`).
+    #[must_use]
+    pub fn with_text_search(self, config: Option<&str>) -> Self {
+        Self {
+            text_search: config.and_then(intern),
+            ..self
+        }
+    }
+
+    /// The text search configuration its frames pin.
+    #[must_use]
+    pub fn text_search(self) -> Option<&'static str> {
+        self.text_search.and_then(|c| c.to_str().ok())
+    }
+}
+
+/// The role that called into `pg_tviews`, which privileges are decided for:
+/// the current user outside every owner frame, and the current user when the
+/// outermost frame opened inside one (where the current user is an owner).
+#[must_use]
+pub fn caller() -> Oid {
+    if OPEN_FRAMES.with(std::cell::Cell::get) > 0 {
+        CALLER.with(std::cell::Cell::get)
+    } else {
+        // SAFETY: reads backend-global state.
+        unsafe { pg_sys::GetUserId() }
+    }
+}
+
+/// The session's `default_text_search_config`: what a TVIEW created now keeps.
+#[must_use]
+pub fn session_text_search() -> Option<String> {
+    // SAFETY: a setting that exists; the result is copied before it can change.
+    let value =
+        unsafe { pg_sys::GetConfigOption(c"default_text_search_config".as_ptr(), false, false) };
+    (!value.is_null()).then(|| {
+        // SAFETY: NUL-terminated when not null.
+        unsafe { CStr::from_ptr(value) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+/// `config` as a string that lives as long as the backend: one per distinct
+/// configuration name, a handful in a database.
+fn intern(config: &str) -> Option<&'static CStr> {
+    let config = CString::new(config).ok()?;
+    INTERNED.with(|interned| {
+        let mut interned = interned.borrow_mut();
+        if let Some(found) = interned.iter().find(|c| **c == config.as_c_str()) {
+            return Some(*found);
+        }
+        let leaked: &'static CStr = Box::leak(config.into_boxed_c_str());
+        interned.push(leaked);
+        Some(leaked)
+    })
+}
+
+/// Runs work in an owner frame. SQL derived from a TVIEW, planned or run, runs
+/// in its owner's frame only: the functions that plan or run it take the
+/// frame's [`OwnerFrame`] token, which nothing else can make.
+pub struct AsOwner;
+
+impl AsOwner {
+    /// Run `work` as `owner`. The frame decides:
+    /// - who: the current user is the owner, inside a security-restricted
+    ///   operation;
+    /// - where names resolve: `search_path` is `pg_catalog, pg_temp`, and a caller
+    ///   whose temporary schema shadows a name is refused first;
+    /// - how values render: the [`RENDER_SETTINGS`], [`PLAN_SETTINGS`] and the
+    ///   owner's text search configuration are pinned;
+    /// - what an error reveals: to a caller without the owner's privileges, an
+    ///   error the work raises or returns arrives with its SQLSTATE and without
+    ///   the values it quotes; the server log has it whole.
+    ///
+    /// Leaving restores the caller's user, context and settings; on an error,
+    /// the (sub)transaction abort restores them.
+    ///
+    /// # Errors
+    /// What `work` returns; a temporary object of the caller's shadowing a name.
+    pub fn run<T>(
+        owner: Owner,
+        work: impl FnOnce(&mut OwnerFrame) -> TViewResult<T>,
+    ) -> TViewResult<T> {
+        // The role that called into pg_tviews, not the owner of a frame this one
+        // opens inside of.
+        let caller = caller();
+        check_temp_shadows(caller, owner.role)?;
+        // Decided before the owner's work runs: nothing below reads who the
+        // current user is once it fails.
+        // SAFETY: a role membership check by OID.
+        let privileged = unsafe { pg_sys::has_privs_of_role(caller, owner.role) };
+        let mut frame = OwnerFrame::enter(owner);
+        if privileged {
+            return work(&mut frame);
+        }
+        let role = role_name(owner.role);
+        let attempt = std::panic::AssertUnwindSafe(|| work(&mut frame));
+        PgTryBuilder::new(move || {
+            let attempt = attempt;
+            (attempt.0)()
+        })
+        .catch_others(move |error| raise_without_values(&error, &role))
+        .execute()
+        .map_err(|error| {
+            if error.clone().without_values() != error {
+                ErrorReport::from(error.clone()).report(PgLogLevel::LOG_SERVER_ONLY);
+            }
+            error.without_values()
+        })
+    }
+}
+
+/// Raise `error`, raised by work run as `role` for a caller without its
+/// privileges, with its SQLSTATE and a message naming its condition; its
+/// message, detail and hint go to the server log only. No SQL runs here.
+fn raise_without_values(error: &CaughtError, role: &str) -> ! {
+    let report = match error {
+        CaughtError::PostgresError(report)
+        | CaughtError::ErrorReport(report)
+        | CaughtError::RustPanic {
+            ereport: report, ..
+        } => report,
+    };
+    let code = report.sql_error_code();
+    let mut logged = ErrorReport::new(
+        code,
+        format!(
+            "work run as {role}, a TVIEW's owner, failed: {}",
+            report.message()
+        ),
+        "pg_tviews",
+    );
+    if let Some(detail) = report.detail() {
+        logged = logged.set_detail(detail);
+    }
+    logged.report(PgLogLevel::LOG_SERVER_ONLY);
+    ErrorReport::new(
+        code,
+        format!(
+            "refreshing a TVIEW as its owner {role} failed: {}",
+            crate::error::condition(code)
+        ),
+        "pg_tviews",
+    )
+    .set_hint("The server log has the error; the TVIEW's owner and its members get it whole.")
+    .report(PgLogLevel::ERROR);
+    unreachable!("an ERROR report does not return")
+}
+
+/// The name of `role`, for messages; its OID when it has none.
+fn role_name(role: Oid) -> String {
+    // SAFETY: a syscache lookup by OID; null when the role is gone.
+    let name = unsafe { pg_sys::GetUserNameFromId(role, true) };
+    if name.is_null() {
+        return role.to_u32().to_string();
+    }
+    // SAFETY: a NUL-terminated name in a palloc'd copy.
+    crate::utils::ident::quote_if_needed(&unsafe { CStr::from_ptr(name) }.to_string_lossy())
+}
+
+/// Run `work` as the extension's owner, who owns the registration catalog: for a
+/// catalog write by a caller whose right to change the TVIEW was checked.
+///
+/// # Errors
+/// What `work` returns, or a failure to read the extension's owner.
+pub fn as_extension_owner<T>(work: impl FnOnce() -> TViewResult<T>) -> TViewResult<T> {
+    AsOwner::run(Owner::of_extension()?, |_| work())
+}
+
+/// Refuse to run work as `owner` for `caller` when the session's temporary schema
+/// holds a relation or type named like one in another schema, unless `caller`
+/// has `owner`'s privileges.
+///
+/// PostgreSQL looks up relations and types in the session's temporary schema
+/// first, unless the `search_path` lists `pg_temp` explicitly, later. The frame's
+/// own path does, but a function the owner's code calls may set one that does
+/// not, directly or through a function it runs by name at run time, which no check
+/// of a definition sees. The temporary schema is the session's, so the writer's:
+/// one of its relations or types taking another's name would stand in for it
+/// while the owner's code runs. Functions and operators are never looked up there
+/// implicitly.
+///
+/// A session that never made a temporary object has no temporary schema and
+/// pays nothing. Once checked, the answer holds until a relation or type is
+/// created, renamed or dropped, or the transaction ends.
+fn check_temp_shadows(caller: Oid, owner: Oid) -> TViewResult<()> {
+    let mut temp = pg_sys::InvalidOid;
+    let mut toast = pg_sys::InvalidOid;
+    // SAFETY: reads the backend's temporary namespace state.
+    unsafe { pg_sys::GetTempNamespaceState(&raw mut temp, &raw mut toast) };
+    if temp == pg_sys::InvalidOid || TEMP_CHECKED.with(std::cell::Cell::get) == Some(temp) {
+        return Ok(());
+    }
+    // SAFETY: a role membership check by OID.
+    if unsafe { pg_sys::has_privs_of_role(caller, owner) } {
+        return Ok(());
+    }
+    let _path = CatalogPath::pin();
+    let shadow = crate::utils::spi::catalog_rows(
+        "SELECT 'relation', t.relname::pg_catalog.text, n.nspname::pg_catalog.text \
+         FROM pg_catalog.pg_class t \
+         JOIN pg_catalog.pg_class o ON o.relname = t.relname AND o.relnamespace <> t.relnamespace \
+         JOIN pg_catalog.pg_namespace n ON n.oid = o.relnamespace \
+         WHERE t.relnamespace = $1 AND t.relkind NOT IN ('i', 'I') \
+           AND o.relkind NOT IN ('i', 'I', 't') AND n.nspname !~ '^pg_(temp|toast)' \
+         UNION ALL \
+         SELECT 'type', t.typname::pg_catalog.text, n.nspname::pg_catalog.text \
+         FROM pg_catalog.pg_type t \
+         JOIN pg_catalog.pg_type o ON o.typname = t.typname AND o.typnamespace <> t.typnamespace \
+         JOIN pg_catalog.pg_namespace n ON n.oid = o.typnamespace \
+         WHERE t.typnamespace = $1 AND n.nspname !~ '^pg_(temp|toast)' \
+         LIMIT 1",
+        &[crate::utils::spi::oid(temp)],
+        |row| {
+            Ok((
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<String>(3)?,
+            ))
+        },
+    )?;
+    if let Some((Some(kind), Some(name), Some(schema))) = shadow.into_iter().next() {
+        return Err(TViewError::PermissionDenied {
+            reason: format!(
+                "a temporary {kind} named {name} shadows {schema}.{name} while a TVIEW's owner \
+                 refreshes it: drop it or use another name"
+            ),
+        });
+    }
+    TEMP_CHECKED.with(|checked| checked.set(Some(temp)));
+    Ok(())
+}
+
+/// Forget that the temporary schema was checked: a relation or type changed, or
+/// the transaction ended.
+pub fn forget_temp_check() {
+    TEMP_CHECKED.with(|checked| checked.set(None));
+}
+
+#[pg_guard]
+unsafe extern "C-unwind" fn names_changed(_arg: pg_sys::Datum, _cache: i32, _hash: u32) {
+    forget_temp_check();
+}
+
+/// Watch the relation and type names for [`check_temp_shadows`]. Called once
+/// from `_PG_init`.
+pub fn register_name_callbacks() {
+    // SAFETY: registers a static callback with no argument; valid in `_PG_init`.
+    unsafe {
+        for cache in [
+            pg_sys::SysCacheIdentifier::RELNAMENSP,
+            pg_sys::SysCacheIdentifier::TYPENAMENSP,
+        ] {
+            pg_sys::CacheRegisterSyscacheCallback(
+                cache.cast_signed(),
+                Some(names_changed),
+                pg_sys::Datum::from(0),
+            );
+        }
+    }
+}
+
+/// The token of an open owner frame, naming its owner. Only [`AsOwner::run`]
+/// makes one, and only for the time `work` runs. A frame opened inside it makes
+/// it unusable until that frame closes ([`OwnerFrame::require_current`]): no
+/// TVIEW's SQL runs as the inner frame's role on the outer frame's token.
+pub struct OwnerFrame {
+    owner: Oid,
+    saved_user: Oid,
+    saved_context: i32,
+    guc_level: i32,
+    depth: usize,
+}
+
+impl OwnerFrame {
+    fn enter(spec: Owner) -> Self {
+        let owner = spec.role;
         let mut saved_user = pg_sys::InvalidOid;
         let mut saved_context = 0;
         // SAFETY: plain backend-global state, as REFRESH MATERIALIZED VIEW sets it;
@@ -87,25 +396,89 @@ impl AsOwner {
             let level = pg_sys::NewGUCNestLevel();
             set_local(c"search_path", c"pg_catalog, pg_temp");
             pin_settings();
+            if let Some(config) = spec.text_search {
+                pin(c"default_text_search_config", config);
+            }
             level
         };
         // The owner resolves no name the caller wrote.
         REPLACED_PATHS.with(|paths| paths.borrow_mut().push(None));
+        let depth = OPEN_FRAMES.with(|open| {
+            open.set(open.get() + 1);
+            open.get()
+        });
+        if depth == 1 {
+            CALLER.with(|caller| caller.set(saved_user));
+        }
         Self {
+            owner,
             saved_user,
             saved_context,
             guc_level,
+            depth,
+        }
+    }
+
+    /// Fail unless this is the innermost open frame and `table` (a TVIEW's
+    /// table) is owned by its owner: SQL derived from that TVIEW runs as the
+    /// TVIEW's owner, never as another frame's.
+    ///
+    /// # Errors
+    /// An internal error on a mismatch, or if the relation does not exist.
+    pub fn require_owner_of(&self, table: Oid) -> TViewResult<()> {
+        self.require_current()?;
+        check_frame_owner(self.owner, relation_owner(table)?, table)
+    }
+
+    /// Fail unless this is the innermost open frame and the current user is its
+    /// owner.
+    ///
+    /// # Errors
+    /// An internal error when another frame is open inside this one.
+    pub fn require_current(&self) -> TViewResult<()> {
+        let innermost = OPEN_FRAMES.with(std::cell::Cell::get) == self.depth;
+        // SAFETY: reads backend-global state.
+        let user = unsafe { pg_sys::GetUserId() };
+        if innermost && user == self.owner {
+            Ok(())
+        } else {
+            Err(frame_error(
+                "an owner frame is used while another is open inside it",
+            ))
         }
     }
 }
 
-impl Drop for AsOwner {
+/// `Ok` when a frame owned by `frame_owner` may run the SQL of a TVIEW whose
+/// table `table` is owned by `table_owner`.
+fn check_frame_owner(frame_owner: Oid, table_owner: Oid, table: Oid) -> TViewResult<()> {
+    if frame_owner == table_owner {
+        Ok(())
+    } else {
+        Err(frame_error(&format!(
+            "the SQL of relation {} runs in a frame of role {}, not of its owner {}",
+            table.to_u32(),
+            frame_owner.to_u32(),
+            table_owner.to_u32()
+        )))
+    }
+}
+
+fn frame_error(why: &str) -> TViewError {
+    TViewError::CatalogError {
+        operation: "Run a TVIEW's SQL as its owner".to_string(),
+        pg_error: why.to_string(),
+    }
+}
+
+impl Drop for OwnerFrame {
     fn drop(&mut self) {
         REPLACED_PATHS.with(|paths| paths.borrow_mut().pop());
+        OPEN_FRAMES.with(|open| open.set(open.get() - 1));
         if std::thread::panicking() {
             return;
         }
-        // SAFETY: undoes exactly what `of_table` did, innermost first.
+        // SAFETY: undoes exactly what `enter` did, innermost first.
         unsafe {
             pg_sys::AtEOXact_GUC(false, self.guc_level);
             pg_sys::SetUserIdAndSecContext(self.saved_user, self.saved_context);
@@ -113,22 +486,56 @@ impl Drop for AsOwner {
     }
 }
 
-/// The settings a value's text rendering depends on, and the values every
-/// refresh renders under: a TVIEW's rows then do not depend on the
-/// session that wrote last. `CURRENT_DATE` in a refresh is the UTC day.
-pub const RENDER_SETTINGS: [(&CStr, &CStr); 5] = [
+/// The settings that change how a value renders as text or how SQL parses, and
+/// the values every refresh runs under: a TVIEW's rows then do not depend on
+/// the session that wrote last, nor on the settings its role carries.
+/// `CURRENT_DATE` in a refresh is the UTC day. Each, and why:
+/// - `TimeZone`: timestamptz output and input without an offset.
+/// - `DateStyle`: date and timestamp output, and the field order of input.
+/// - `IntervalStyle`: interval output.
+/// - `extra_float_digits`: float output precision.
+/// - `bytea_output`: bytea output.
+/// - `lc_monetary`: money output and input, `to_char`'s `L`.
+/// - `lc_numeric`: `to_char`'s `D` and `G`.
+/// - `lc_time`: `to_char`'s `TM` day and month names.
+/// - `timezone_abbreviations`: what an abbreviation in timestamptz input means.
+/// - `array_nulls`: whether `NULL` in array input is a null element.
+/// - `quote_all_identifiers`: `quote_ident`, `format('%I')` and deparsed SQL.
+/// - `transform_null_equals`: whether `x = NULL` parses as `x IS NULL`.
+/// - `standard_conforming_strings`: what a backslash in a string literal means.
+/// - `xmlbinary`: how bytea renders in XML.
+/// - `xmloption`: whether text casts to XML as a document or as content.
+/// - `gin_fuzzy_search_limit`: how many rows a GIN index scan returns.
+///
+/// `default_text_search_config` is a TVIEW's own: its creator's, pinned by the
+/// frames of its [`Owner`].
+pub const RENDER_SETTINGS: [(&CStr, &CStr); 16] = [
     (c"TimeZone", c"UTC"),
     (c"DateStyle", c"ISO, YMD"),
     (c"IntervalStyle", c"postgres"),
     (c"extra_float_digits", c"1"),
     (c"bytea_output", c"hex"),
+    (c"lc_monetary", c"C"),
+    (c"lc_numeric", c"C"),
+    (c"lc_time", c"C"),
+    (c"timezone_abbreviations", c"Default"),
+    (c"array_nulls", c"on"),
+    (c"quote_all_identifiers", c"off"),
+    (c"transform_null_equals", c"off"),
+    (c"standard_conforming_strings", c"on"),
+    (c"xmlbinary", c"base64"),
+    (c"xmloption", c"content"),
+    (c"gin_fuzzy_search_limit", c"0"),
 ];
 
 /// How the statements of a refresh are planned: as each says when it is kept
 /// (`crate::utils::spi::Plan`). A session's `force_generic_plan` would plan a
 /// lookup by an array parameter for ten keys (#235), and `force_custom_plan`
-/// would plan every lookup again at each call.
-pub const PLAN_SETTINGS: [(&CStr, &CStr); 1] = [(c"plan_cache_mode", c"auto")];
+/// would plan every lookup again at each call. Never JIT-compiled (#283): a
+/// refresh reads a few rows by key, or rebuilds a TVIEW once, and compiling its
+/// statements cost more than it saved whenever a cost estimate crossed
+/// `jit_above_cost`.
+pub const PLAN_SETTINGS: [(&CStr, &CStr); 2] = [(c"plan_cache_mode", c"auto"), (c"jit", c"off")];
 
 /// While alive, the [`RENDER_SETTINGS`] (and [`PLAN_SETTINGS`]) are in force; dropping it restores the
 /// session's values (an error's (sub)transaction abort restores them instead).
@@ -222,8 +629,16 @@ pub fn in_extension_work() -> bool {
 
 thread_local! {
     /// The `search_path` each open [`CatalogPath`] replaced: the caller's.
-    /// `None` for an [`AsOwner`], under which nothing the caller wrote is resolved.
+    /// `None` for an owner frame, under which nothing the caller wrote is resolved.
     static REPLACED_PATHS: RefCell<Vec<Option<CString>>> = const { RefCell::new(Vec::new()) };
+    /// How many owner frames are open, the innermost last.
+    static OPEN_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The current user when the outermost open frame opened.
+    static CALLER: std::cell::Cell<Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
+    /// The text search configurations owners carry ([`Owner::with_text_search`]).
+    static INTERNED: RefCell<Vec<&'static CStr>> = const { RefCell::new(Vec::new()) };
+    /// The temporary schema found to shadow no name, until a name changes.
+    static TEMP_CHECKED: std::cell::Cell<Option<Oid>> = const { std::cell::Cell::new(None) };
 }
 
 /// The session's `search_path`, as set.
@@ -299,6 +714,22 @@ unsafe fn set_local(name: &CStr, value: &CStr) {
 unsafe fn pin_settings() {
     for (name, value) in RENDER_SETTINGS.into_iter().chain(PLAN_SETTINGS) {
         // SAFETY: the caller opened the nest level.
+        unsafe { pin(name, value) };
+    }
+}
+
+/// Set `name` to `value` at the open nest level, unless it has that value
+/// already: setting some (`timezone_abbreviations` reads a file, the `lc_*`
+/// settings call `setlocale`) costs more than comparing.
+///
+/// SAFETY: the caller opened the nest level.
+unsafe fn pin(name: &CStr, value: &CStr) {
+    // SAFETY: a NUL-terminated name of a setting that exists; the result, when
+    // not null, is a NUL-terminated string valid until the setting changes.
+    let current = unsafe { pg_sys::GetConfigOption(name.as_ptr(), false, false) };
+    // SAFETY: as above.
+    if current.is_null() || unsafe { CStr::from_ptr(current) } != value {
+        // SAFETY: forwarded.
         unsafe { set_local(name, value) };
     }
 }

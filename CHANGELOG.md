@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The change report shows only the TVIEWs the caller may read** (#270).
+  `pg_tviews_flush_and_report()` leaves out the rows of a TVIEW the caller has no
+  table-level `SELECT` on, ids included, and lists its type in `omitted_types`; a
+  collection is listed only when the caller may read its child and parent TVIEWs. A
+  writer without `SELECT` on a TVIEW its write refreshed no longer fails 42501 (which
+  aborted the transaction) on the default call, nor learns that TVIEW's ids with
+  `include_data => false`.
+- **Hardening** (#271). `scripts/check-name-resolution.sh` reads whole SQL literals and
+  flags every form of a name resolved to an object (a fixture of each runs in CI); a new
+  regression test runs every entry point under a `search_path` whose first schema
+  shadows the operators and functions pg_tviews' SQL uses. Every workflow action is
+  pinned by commit and every installed tool by version. `UNSAFE_AUDIT.md` and
+  `SECURITY_AUDIT.md`, out of date, are removed; the security guide lists the
+  0.1.0-beta.34 review's findings and their fixes.
+- **One owner frame for everything derived from a TVIEW.** Analyzing, re-deriving
+  (`pg_tviews_reregister[_all]`, `create_or_replace`, a column or table rename, the
+  update script), refreshing, rebuilding, resyncing and health-checking a TVIEW plan and
+  run its SQL only as the TVIEW's owner, never as the role that triggered the work. The
+  owner frame pins `search_path = pg_catalog, pg_temp` and fixed values of every setting
+  values render or SQL parses under (`TimeZone`, `DateStyle`, `IntervalStyle`,
+  `extra_float_digits`, the locale settings, `default_text_search_config` as captured
+  at create, ...). Privileges inside a frame are decided for the role that called into
+  pg_tviews (docs/security/architecture.md).
+- **A writer's temporary objects never stand in for names the owner's code resolves.**
+  `pg_tviews_create` and `create_or_replace` refuse (`42P13`) a definition whose
+  refresh calls a function, or runs a trigger on its table, that sets a `search_path`
+  not ending in `pg_temp`; the hint shows `SET search_path = <schema>, pg_temp`. The
+  health check's `function_paths` component lists such functions of existing TVIEWs.
+  Before the owner's work runs for a role without the owner's privileges, a temporary
+  relation or type named like one in another schema refuses it (`42501`).
+- **Stored plans name relations by OID**; SQL is rendered from the OID when it runs,
+  so a renamed relation's old name can no longer be taken over. A TVIEW is
+  re-registered on its own table, found by OID.
+- **What a caller sees is what the caller may read.** Errors raised by owner-run work
+  reach other roles with their SQLSTATE but without values. `pg_tviews_check_health()`
+  checks only the TVIEWs whose owner the caller is a member of;
+  `pg_tviews_show_queue()`, `pg_tviews_show_replication()`, the change report and
+  `pg_tviews_resync`'s counts cover only TVIEWs the caller reads (SELECT on the table and
+  USAGE on its schema), and the report leaves out rows and collections under row
+  security. Resync reads the source rows once as the caller, so row security applies,
+  and refuses a source with row security active for the caller.
+- **Work on another role's objects needs the privilege PostgreSQL would require.**
+  Reading another role's TVIEW in a definition needs `TRIGGER` on its table. Catching up
+  a suspended TVIEW rebuilds it whole only for its owner. A refresh escalates to a
+  table-wide value lock only for a role that may write that table. Creating or
+  replacing a TVIEW locks only tables its caller may attach triggers to. The registration lock lives in
+  pg_tviews' own advisory-lock space, and a refused call takes none.
+- **Lock tags in `pg_locks` are keyed with a per-server secret** (value, relation and
+  registration tags), so they cannot be mapped back to the values they lock.
+  `pg_tviews_value_lock_tag(relation, column_name, value)` computes a tag for a
+  superuser debugging a wait.
+- **Backing views stay owner-only**: column-level grants on them are revoked too.
+
+### Added
+
+- **`pg_tviews_resync(source regclass, keys bigint[])`** (#280): recomputes the TVIEW
+  rows that given rows of a base table reach, as an `UPDATE` of them would, without
+  writing them or firing a trigger, for writes made while pg_tviews' triggers did not
+  fire. A key whose row is gone deletes the row of each TVIEW keyed by it. Needs `UPDATE`
+  on the table; returns the rows changed per TVIEW.
+
+### Changed
+
+- **A lookup filtered by constants no longer refreshes the whole TVIEW on every write**
+  (#284). A table read with no link to the key, filtered by equalities, `IN` lists or
+  `IS NULL` of its columns against constants (`(SELECT c.name FROM tb_category c WHERE
+  c.name = 'default')`), is still `all_keys`, but under `full_refresh` a write refreshes
+  the TVIEW in full only when an old or new row meets those conditions; otherwise the
+  rows the table's other reads reach are mapped as usual. On the issue's 2,000 orders,
+  inserting an unrelated category went from a full refresh to no refresh. The create
+  NOTICE says so; `tviews.registry` is unchanged (ADR 0157, amendment).
+- **Refresh statements never JIT-compile** (#283). pg_tviews pins `jit = off` for its
+  refresh statements, beside `plan_cache_mode = auto`, whatever the session or the
+  server says; the session's own setting is untouched. A refresh reads a few rows by key
+  or rebuilds a TVIEW once, and JIT compilation added its cost whenever an estimate
+  crossed `jit_above_cost`.
+
+### Fixed
+
+- **An `IS NULL` condition on the nullable side of an outer join is no longer taken as a
+  constant guard** (#284 follow-up): such a TVIEW could stay stale.
+- **Constant guards keep their type modifier**: `char(n)` and `bit(n)` constants were
+  stored as `char(1)`/`bit(1)`, and a TVIEW could stay stale.
+- **Creating a TVIEW waits for writes in flight to the tables it reads**, so a write
+  committed during the create is never missed. Creating or replacing a TVIEW now needs
+  `READ COMMITTED`, like writing to its tables.
+- **`pg_tviews_resync` on a partition resyncs through its partitioned table**; a table no
+  TVIEW reads is refused (`22023`). Resync and bulk enqueues respect
+  `pg_tviews.max_queue_size`.
+- **A GraphQL type name names one TVIEW**: a create or replace taking a name another
+  TVIEW holds is refused (`42710`). `pg_tview_meta.typename` is stored, unique.
+- **A catalog value loaded across a concurrent invalidation is not cached.**
+- **Every way a TVIEW goes frees its statistics slot** (`DROP SCHEMA … CASCADE`,
+  `DROP OWNED`), and a creation that does not commit takes none.
+- **A TVIEW's owner who is not a superuser can rename its table.**
+- **Non-integer TVIEW keys are read under the pinned render settings**, not the
+  writer's.
+
+### Performance
+
+- Collecting parent keys is linear in the keys (a fan-in of 96,000 parents: 9.8 s →
+  2.5 s), and many keys that appeared in one statement drive the parent lookup in the
+  backing view key by key (8,000 rows under stale statistics: 5.7 s → 0.2 s).
+- The check whether a restored, emptied TVIEW needs a refill is linear in its rows
+  (80,000 rows: 95 s → 2 s).
+
+### Build
+
+- `Cargo.lock` is tracked; the release fetches and publishes with `--locked`. Every
+  workflow declares least-privilege `permissions:`, and jsonb_delta is fetched by
+  commit.
+- confiture's TVIEW suites run at v1.45.0.
+
+### Upgrade notes (beta.35 → beta.36)
+
+- The update re-derives every TVIEW as its owner. It first checks that each owner can
+  still read what its TVIEW reads, and that no two TVIEWs share a GraphQL type name; it
+  refuses with the list otherwise, leaving the extension at beta.35.
+- Functions that a TVIEW calls with a `search_path` setting that does not end in
+  `pg_temp` are reported by a WARNING and by `pg_tviews_check_health()`'s
+  `function_paths`. Declare them `SET search_path = <schema>, pg_temp`.
+- A definition reading another role's TVIEW now needs `TRIGGER` on that TVIEW's table.
+
 ## [0.1.0-beta.35] - 2026-11-03
 
 ### Changed (breaking)

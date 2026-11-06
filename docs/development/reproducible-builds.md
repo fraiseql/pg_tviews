@@ -13,7 +13,7 @@ the same bytes.
 | Base image | `rust:1.98-slim-bookworm` (the channel of `rust-toolchain.toml`) |
 | PostgreSQL | 18 (`postgresql-server-dev-18` from apt.postgresql.org) |
 | pgrx | `cargo-pgrx` 0.17.0, `--locked`; the crate pins `pgrx = "=0.17.0"` |
-| Dependencies | `Cargo.lock` |
+| Dependencies | `Cargo.lock`, tracked: fetched with `cargo fetch --locked`, then built offline |
 | Flags | `SOURCE_DATE_EPOCH=1`; `RUSTFLAGS` with `opt-level=3`, no debug info, stripped symbols, PIC, RELRO + `BIND_NOW`, non-executable stack |
 
 The container runs `cargo pgrx package --no-default-features --features pg18` into

@@ -83,10 +83,14 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
         crate::utils::qualified_relname_from_oid(view)?,
         crate::utils::ident::quoted(&wanted)
     );
-    {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        crate::utils::spi::run_ddl(&sql)?;
-    }
+    // Renaming in the extension's schema needs CREATE there, which the view's
+    // owner is granted for the statement, as when it created the view.
+    let owner = crate::owner::relation_owner(view)?;
+    in_extension_schema_for(owner, || {
+        crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |_frame| {
+            crate::utils::spi::run_ddl(&sql)
+        })
+    })?;
     // Names are cached by OID: here at once, in other backends at commit.
     crate::cache::invalidate_all();
     // SAFETY: `table` is the TVIEW's existing table.
@@ -144,8 +148,9 @@ pub(crate) fn in_extension_schema_for<T>(
         } else {
             format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}")
         };
-        let _owner = crate::owner::AsOwner::of_extension()?;
-        crate::utils::spi::run_ddl(&sql)
+        crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+            crate::utils::spi::run_ddl(&sql)
+        })
     };
     privilege("GRANT")?;
     let result = ddl()?;
@@ -177,25 +182,49 @@ pub(crate) fn relation_name(oid: pg_sys::Oid) -> TViewResult<(String, String)> {
     }
 }
 
-/// Advisory lock class of TVIEW registrations (`"tvie"`).
-const REGISTRATION_LOCK_CLASS: i32 = 0x7476_6965;
-
 /// Hold the registration lock of `entity` until the transaction ends, so that
-/// calls registering, changing or dropping one entity run one after the other:
-/// `pg_advisory_xact_lock(<class>, hashtext(entity))`.
-///
-/// # Errors
-/// Returns an error if the lock cannot be taken.
-pub(crate) fn lock_entity(entity: &str) -> TViewResult<()> {
-    crate::utils::spi::run(
-        "SELECT pg_catalog.pg_advisory_xact_lock($1, pg_catalog.hashtext($2))",
-        &[
-            crate::utils::spi::int4(REGISTRATION_LOCK_CLASS),
-            crate::utils::spi::text(entity),
-        ],
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: format!("Lock the registration of TVIEW {entity}"),
-        pg_error: e.to_string(),
+/// calls registering, changing or dropping one entity run one after the other.
+pub(crate) fn lock_entity(entity: &str) {
+    crate::concurrency::lock_registration(entity);
+}
+
+/// `LOCK TABLE` in `mode`, as the table's owner.
+pub(crate) fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
+    let qualified = crate::utils::qualified_relname_from_oid(table)?;
+    crate::owner::AsOwner::run(crate::owner::Owner::of_table(table)?, |_frame| {
+        crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
     })
+}
+
+/// Hold SHARE on every table of `plan` whose writes refresh the TVIEW (one
+/// that gets triggers, or another TVIEW's table), each as its owner, until the
+/// transaction ends: a write in flight to one of them commits before the caller
+/// reads the view, and none starts until the caller commits. The caller holds
+/// `TRIGGER` on each ([`crate::dependency::check_installable`]). Writers lock a
+/// base table, then the TVIEW tables their flush writes: the tables that are no
+/// TVIEW's come first, each group in OID order.
+pub(crate) fn lock_tables_read(plan: &crate::dependency::TriggerPlan) -> TViewResult<()> {
+    let tview_tables = crate::catalog::row::table_oids()?;
+    let mut tables: Vec<pg_sys::Oid> = plan
+        .iter()
+        .filter(|&&(table, set)| {
+            set != crate::catalog::readers::TriggerSet::None || tview_tables.contains(&table)
+        })
+        .map(|&(table, _)| table)
+        .collect();
+    tables.sort_unstable_by_key(|table| (tview_tables.contains(table), table.to_u32()));
+    tables.dedup();
+    tables
+        .into_iter()
+        .try_for_each(|table| lock_as_owner(table, "SHARE"))
+}
+
+/// Whether the current user holds `TRIGGER` on `table`: it may attach work to
+/// the table's writes, and so lock them out while it does.
+pub(crate) fn may_trigger(table: pg_sys::Oid) -> TViewResult<bool> {
+    crate::utils::spi::one::<bool>(
+        "SELECT pg_catalog.has_table_privilege($1, 'TRIGGER')",
+        &[crate::utils::spi::oid(table)],
+    )
+    .map(|may| may == Some(true))
 }

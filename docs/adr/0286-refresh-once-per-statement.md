@@ -68,6 +68,10 @@ setting.
 - A subtransaction that rolls back undoes a refresh it ran with its writes: the work is
   deferred again and refreshed by the statement, as if the read had not happened.
 
+The `CALL` / `DO` frames and the mid-statement `AFTER … FOR EACH ROW` read stay limits
+(decided for 0.1.0-beta.36, D9): FraiseQL's mutations are `SELECT app.fn()` calls, none a
+procedure. Revisit if mutations move to procedures.
+
 ## Consequences
 
 - A mutation costs what its rows cost, however its statements are written. Same bench,

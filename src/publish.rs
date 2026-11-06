@@ -361,8 +361,9 @@ fn parent_ids(lookups: &[Lookup]) -> crate::TViewResult<HashMap<(String, String)
     }
     let mut found = HashMap::new();
     for (owner, at) in by_owner {
-        let _owner = crate::owner::AsOwner::of_role(owner);
-        parent_ids_of(lookups, &at, &mut found)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |_frame| {
+            parent_ids_of(lookups, &at, &mut found)
+        })?;
     }
     Ok(found)
 }

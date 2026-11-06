@@ -40,6 +40,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reregister_all(strict boolean DEFAULT false)`](#pg_tviews_reregister_all) | `TABLE(entity text, status text)` | operator, and owner of each TVIEW |
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
+| [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` on `source` |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
 | [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
 | [`pg_tviews_show_mapping_query(tview text, base_table oid)`](#pg_tviews_show_mapping_query) | `text` | owner |
@@ -58,6 +59,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reset_stats_all()`](#tviewsstats-and-pg_tviews_reset_stats) | `void` | operator |
 | [`pg_tviews_show_queue()`](#pg_tviews_show_queue) | `jsonb` | anyone |
 | [`pg_tviews_count_feed_gaps()`](#pg_tviews_count_feed_gaps) | `bigint` | anyone |
+| [`pg_tviews_value_lock_tag(relation regclass, column_name text, value text)`](#pg_tviews_value_lock_tag) | `bigint` | superuser |
 | [`pg_tviews_profile(tview text DEFAULT NULL, fanout_warn bigint DEFAULT 1000)`](#pg_tviews_profile) | `TABLE(…)` | anyone |
 | [`pg_tviews_version()`](#version-and-catalog) | `text` | anyone |
 | [`pg_tviews_catalog_revision()`](#version-and-catalog) | `integer` | anyone |
@@ -118,7 +120,7 @@ of a TVIEW, defaults included.
 | `uncascaded_tables` | object | `{}` | a policy per table, `{"public.tb_locale": "full_refresh"}`; a table the definition does not read, or whose writes are traced, is refused ([details](ddl.md#a-policy-per-table)) |
 | `function_reads` | object | `{}` | the tables each non-immutable function reads, `{"public.label_suffix()": ["public.tb_setting"]}` (`[]` for none); functions are named with their argument types ([details](ddl.md#functions-that-read-tables)) |
 | `time_refresh` | `"external"` or `null` | `null` | accept a definition reading the current time; `pg_tviews_refresh_time_dependent()` is called at the boundary ([details](ddl.md#time-dependent-tviews)) |
-| `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports |
+| `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports; one TVIEW per name: a name another TVIEW's rows have is refused (`42710`) |
 
 ### pg_tviews_create
 
@@ -234,7 +236,8 @@ Re-derives the TVIEW's stored propagation plan
 ([ADR 0203](../adr/0203-propagation-plan.md)) and its triggers from its definition with
 the installed release, without touching its rows, and clears `needs_reregister`.
 Returns `reregistered`. It is the repair a write or the health check names when a
-TVIEW's plan does not decode.
+TVIEW's plan does not decode. The definition is analyzed in the TVIEW's owner's frame,
+whoever calls ([owner frame](../security/architecture.md#owner-frame)).
 
 ```sql
 SELECT tviews.pg_tviews_reregister('post');
@@ -276,6 +279,43 @@ transaction ends, run as the TVIEW's owner. Requires owning the TVIEW (`42501`).
 
 ```sql
 SELECT tviews.pg_tviews_refresh('user');   -- tv_user, then tv_post, which embeds it
+```
+
+### pg_tviews_resync
+
+```text
+tviews.pg_tviews_resync(source regclass, keys bigint[])
+    RETURNS TABLE(tview text, rows_changed bigint)
+```
+
+Recomputes the TVIEW rows that the rows of base table `source` with primary keys `keys`
+reach, as an `UPDATE` of those rows would, without writing them: no source row changes
+and no trigger fires. For writes made while pg_tviews' triggers did not fire
+(`session_replication_role = replica`, triggers disabled, one table restored on its
+own). The rows' current images are mapped through every TVIEW that reads `source`, as a
+write's are, and one flush recomputes the rows they reach and the TVIEWs embedding
+those; only documents that changed are written. A key whose row is gone deletes the
+row of each TVIEW keyed by `source`'s key. A TVIEW that maps `source` through a row's
+links cannot find the rows a deleted or moved row left: rebuild it with
+`pg_tviews_refresh` after such writes. An `all_keys` table under `full_refresh`
+rebuilds the TVIEW. `source` needs a single-column integer primary key, and a TVIEW
+must read it (`22023` otherwise). A partition's rows are read from the partition and
+mapped through the TVIEWs reading its partitioned table.
+
+The caller needs `UPDATE` on `source`, what the write itself would need, and `SELECT`:
+the rows are read once, as the caller (`42501` without either). A table whose row
+security applies to the caller is refused (`42501`): ask its owner. Each TVIEW's owner
+maps the rows it is handed, without reading `source`, and each TVIEW refreshes as its
+owner. More distinct keys than `pg_tviews.max_queue_size` is `54000`, checked before
+anything else. Returns each TVIEW reading `source`, and each other TVIEW the flush
+changed, with the rows changed (`NULL`: rebuilt whole, or a TVIEW the caller may not
+read, or reads under row security).
+
+```sql
+SET session_replication_role = replica;
+UPDATE tb_user SET name = 'Alice B.' WHERE pk_user = 1;
+RESET session_replication_role;
+SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]);
 ```
 
 ### pg_tviews_refresh_time_dependent
@@ -411,7 +451,9 @@ tviews.pg_tviews_show_suspended() RETURNS text[]
 
 `pg_tviews_suspend_triggers()` defers refreshes for a bulk load; calls nest and roll
 back with a savepoint. When the outermost `pg_tviews_resume_triggers()` runs, every
-TVIEW changed while suspended, and every TVIEW reading one of them, is rebuilt.
+TVIEW changed while suspended, and every TVIEW reading one of them, is brought to its
+view: rebuilt (`TRUNCATE`) when the caller has the privileges of its owner, otherwise
+row by row, without blocking its readers.
 Resume without suspend is `55000`. Suspension ends with the transaction: an explicit
 `COMMIT` statement catches up the same way. An implicit commit cannot (several
 statements sent as one query string, a `COMMIT` inside a procedure): while writes are
@@ -453,9 +495,18 @@ now. With `reset`, the next call reports only
 later changes; a reset made in a subtransaction that rolls back is undone. With `types`
 (type names), only rows of those types are reported and counted against
 `max_entities`; the other changed types are listed in `omitted_types`; an unknown name
-fails with `22023`. When the rows were written with `pg_tviews.publish_changes =
+fails with `22023`. Rows of a TVIEW the caller may not read (no table-level `SELECT` on
+it, or no `USAGE` on its schema), or of a TVIEW dropped since, are left out the same way,
+asked for or not, and its type listed in `omitted_types`: the report discloses no more
+than reading the TVIEWs would, and never fails on one the caller may not read. Under row
+security, a changed row is listed only when a read as the caller returns it, with or
+without `include_data`; deleted rows cannot be read any more, so those of a TVIEW under
+row security are not listed and its type is in `invalidated_types`. When the rows were
+written with `pg_tviews.publish_changes =
 'rows'`, `collections` names the collections they left or joined, as the change feed's
-`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order. A child type in
+`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order, for the collections
+whose child and parent TVIEWs the caller may both read, and only the parents a read as
+the caller returns. A child type in
 `invalidated_types` (rows left out, or a parent the feed cannot list) stands for all its
 collections, which are then not listed. Otherwise the key is absent: nothing was
 captured. See [GraphQL cascade](../user-guides/graphql-cascade.md).
@@ -479,7 +530,9 @@ tviews.pg_tviews_rebuild_all(only_empty boolean DEFAULT true) RETURNS TABLE(enti
 - TVIEWs are LOGGED unless declared `logged: false`. Switch one with the `logged`
   option or `ALTER TABLE tv_<entity> SET [UN]LOGGED`.
 - `pg_tviews_show_replication` reports every TVIEW, `replica_readable` true for a
-  LOGGED one, and is safe on a standby.
+  LOGGED one, and is safe on a standby. `is_empty` is answered as the caller reads
+  the `tv_*` table: it is NULL unless the caller has `SELECT` on the table and
+  `USAGE` on its schema, and no row security applies to its reads.
 - `pg_tviews_rebuild_all` refills the UNLOGGED TVIEWs a crash restart, promotion or
   restore reset (`needs_rebuild`; every TVIEW with `only_empty => false`),
   dependencies first, each as its owner, and reports the rows each one inserted
@@ -513,8 +566,15 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `reregister` (TVIEWs marked
-`needs_reregister`), `triggers` and `tviews`. A check that cannot run is an `ERROR` row.
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `reregister`
+(TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
+an `ERROR` row.
+
+`function_paths` is an `ERROR` listing the functions a TVIEW's refresh runs (those its
+definition calls, through operators, aggregates and views, and the user triggers on its
+table) whose `search_path` setting does not end in `pg_temp`, with the setting that
+fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
+before the rule stays, and is reported here and warned about whenever it is re-derived.
 
 `contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
 yields rows (a restore that left the data out, a table emptied by hand). It reads each
@@ -571,7 +631,10 @@ the current transaction; the `direct_patch_*`, `view_recomputes`,
 over the session. Read it from the session doing the writes: another session sees its
 own, usually zero. Per-TVIEW counters for every session are in `tviews.stats`.
 `queued` lists the keys queued in the transaction; it is empty between statements,
-since every statement flushes.
+since every statement flushes. It lists only the keys of TVIEWs the caller may read
+(`SELECT` on the `tv_*` table and `USAGE` on its schema) with no row security applying to
+the caller; the types of the others are in `omitted_types`. `queue_size` counts every
+key.
 
 | Key | Meaning |
 |---|---|
@@ -592,6 +655,7 @@ since every statement flushes.
 | `value_locks`, `value_lock_escalations` | value and key locks this transaction took, and relations it locked in place of their values ([Concurrency](../concurrency.md)) |
 | `value_lock_waits`, `value_lock_wait_ms` | of those, the locks that weren't granted at once, and the time spent waiting for them |
 | `queued` | the keys queued in the transaction, as `[{"entity": …, "pk": …}, …]` |
+| `omitted_types` | the GraphQL type names of queued TVIEWs whose keys `queued` leaves out; absent when none is |
 
 ```sql
 BEGIN;
@@ -613,6 +677,27 @@ since the server started. Monotonic; any session reads it. A listener reads it w
 connects and on each heartbeat, and evicts everything when it moved
 ([gaps](../user-guides/change-feed.md#gaps-while-connected)). Without
 `shared_preload_libraries = 'pg_tviews'` nothing is counted and it fails with `55000`.
+
+### pg_tviews_value_lock_tag
+
+```text
+tviews.pg_tviews_value_lock_tag(relation regclass, column_name text, value text) RETURNS bigint
+```
+
+The `objid` of the value lock on `value` of `column_name` of `relation` (a table a
+TVIEW reads; a partitioned table's root), or, with `column_name` NULL, of the key
+`value` of the TVIEW table `relation` while a row is being created, to match against
+`pg_locks` ([Concurrency](../concurrency.md)). A value lock's tag is a hash keyed with
+a secret the server makes at start, so that no other role can tell which value a lock
+is on: `EXECUTE` is revoked from `PUBLIC`, and a caller that is not a superuser gets
+`42501`. A column `relation` lacks is `22023`.
+
+```sql
+SELECT l.pid, l.mode, l.granted
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.objsubid = 21622
+  AND l.objid::bigint = tviews.pg_tviews_value_lock_tag('tb_user', 'pk_user', '1');
+```
 
 ### pg_tviews_profile
 
@@ -685,10 +770,18 @@ pg_tviews follows the rules of `ALTER TABLE` and `REFRESH MATERIALIZED VIEW`
   explicit `COMMIT`, `pg_tviews.publish_changes`, `pg_tviews_count_feed_gaps()`,
   `tviews.registry` and `pg_tviews_flush_and_report(include_data => false)`. With
   `include_data` (the default), the report reads each reported row's `data` as the
-  caller, so it also needs `SELECT` on those `tv_*` tables (`42501` otherwise).
-- **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table; the caller
-  becomes its owner.
+  caller. Whatever a function returns about rows (the report, `pg_tviews_show_queue`,
+  `pg_tviews_show_replication`) comes only from `tv_*` tables the caller may read:
+  `SELECT` on the table and `USAGE` on its schema; under row security, only the rows a
+  read as the caller returns, or nothing. The others are left out, never an error
+  ([caller visibility](../security/architecture.md#caller-visibility)).
+- **Creating** a TVIEW requires `CREATE` on the schema of its `tv_*` table, and
+  `TRIGGER` on every table its definition reads, another role's `tv_*` table included;
+  the caller becomes its owner.
 - **Reading.** `tviews.registry` and `tviews.stats` are readable by any role.
+- **Errors.** An error raised while work runs as a TVIEW's owner reaches a caller
+  without the owner's privileges with its SQLSTATE and condition only; the server log
+  has it whole.
 
 A role that owns nothing is refused, and an operator is refused acting on one TVIEW
 it does not own:
@@ -719,14 +812,16 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 |---|---|---|
 | `42704` | `undefined_object` | a `tview` argument names no TVIEW (`pg_tviews_drop` without `if_exists`, …) |
 | `42P07` | `duplicate_table` | the TVIEW already exists (`pg_tviews_create`, `CREATE TABLE tv_* AS`) |
+| `42710` | `duplicate_object` | another TVIEW's rows already have the GraphQL type name (`pg_tviews_create`, `pg_tviews_create_or_replace`) |
 | `42601` | `syntax_error` | the definition does not parse, or is more than one `SELECT` |
 | `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
 | `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |
-| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function |
+| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function; a creator without `TRIGGER` on a table the definition reads; a temporary relation or type of the session named like one a TVIEW's owner resolves; `pg_tviews_resync` without `SELECT` or `UPDATE` on the table, or under its row security |
+| `42P13` | `invalid_function_definition` | a function the TVIEW's refresh runs (one its definition calls, a trigger on its table) sets a `search_path` that does not end in `pg_temp` |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |
 | `54001` | `statement_too_complex` | a flush over 1,000 entity batches (a loop: a trigger on a TVIEW table writing back what the refresh reads), or backing views nested more than 64 deep |
-| `54000` | `program_limit_exceeded` | refresh queue backpressure (`pg_tviews.max_queue_size`), or a statement's refresh over `pg_tviews.max_refresh_rows` |
+| `54000` | `program_limit_exceeded` | refresh queue backpressure (`pg_tviews.max_queue_size`), a statement's refresh over `pg_tviews.max_refresh_rows`, or more rows linked in one transaction than a role without `INSERT` or `UPDATE` on a table a TVIEW reads may lock one by one |
 | `55000` | `object_not_in_prerequisite_state` | the library is not in `shared_preload_libraries`, resume without suspend, refresh-all while suspended, a commit with refresh work still queued, an implicit commit with suspended writes |
 | `25000` | `invalid_transaction_state` | `PREPARE TRANSACTION` of a transaction that refilled a reset UNLOGGED TVIEW, or that changed TVIEW rows while `pg_tviews.publish_changes` is on |
 | `42883` | `undefined_function` | `jsonb_delta` is missing |

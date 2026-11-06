@@ -95,12 +95,12 @@ EXCEPTION WHEN OTHERS THEN
 END $f$;
 
 -- The previous release's catalog: update the extension.
-SELECT set_revision(10);
+SELECT set_revision(11);
 \c
 SET client_min_messages TO WARNING;
 DO $$ BEGIN
     IF coalesce(write_error(), '') NOT LIKE
-       '%library catalog revision%does not match the installed extension (10)%ALTER EXTENSION pg_tviews UPDATE%' THEN
+       '%library catalog revision%does not match the installed extension (11)%ALTER EXTENSION pg_tviews UPDATE%' THEN
         RAISE EXCEPTION '#137 FAIL: previous catalog not refused: %', write_error();
     END IF;
 END $$;

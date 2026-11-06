@@ -2,6 +2,8 @@
 //! (`recompute`), every row reconciled with it (`full`), and the direct patch of
 //! a TVIEW's own columns (`direct`).
 
+#[cfg(feature = "test-hooks")]
+mod diag;
 pub mod direct;
 pub mod full;
 pub mod recompute;
@@ -238,6 +240,15 @@ pub(crate) fn run_counted_upsert(
     let entity = &meta.entity_name;
     let qi_pk = ident::quoted(meta.key_column());
     let qi_key = ident::quoted(&meta.identity.column);
+    #[cfg(feature = "test-hooks")]
+    let doubled =
+        format!("SELECT * FROM ({source_sql}) a UNION ALL SELECT * FROM ({source_sql}) b");
+    #[cfg(feature = "test-hooks")]
+    let source_sql = if crate::config::test_duplicate_source() {
+        doubled.as_str()
+    } else {
+        source_sql
+    };
     // A UNION view returning several rows for one key is refused (ADR 0216) from
     // the rows the upsert reads, which then writes none: the view is read once.
     let (duplicate, unless_duplicate, duplicate_key) = if meta.plan.set_operation {
@@ -264,14 +275,20 @@ pub(crate) fn run_counted_upsert(
         meta.id_text(qi_tv),
         meta.reference_values(qi_tv, old.is_none())
     );
-    let (keys, rows, duplicate) = crate::utils::spi::connect_mut(|client| {
-        let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
-        Ok::<_, spi::Error>((
-            row.get::<Vec<String>>(1)?,
-            row.get::<pgrx::JsonB>(2)?,
-            row.get::<String>(3)?,
-        ))
-    })?;
+    let upsert = || {
+        crate::utils::spi::connect_mut(|client| {
+            let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
+            Ok::<_, spi::Error>((
+                row.get::<Vec<String>>(1)?,
+                row.get::<pgrx::JsonB>(2)?,
+                row.get::<String>(3)?,
+            ))
+        })
+    };
+    #[cfg(feature = "test-hooks")]
+    let (keys, rows, duplicate) = diag::upsert(qi_tv, &qi_pk, source_sql, args, upsert)?;
+    #[cfg(not(feature = "test-hooks"))]
+    let (keys, rows, duplicate) = upsert()?;
     if let Some(key) = duplicate {
         return Err(crate::TViewError::DuplicateKey {
             tview: qi_tv.to_string(),

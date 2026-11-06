@@ -3,13 +3,24 @@ use super::state;
 
 /// `RefreshLimit` when one more entry would take the queue past `limit`.
 fn check_queue_backpressure(limit: usize) -> crate::TViewResult<()> {
+    check_room(1, limit)
+}
+
+/// `RefreshLimit` when `more` new entries would take the queue past `limit`.
+fn check_room(more: usize, limit: usize) -> crate::TViewResult<()> {
     let size = state::get_queue_size();
-    if size >= limit {
-        return Err(crate::TViewError::RefreshLimit {
-            limit: crate::error::Limit::Queue { size, max: limit },
-        });
+    if size.saturating_add(more) > limit {
+        return Err(queue_full(size.saturating_add(more), limit));
     }
     Ok(())
+}
+
+/// The error of a queue that would hold `size` entries, past `max`.
+#[must_use]
+pub const fn queue_full(size: usize, max: usize) -> crate::TViewError {
+    crate::TViewError::RefreshLimit {
+        limit: crate::error::Limit::Queue { size, max },
+    }
 }
 
 /// Internal helper: enqueue a single refresh with explicit limit.
@@ -85,7 +96,13 @@ pub fn enqueue_refresh_all(entity: &str) {
 /// Deduplication is automatic (`HashSet`).
 /// Raises ERROR if `pg_tviews.max_queue_size` would be exceeded.
 pub fn enqueue_refresh_bulk(entity: &str, keys: Vec<KeyValue>) {
-    if let Err(e) = check_queue_backpressure(crate::config::max_queue_size()) {
+    let new = keys
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .filter(|key| !state::queue_contains(&RefreshKey::new(entity, (*key).clone())))
+        .count();
+    if let Err(e) = check_room(new, crate::config::max_queue_size()) {
         e.raise();
     }
     for key in &keys {
@@ -165,5 +182,15 @@ mod tests {
 
         // Verify queue only has 2 items (backpressure prevented the 3rd)
         assert_eq!(state::drain().queue.len(), 2);
+    }
+
+    #[test]
+    fn several_keys_at_once_fit_or_are_refused_together() {
+        state::clear();
+        enqueue_refresh_with_limit("user", KeyValue::Int(1), usize::MAX).unwrap();
+        assert!(check_room(2, 3).is_ok());
+        assert!(check_room(3, 3).is_err());
+        assert!(check_room(usize::MAX, usize::MAX - 1).is_err());
+        state::clear();
     }
 }

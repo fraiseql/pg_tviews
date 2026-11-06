@@ -27,8 +27,10 @@ WHERE severity <> 'info';
 ```
 
 `severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
-`metadata`, `plans`, `columns`, `seq_scans`, `contents`, `reregister`, `triggers` and
-`tviews`. `contents` warns about TVIEWs that are empty while their definition yields rows.
+`metadata`, `plans`, `columns`, `seq_scans`, `contents`, `function_paths`, `reregister`,
+`triggers` and `tviews`. `contents` warns about TVIEWs that are empty while their
+definition yields rows. `function_paths` is an error naming each function a refresh runs
+whose `search_path` does not end in `pg_temp`, with the fixed setting.
 `seq_scans` warns about TVIEWs whose mapping query (how writes to a base table map to
 TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows; it is
 planned again on each call with the current indexes and statistics, so an index
@@ -151,7 +153,10 @@ SELECT tviews.pg_tviews_show_queue();
 A write waits for a concurrent transaction that writes related rows: the locks are
 in `pg_locks` as advisory locks with `objsubid` 21622 (a join value, or the key of a
 row being created) and 21623 (a relation: its intent and escalated locks), `classid`
-naming the relation ([Concurrency](../concurrency.md)). Who waits for whom:
+naming the relation ([Concurrency](../concurrency.md)). Which value a lock is on is
+not shown: a superuser matches `objid` with
+[`pg_tviews_value_lock_tag`](../reference/api.md#pg_tviews_value_lock_tag). Who waits
+for whom:
 
 ```sql
 SELECT l.pid, c.relname AS relation,

@@ -8,11 +8,14 @@ on:
   # The release runs it before building anything.
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check formatting
@@ -23,6 +26,8 @@ jobs:
         run: scripts/check-layers.sh
       - name: Check no catalog SQL resolves an object name
         run: scripts/check-name-resolution.sh
+      - name: Check the name check flags every form it should
+        run: test/scripts/check-name-resolution-test.sh
       - name: Check every PL/pgSQL handler of all errors keeps its SQLSTATE
         run: scripts/check-plpgsql-handlers.sh
       - name: Check plans are read through the typed plan and the SQL decoders only
@@ -31,6 +36,10 @@ jobs:
         run: scripts/check-module-layers.sh
       - name: Check SPI is reached through src/utils/spi.rs only
         run: scripts/check-spi-facade.sh
+      - name: Check the lock is tracked, tokens are least-privilege and refs are commits
+        run: scripts/check-ci-hardening.sh
+      - name: Check the docs make no claim the code no longer keeps
+        run: scripts/check-doc-claims.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})
@@ -40,7 +49,7 @@ jobs:
       matrix:
         pg: ["16", "17", "18"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install PostgreSQL ${{ matrix.pg }} (PGDG)
@@ -71,7 +80,7 @@ jobs:
       matrix:
         pg: ["16", "17", "18"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Toolchain version comes from rust-toolchain.toml (bump it in a dedicated PR).
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install

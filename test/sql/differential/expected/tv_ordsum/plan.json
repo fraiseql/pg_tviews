@@ -64,5 +64,6 @@
       "tview": "line"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

@@ -5,6 +5,7 @@
 
 use crate::catalog::TviewMeta;
 use crate::error::{TViewError, TViewResult};
+use crate::owner::{AsOwner, Owner, OwnerFrame};
 use crate::utils::ident;
 
 /// Rebuild one TVIEW from its backing view (`TRUNCATE` + `INSERT … SELECT`), as
@@ -30,11 +31,11 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
         );
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
     }
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    crate::utils::spi::run(&format!("TRUNCATE {qi_tv}"), &[])?;
-    let inserted = crate::utils::spi::run_counted(&insert)?;
-    drop(owner);
+    let inserted = AsOwner::run(Owner::of_entity(entity)?, |frame| {
+        let (qi_tv, insert) = rebuild_statements(frame, entity)?;
+        crate::utils::spi::run(&format!("TRUNCATE {qi_tv}"), &[])?;
+        crate::utils::spi::run_counted(&insert)
+    })?;
     // Rebuilt from its view: its rows can be trusted again.
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
         TViewError::TviewNotFound {
@@ -59,10 +60,11 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
     if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)? {
         crate::concurrency::reads::lock_whole_read_set(&meta)?;
     }
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (qi_tv, insert) = rebuild_statements(&owner, entity)?;
-    crate::utils::spi::run(&format!("DELETE FROM {qi_tv}"), &[])?;
-    let inserted = crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))?;
+    let inserted = AsOwner::run(Owner::of_entity(entity)?, |frame| {
+        let (qi_tv, insert) = rebuild_statements(frame, entity)?;
+        crate::utils::spi::run(&format!("DELETE FROM {qi_tv}"), &[])?;
+        crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))
+    })?;
     crate::queue::log::record_rebuilt(entity)?;
     Ok(inserted)
 }
@@ -78,26 +80,21 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
 /// Returns error if the entity is not registered or the insert fails.
 pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     crate::concurrency::require_read_committed();
-    let owner = crate::owner::AsOwner::of_entity(entity)?;
-    let (_, insert) = rebuild_statements(&owner, entity)?;
-    crate::utils::spi::run(&insert, &[])?;
+    AsOwner::run(Owner::of_entity(entity)?, |frame| {
+        let (_, insert) = rebuild_statements(frame, entity)?;
+        crate::utils::spi::run(&insert, &[])
+    })?;
     crate::queue::log::record_rebuilt(entity)
 }
 
 /// The schema-qualified TVIEW table and the `INSERT … SELECT` that fills it from
 /// its backing view, once the view is known to return one row per key, with the
 /// view's own columns listed.
-/// Taking the owner's guard makes running the statements as anyone else
-/// unrepresentable.
-fn rebuild_statements(
-    _owner: &crate::owner::AsOwner,
-    entity: &str,
-) -> TViewResult<(String, String)> {
-    use crate::catalog::TviewMeta;
-
+fn rebuild_statements(frame: &OwnerFrame, entity: &str) -> TViewResult<(String, String)> {
     let meta = TviewMeta::load_by_entity(entity)?.ok_or_else(|| TViewError::TviewNotFound {
         name: entity.to_string(),
     })?;
+    frame.require_owner_of(meta.tview_oid)?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let view_columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
@@ -119,15 +116,45 @@ fn rebuild_statements(
     Ok((qi_tv, insert))
 }
 
+/// Bring `entity`'s rows to its view's as its owner, under the lock a write's
+/// full refresh takes: rows change one by one, and no reader waits. The rows
+/// then match the view and can be trusted again. Returns the `pk_<entity>` of
+/// every row that changed.
+///
+/// # Errors
+/// Returns an error if the reconcile fails.
+pub fn reconcile_as_owner(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
+    let changed = AsOwner::run(Owner::of_tview(meta)?, |frame| {
+        reconcile_locked(frame, entity, meta)
+    })?;
+    crate::lifecycle::validity::mark(entity, meta.tview_oid)?;
+    Ok(changed)
+}
+
+/// [`reconcile`], once every refresh of the TVIEW's rows waits for it, and it
+/// for them: every row may change.
+pub(crate) fn reconcile_locked(
+    frame: &OwnerFrame,
+    entity: &str,
+    meta: &TviewMeta,
+) -> TViewResult<Vec<i64>> {
+    crate::concurrency::lock_relation(meta.tview_oid.to_u32(), crate::concurrency::Side::Writer);
+    reconcile(frame, entity, meta)
+}
+
 /// Bring the rows of a TVIEW's table to those of its backing view with three
 /// statements that touch only rows that change, journaling each change. Rows
 /// that leave go first, so a unique index holds throughout. Returns the
 /// `pk_<entity>` of every row deleted, updated or inserted.
-pub(crate) fn reconcile(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64>> {
+pub(crate) fn reconcile(
+    frame: &OwnerFrame,
+    entity: &str,
+    meta: &TviewMeta,
+) -> TViewResult<Vec<i64>> {
     use crate::queue::log::Change;
+    frame.require_owner_of(meta.tview_oid)?;
     crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
-    let _pin = crate::owner::RenderPin::new();
     // Every row is computed: writers of anything they read wait, and are waited for.
     crate::concurrency::reads::lock_whole_read_set(meta)?;
 

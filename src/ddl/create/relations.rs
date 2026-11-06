@@ -15,12 +15,9 @@ use pgrx::pg_sys;
 /// the unique index on `pk_<entity>` a DISTINCT ON TVIEW of beta.22 had, and
 /// add the primary key a table created without one lacks (a DISTINCT ON key named
 /// `identifier`, `fk_*` or `*_id`). A primary key on another column is refused.
-pub(crate) fn key_table_on_identity(
-    schema_name: &str,
-    tview_name: &str,
-    identity: &str,
-) -> TViewResult<()> {
-    let table = relation_oid(schema_name, tview_name)?;
+pub(crate) fn key_table_on_identity(table: pg_sys::Oid, identity: &str) -> TViewResult<()> {
+    let (schema_name, tview_name) = crate::ddl::relation_name(table)?;
+    let (schema_name, tview_name) = (schema_name.as_str(), tview_name.as_str());
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
     let catalog = |e: TViewError| TViewError::CatalogError {
         operation: format!("Read the keys of {qualified}"),

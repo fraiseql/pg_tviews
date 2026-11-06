@@ -557,6 +557,8 @@ impl Walker<'_> {
                 Ok(RteInfo::Base(self.graph.occurrences.len() - 1))
             }
             b'v' => {
+                // The owner's privilege, not a caller's: registration analyzes
+                // the view in the owner's frame, as every refresh reads it.
                 // SAFETY: an ACL check by OID for the current user.
                 let readable = unsafe {
                     pg_sys::pg_class_aclcheck(
@@ -681,6 +683,7 @@ impl Walker<'_> {
                     }
                     for qual in conjuncts((*from).quals) {
                         self.predicate(qual, Origin::Required);
+                        self.guard(qual, None);
                     }
                     // A positive EXISTS / IN conjunct of WHERE must hold for every row.
                     for qual in conjuncts((*from).quals) {
@@ -701,6 +704,12 @@ impl Walker<'_> {
                             _ => Origin::None,
                         };
                         self.predicate(qual, origin);
+                        match (*join).jointype {
+                            pg_sys::JoinType::JOIN_INNER => self.guard(qual, None),
+                            pg_sys::JoinType::JOIN_LEFT => self.guard(qual, Some(&right)),
+                            pg_sys::JoinType::JOIN_RIGHT => self.guard(qual, Some(&left)),
+                            _ => {}
+                        }
                     }
                     self.sublinks((*join).quals, flags, false)?;
                     // Above this join, its nullable side may be NULL-extended.

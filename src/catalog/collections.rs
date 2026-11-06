@@ -52,7 +52,7 @@ pub type OldKeys = std::collections::HashMap<i64, Vec<Option<String>>>;
 
 /// SQL over the catalog row of [`super::meta_select`]: the TVIEW's collections, a
 /// `jsonb` array of `[column, parent table, parent oid, parent column, its type,
-/// id kind, parent entity, parent typename option]`, the parent of each reference
+/// id kind, parent entity, parent type name]`, the parent of each reference
 /// the one `tviews.references` marks `chosen`, as `tviews.registry` publishes.
 pub(super) fn collections_sql() -> String {
     let schema = crate::utils::ext_schema();
@@ -64,7 +64,7 @@ pub(super) fn collections_sql() -> String {
                      EXISTS (SELECT FROM pg_catalog.pg_attribute ia \
                       WHERE ia.attrelid = x.parent_table AND ia.attname = 'id' \
                         AND ia.attnum > 0 AND NOT ia.attisdropped), \
-                     x.parent, pm.graphql_typename) \
+                     x.parent, pm.typename) \
                  ORDER BY x.column_name) \
           FROM {schema}.references x \
           JOIN {schema}.pg_tview_meta pm ON pm.entity = x.parent \
@@ -103,7 +103,7 @@ pub(super) fn decode(
                 parent_column,
                 parent_type: text(4)?,
                 parent_id: (row.get(5)?.as_bool() == Some(true)).then_some(PublicId),
-                parent_typename: super::typename(&parent_entity, text(7)).into(),
+                parent_typename: text(7)?.into(),
             }))
         })
         .collect()
@@ -284,7 +284,7 @@ mod tests {
                     "integer",
                     true,
                     "user",
-                    null
+                    "User"
                 ],
                 [
                     "fk_post",
@@ -304,7 +304,7 @@ mod tests {
                     "uuid",
                     "string",
                     "doc",
-                    null
+                    "Doc"
                 ]
             ])),
         )
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(&*c[0].parent_typename, "User");
         assert!(c[0].parent_keyed_by_pk);
         assert_eq!(c[1].parent_id, None, "a parent without an id column");
-        assert_eq!(&*c[1].parent_typename, "Article", "the typename option");
+        assert_eq!(&*c[1].parent_typename, "Article");
         assert!(!c[2].parent_keyed_by_pk, "a parent named by another column");
         assert!(decode(&Rc::from("Comment"), None).is_empty());
     }

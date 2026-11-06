@@ -23,6 +23,9 @@ thread_local! {
     /// between (`None`: a relation is gone).
     static FANOUT_VIAS: crate::cache::Memo<(String, u32), Option<String>> =
         crate::cache::Memo::new();
+    /// `(entity, relid)` → the rendered guard of an `all_keys` table (`None`: a
+    /// relation is gone).
+    static GUARDS: crate::cache::Memo<(String, u32), Option<String>> = crate::cache::Memo::new();
 }
 
 /// The query that maps changed rows of `base_table`, read from a relation named
@@ -97,7 +100,7 @@ pub(super) enum Route {
     /// They map to no key.
     Nothing,
     /// An `all_keys` table under `full_refresh`: the whole TVIEW, if any row
-    /// changed.
+    /// changed (and met the table's guard, when it has one).
     FullRefresh,
     /// A mapping query over the changed rows (`delta`, see [`delta_sql`]).
     Mapped { delta: String },
@@ -123,24 +126,70 @@ fn route(
         && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
         && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) };
-    // The links are columns it reads: unchanged when those are.
+    // The links are columns it reads: unchanged when those are. A virtual
+    // generated column is NULL in the transition tables, so one among the links
+    // counts as changed; the stored ones compare as they are.
     crate::concurrency::note_write(Some(mapping), event, |links| {
-        // SAFETY: an AFTER statement trigger's TriggerData.
-        computed.is_some()
+        (computed.is_some() && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
+            // SAFETY: an AFTER statement trigger's TriggerData.
             || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
     });
     if reads_same {
         return Ok(Route::Nothing);
     }
+    let delta = || delta_sql(entity, table_oid, event, &mapping.attnums);
     Ok(match mapping.kind {
+        // A guarded table's rows that meet none of its unlinked reads' conditions
+        // change only what its linked reads reach (#284).
+        MappingKind::AllKeys
+            if full_refresh && !guard_met(trigger, entity, mapping, &delta()?)? =>
+        {
+            if mapping.sql.is_some() {
+                Route::Mapped { delta: delta()? }
+            } else {
+                Route::Nothing
+            }
+        }
         MappingKind::AllKeys if full_refresh => Route::FullRefresh,
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
-        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => Route::Mapped {
-            delta: delta_sql(entity, table_oid, event, &mapping.attnums)?,
-        },
+        MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
+            Route::Mapped { delta: delta()? }
+        }
         _ => Route::Nothing,
     })
+}
+
+/// Whether a changed row (`delta`) of an `all_keys` table meets the conditions of
+/// one of the reads that leave it unmapped: true without a guard, or when a
+/// relation the guard reads is gone.
+fn guard_met(
+    trigger: &PgTrigger<'_>,
+    entity: &str,
+    mapping: &KeyMapping,
+    delta: &str,
+) -> TViewResult<bool> {
+    if mapping.guard.is_none() {
+        return Ok(true);
+    }
+    let key = (entity.to_string(), mapping.relid);
+    let guard = if let Some(guard) = GUARDS.with(|m| m.get(&key)) {
+        guard
+    } else {
+        let guard = render_watched(mapping.guard.as_deref().unwrap_or_default())?;
+        GUARDS.with(|m| m.insert(key, guard.clone()));
+        guard
+    };
+    let Some(guard) = guard else {
+        return Ok(true);
+    };
+    Ok(!lookup(trigger, entity, &KeyType::Int, delta, &guard)?.is_empty())
+}
+
+/// Whether column `attnum` of table `relid` is a virtual generated column.
+fn is_virtual(relid: Oid, attnum: i16) -> bool {
+    // SAFETY: a catalog lookup by OID and attribute number.
+    unsafe { pg_sys::get_attgenerated(relid, attnum).cast_unsigned() == b'v' }
 }
 
 /// A TVIEW a statement's rows reach: its entity, catalog row and route.
@@ -441,23 +490,24 @@ fn reached_through(
     let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
     let args = lookup.args();
     let plan = lookup.plan();
-    let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
-        return Ok(None);
-    };
-    let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
-        patches.iter().map(|(key, fields)| (*key, fields)).collect();
-    let mut reached = Vec::with_capacity(found.len());
-    for row in &found {
-        let parse = |i: usize| row.get(i)?.as_deref()?.parse::<i64>().ok();
-        let (Some(key), Some(value)) = (parse(0), parse(1)) else {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+        let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
             return Ok(None);
         };
-        if let Some(fields) = fields.get(&key) {
-            reached.push((value, (*fields).clone()));
+        let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
+            patches.iter().map(|(key, fields)| (*key, fields)).collect();
+        let mut reached = Vec::with_capacity(found.len());
+        for row in &found {
+            let parse = |i: usize| row.get(i)?.as_deref()?.parse::<i64>().ok();
+            let (Some(key), Some(value)) = (parse(0), parse(1)) else {
+                return Ok(None);
+            };
+            if let Some(fields) = fields.get(&key) {
+                reached.push((value, (*fields).clone()));
+            }
         }
-    }
-    Ok(Some(reached))
+        Ok(Some(reached))
+    })
 }
 
 /// The rows of a two-hop lookup (`sql`: key, lookup value, the value's lock

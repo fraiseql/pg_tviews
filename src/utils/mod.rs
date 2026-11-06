@@ -3,6 +3,7 @@ use pgrx::prelude::*;
 
 pub mod ident;
 pub mod lexer;
+pub mod shmem;
 pub mod spi;
 
 /// Emit an internal diagnostic: a `DEBUG1` message, visible with

@@ -18,6 +18,8 @@
 //! | `pg_tviews.direct_patch_enabled` | bool | true | superuser, hidden | Direct-patch fast path |
 //! | `pg_tviews.max_queue_size` | int | 1000000 | superuser, hidden | Refresh keys a transaction may queue |
 //! | `pg_tviews.test_skip_ctas_intercept` | bool | false | superuser, hidden | Test builds only (`test-hooks`) |
+//! | `pg_tviews.test_diag_21000` | bool | false | superuser, hidden | Test builds only: log what a 21000 upsert conflicted with (#278) |
+//! | `pg_tviews.test_duplicate_source` | bool | false | superuser, hidden | Test builds only: every refresh source returns each row twice |
 //! | `pg_tviews.auto_rebuild_databases` | string | `*` | postmaster | Databases whose reset UNLOGGED TVIEWs are rebuilt after recovery: `*` every one, a list, or empty for none |
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
@@ -82,6 +84,10 @@ static TABLE_CACHE_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true)
 static DIRECT_PATCH_ENABLED_GUC: GucSetting<bool> = GucSetting::<bool>::new(true);
 #[cfg(feature = "test-hooks")]
 static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+#[cfg(feature = "test-hooks")]
+static TEST_DIAG_21000_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+#[cfg(feature = "test-hooks")]
+static TEST_DUPLICATE_SOURCE_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"*"));
 
@@ -197,6 +203,27 @@ fn register_diagnostics() {
         GucContext::Suset,
         GucFlags::NO_SHOW_ALL,
     );
+    #[cfg(feature = "test-hooks")]
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.test_diag_21000",
+        c"TEST ONLY: log what a refresh upsert failing with 21000 conflicted with.",
+        c"Runs each refresh upsert in a subtransaction and, on 21000, logs its keys, the \
+          duplicate source keys and the conflicting rows before re-raising (#278). Never \
+          enable in production.",
+        &TEST_DIAG_21000_GUC,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    #[cfg(feature = "test-hooks")]
+    GucRegistry::define_bool_guc(
+        c"pg_tviews.test_duplicate_source",
+        c"TEST ONLY: make every refresh source return each row twice.",
+        c"Forces the 21000 an upsert raises on a key it meets twice, to test \
+          pg_tviews.test_diag_21000. Never enable in production.",
+        &TEST_DUPLICATE_SOURCE_GUC,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
 }
 
 /// Settings read by the postmaster: defined only while the library is preloaded.
@@ -296,6 +323,20 @@ pub fn direct_patch_enabled() -> bool {
 #[must_use]
 pub fn test_skip_ctas_intercept() -> bool {
     TEST_SKIP_CTAS_INTERCEPT_GUC.get()
+}
+
+/// TEST ONLY: whether a refresh upsert logs what a 21000 conflicted with.
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn test_diag_21000() -> bool {
+    TEST_DIAG_21000_GUC.get()
+}
+
+/// TEST ONLY: whether every refresh source returns each row twice.
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn test_duplicate_source() -> bool {
+    TEST_DUPLICATE_SOURCE_GUC.get()
 }
 
 /// The databases whose reset UNLOGGED TVIEWs are rebuilt after recovery.

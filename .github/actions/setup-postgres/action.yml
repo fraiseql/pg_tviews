@@ -11,6 +11,7 @@ inputs:
   jsonb-delta-repo:
     required: true
   jsonb-delta-ref:
+    description: jsonb_delta commit SHA (40 hex)
     required: true
 runs:
   using: composite
@@ -61,9 +62,13 @@ runs:
       shell: bash
       env:
         PG_MAJOR: ${{ inputs.pg-major }}
+        JSONB_DELTA_REPO: ${{ inputs.jsonb-delta-repo }}
+        JSONB_DELTA_REF: ${{ inputs.jsonb-delta-ref }}
       run: |
-        git clone --depth 1 --branch "${{ inputs.jsonb-delta-ref }}" \
-          "${{ inputs.jsonb-delta-repo }}" /tmp/jsonb_delta
+        # A commit SHA: fetched by itself, never a branch or tag that can move.
+        git init -q /tmp/jsonb_delta
+        git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}"
+        git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
         cd /tmp/jsonb_delta
         cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR}" \
           --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo

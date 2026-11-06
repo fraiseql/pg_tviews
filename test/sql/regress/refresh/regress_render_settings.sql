@@ -108,4 +108,52 @@ SELECT keeps_settings($$UPDATE tb_event SET f = 1.0 / 3 WHERE pk_event = 1$$);
 SELECT assert_pinned('tv_event', 'pk_event', 'a cascade (tv_event)');
 SELECT assert_pinned('tv_log', 'pk_log', 'a cascade (tv_log)');
 
+-- 7. A writer whose role sets every other setting values render or SQL parses
+--    under: the locale categories (to a non-C locale when the cluster has one),
+--    the time zone abbreviations, array_nulls, quote_all_identifiers,
+--    transform_null_equals, standard_conforming_strings and the text search
+--    configuration (the TVIEW keeps its creator's).
+SELECT current_user AS me \gset
+SELECT coalesce((SELECT collcollate FROM pg_collation WHERE collprovider = 'c'
+                 AND collcollate ~ '^(fr_FR|de_DE|es_ES|it_IT)' ORDER BY 1 LIMIT 1), 'C') AS loc \gset
+RESET ALL;
+CREATE FUNCTION null_eq(x int) RETURNS text LANGUAGE sql IMMUTABLE
+    AS $$ SELECT CASE WHEN x = NULL THEN 'eq' ELSE 'ne' END $$;
+CREATE FUNCTION esc_len() RETURNS int LANGUAGE sql IMMUTABLE AS $$ SELECT length('a\b') $$;
+CREATE TABLE tb_misc (pk_misc bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                      amount money, n numeric, d date, body text, tag text, arr text, stamp text,
+                      nul int);
+INSERT INTO tb_misc VALUES (1, default, 1234.5, 1234.5, '2026-12-25', 'running dogs', 'abc',
+                            '{a,NULL}', '2026-01-01 12:00 IST', NULL);
+SELECT tviews.pg_tviews_create('tv_misc', $q$
+    SELECT m.pk_misc, m.id, jsonb_build_object(
+        'money', m.amount::text, 'num', to_char(m.n, '9G999D99'), 'month', to_char(m.d, 'TMMonth'),
+        'ts', to_tsvector(m.body)::text, 'ident', quote_ident(m.tag), 'arr', m.arr::text[],
+        'stamp', m.stamp::timestamptz, 'nulleq', public.null_eq(m.nul), 'esc', public.esc_len(),
+        'v', m.n) AS data
+    FROM public.tb_misc m $q$);
+DROP ROLE IF EXISTS regress_rs_writer;
+CREATE ROLE regress_rs_writer LOGIN;
+GRANT USAGE ON SCHEMA tviews TO regress_rs_writer;
+GRANT SELECT, UPDATE, INSERT ON tb_misc TO regress_rs_writer;
+SELECT format('ALTER ROLE regress_rs_writer SET %s = %L', k, v) FROM (VALUES
+    ('lc_monetary', :'loc'), ('lc_numeric', :'loc'), ('lc_time', :'loc'),
+    ('timezone_abbreviations', 'India'), ('array_nulls', 'off'),
+    ('quote_all_identifiers', 'on'), ('transform_null_equals', 'on'),
+    ('standard_conforming_strings', 'off'), ('escape_string_warning', 'off'),
+    ('default_text_search_config', 'pg_catalog.simple'),
+    ('TimeZone', 'Asia/Tokyo'), ('extra_float_digits', '-3')) s(k, v) \gexec
+\c - regress_rs_writer
+UPDATE tb_misc SET n = n + 1;
+INSERT INTO tb_misc VALUES (2, default, 7, 7, '2026-01-31', 'jumped', 'Order', '{NULL}',
+                            '2026-06-01 00:00 IST', 1);
+\c - :me
+SET client_min_messages TO WARNING;
+\set VERBOSITY terse
+SELECT assert_pinned('tv_misc', 'pk_misc', 'a writer with role settings');
+
 SELECT 'issue #200 render settings: PASS' AS result;
+
+DROP EXTENSION pg_tviews CASCADE;
+DROP OWNED BY regress_rs_writer;
+DROP ROLE regress_rs_writer;

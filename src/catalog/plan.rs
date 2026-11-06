@@ -182,6 +182,7 @@ mod tests {
                 column: "pk_post".into(),
                 type_name: "bigint".into(),
             },
+            text_search: Some("pg_catalog.english".into()),
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);

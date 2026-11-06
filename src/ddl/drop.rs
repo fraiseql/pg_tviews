@@ -25,7 +25,12 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     let crate::catalog::resolve::Name { schema, entity } =
         crate::catalog::resolve::parse(tview_name)?;
     let entity_name = entity.as_str();
-    super::lock_entity(entity_name)?;
+    // A role that may not drop it takes no lock; checked again under the lock.
+    // A name no TVIEW has takes none either: there is nothing to drop, and the
+    // lock would delay the role creating it.
+    if require_owner_of(entity_name)?.is_some() {
+        super::lock_entity(entity_name);
+    }
 
     // Check if TVIEW exists (in the named schema, if one is named)
     let exists = crate::catalog::row::exists(entity_name)?
@@ -47,19 +52,7 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
         return Ok(false);
     }
 
-    // Load metadata to get OIDs for schema-safe drops
-    // Read leniently: dropping a TVIEW needs its relations, not its plan.
-    let meta = crate::catalog::TviewMeta::load_to_rederive(entity_name).map_err(|e| {
-        TViewError::SpiError {
-            query: "Load TviewMeta by entity".to_string(),
-            error: e.to_string(),
-        }
-    })?;
-    if let Some(ref m) = meta
-        && let Some(owned) = owned_relation(m)?
-    {
-        crate::owner::require_owner(owned, &format!("tv_{entity_name}"))?;
-    }
+    let meta = require_owner_of(entity_name)?;
 
     // The tables whose triggers serve it, from its stored plan, not through the
     // backing view, which may already be gone when the drop follows a base table
@@ -77,7 +70,6 @@ pub fn drop_tview(tview_name: &str, if_exists: bool, cascade: bool) -> TViewResu
     // `DROP TABLE tv_* CASCADE` removes dependent objects instead of failing.
     if let Some(ref m) = meta {
         drop_by_oid(m.tview_oid, "TABLE", cascade)?;
-        crate::stats::forget(m.tview_oid);
     }
 
     // Drop the backing view (schema-resolved via OID)
@@ -145,8 +137,9 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
 /// that dropped the TVIEW's table need not own it.
 fn drop_backing_view(entity: &str) -> TViewResult<()> {
     if let Some(view) = crate::catalog::queries::backing_view(entity)? {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        drop_by_oid(view, "VIEW", true)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            drop_by_oid(view, "VIEW", true)
+        })?;
     }
     Ok(())
 }
@@ -166,8 +159,9 @@ pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
             &args,
         )?;
         if present == Some(true) {
-            let _owner = crate::owner::AsOwner::of_table(view)?;
-            drop_by_oid(view, "VIEW", true)?;
+            crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+                drop_by_oid(view, "VIEW", true)
+            })?;
         }
     }
     Ok(())
@@ -186,8 +180,9 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
         return Ok(false);
     };
     {
-        let _owner = crate::owner::AsOwner::of_table(view)?;
-        drop_by_oid(view, "VIEW", false)?;
+        crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
+            drop_by_oid(view, "VIEW", false)
+        })?;
     }
     notice!(
         "pg_tviews: dropped {schema}.{name}, a backing view no TVIEW is registered with \
@@ -228,6 +223,22 @@ fn drop_by_oid(oid: pg_sys::Oid, kind: &str, cascade: bool) -> TViewResult<()> {
 /// The relation whose owner may drop the TVIEW: its table, or its view when the
 /// table is gone (dropped where the hook did not run). `None` when both are gone:
 /// the registration is all that is left, and any role may remove it.
+/// `entity`'s metadata, read leniently (dropping a TVIEW needs its relations,
+/// not its plan), once the caller is known to own the TVIEW.
+fn require_owner_of(entity: &str) -> TViewResult<Option<crate::catalog::TviewMeta>> {
+    let meta =
+        crate::catalog::TviewMeta::load_to_rederive(entity).map_err(|e| TViewError::SpiError {
+            query: "Load TviewMeta by entity".to_string(),
+            error: e.to_string(),
+        })?;
+    if let Some(ref m) = meta
+        && let Some(owned) = owned_relation(m)?
+    {
+        crate::owner::require_owner(owned, &format!("tv_{entity}"))?;
+    }
+    Ok(meta)
+}
+
 fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys::Oid>> {
     let args = [meta.tview_oid, meta.view_oid].map(crate::utils::spi::oid);
     crate::utils::spi::connect(|client| {
@@ -249,7 +260,10 @@ fn owned_relation(meta: &crate::catalog::TviewMeta) -> TViewResult<Option<pg_sys
 
 /// Drop metadata record from `pg_tview_meta`
 fn drop_metadata(entity_name: &str) -> TViewResult<()> {
-    crate::catalog::queries::delete(entity_name)?;
+    // However the TVIEW went, its statistics slot is free.
+    if let Some(table) = crate::catalog::queries::delete(entity_name)? {
+        crate::stats::forget(table);
+    }
     // A TVIEW created later under the same entity starts untrusted.
     crate::lifecycle::validity::forget(entity_name)
 }

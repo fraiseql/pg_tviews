@@ -4,7 +4,8 @@
   amended for #182 and #183 (see [Amendment](#amendment-182-183-arrays-computed-columns-recursion))
   and for the default policy (see [Amendment](#amendment-untraceable-reads-fail-at-create)),
   and for #187, #188 and #189 (see [Amendment](#amendment-187-188-189-window-partitions-union-branch-keys-materialized-views)),
-  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table));
+  and for #191 (see [Amendment](#amendment-191-reads-of-another-tviews-table)),
+  and for #284 (see [Amendment](#amendment-284-reads-filtered-by-constants));
   amended by [ADR 0203](0203-propagation-plan.md): this analysis derives the TVIEW's stored plan
   (`pg_tview_meta.plan` replaced `key_mappings` and `cascade_paths` in 0.1.0-beta.27), and
   `sqlparser` no longer takes part in analysis
@@ -284,3 +285,48 @@ lookup that reads a table (#193).
 - **Per-table policy (#195).** The policy of an `all_keys` table is its own
   `uncascaded_tables` entry, else the TVIEW's: the delta triggers, the matview
   REFRESH hook and propagation coverage read it per table.
+
+## Amendment (#284): reads filtered by constants
+
+A table read once with no link to the key, as a lookup
+(`(SELECT c.name FROM tb_category c WHERE c.name = 'default')`), made the whole table
+`all_keys`; under `full_refresh` every write to it refreshed the TVIEW in full, and its
+other reads' mapping went unused.
+
+- **Guards.** The walk records, per occurrence, the conjuncts of a `WHERE`, of an
+  inner join's condition, or of an outer join's condition on its nullable side, that
+  compare one column of a table of that level's own range table with constants:
+  `col = const`, `col = ANY (<constant array>)` (`IN (…)`), `col IS NULL`. A row
+  failing one of them is never read by that occurrence, whatever happens above it
+  (`WHERE` applies before grouping, windows, `DISTINCT` and `LIMIT`). Any subset of a
+  row's conditions is a necessary one, so the other conjuncts are simply not used.
+  That holds only for a condition a NULL-extended row of the occurrence fails: a
+  strict one (`=`, `IN`). `col IS NULL` over an occurrence an outer join below the
+  condition may NULL-extend is met by the NULL-extended row, while a real row failing
+  it still changes the view (an anti-join on a flag row, `LEFT JOIN tb_flag f ON …
+  WHERE f.pk_flag IS NULL`): it is not a guard. In an outer join's own condition,
+  before that join NULL-extends anything, it still is.
+  A condition that is not sound in this sense is never recorded as a guard
+  (0.1.0-beta.36); an occurrence left with no guard keeps the table unguarded.
+- **Constants round-trip exactly** (0.1.0-beta.36). A guard is stored as SQL and
+  parsed back at each write. Every constant, cast, element cast and `IN` list the walk
+  renders keeps its type modifier (`exprTypmod`): `'ab'::char(2)` stays `char(2)`, and a
+  type without one renders unconstrained (`bpchar`, `"bit"`), never as `char(1)` or
+  `bit(1)`, which would truncate the value. Constants render under the refresh's pinned
+  settings (ADR 0136, owner frame amendment), so the value parsed back is the one
+  derived, whoever derived it.
+- **A guarded table.** When every `all_keys` occurrence of a table has guards (and a
+  trigger watches it), the table's key mapping carries `guard`: a query over the
+  changed rows (both images of an `UPDATE`) returning a row when one meets every
+  guard of one of those occurrences. The delta trigger evaluates it before taking the
+  policy: only a match refreshes in full; otherwise the reads of the table that can be
+  traced map the rows as `mapped` does (and a table with none does nothing). Under
+  `warn` nothing changes. An occurrence with another kind of filter keeps the table
+  unguarded for every write.
+- **Not changed.** `tviews.registry.cascade_kinds` still names the table `all_keys`
+  and lists it in `uncascaded_tables`: the policy still applies to some writes, and
+  read contract 3 is kept. The create NOTICE says that only a write meeting the read's
+  conditions takes the policy. Writes routed through a partition's row trigger
+  (`delta/partition.rs`) and `TRUNCATE` do not read the guard: they keep their
+  behaviour.
+

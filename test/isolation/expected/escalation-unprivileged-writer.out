@@ -1,0 +1,20 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_begin w_link65 o_rename_unlinked o_insert_user o_rename_linked w_commit
+step w_begin: BEGIN;
+step w_link65: 
+  INSERT INTO tb_post (pk_post, fk_user, title) SELECT g, g, 'p' FROM generate_series(1, 65) g;
+
+step o_rename_unlinked: UPDATE tb_user SET name = 'renamed' WHERE pk_user = 1050;
+step o_insert_user: INSERT INTO tb_user (pk_user, name) VALUES (2000, 'new');
+step o_rename_linked: UPDATE tb_user SET name = 'renamed' WHERE pk_user = 1; <waiting ...>
+step w_commit: COMMIT;
+step o_rename_linked: <... completed>
+
+starting permutation: w_begin w_link1025 w_rollback
+step w_begin: BEGIN;
+step w_link1025: 
+  INSERT INTO tb_post (pk_post, fk_user, title) SELECT g, g, 'p' FROM generate_series(1, 1025) g;
+
+ERROR:  refreshing a TVIEW as its owner postgres failed: program_limit_exceeded
+step w_rollback: ROLLBACK;

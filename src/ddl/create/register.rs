@@ -3,7 +3,6 @@
 use super::ViewColumns;
 use super::derive::{Derivation, uncascaded_tables};
 use super::indexes::{create_embed_lookup_indexes, key_index};
-use super::relations::relation_oid;
 use crate::ddl::uncascaded::{Declarations, Uncascaded};
 use crate::error::TViewResult;
 use crate::lineage::Identity;
@@ -15,13 +14,17 @@ use pgrx::pg_sys;
 /// the indexes its embed lookups need, and its catalog row.
 pub(crate) struct Registration<'a> {
     pub(crate) entity: &'a str,
-    /// The schema of `tv_<entity>`.
-    pub(crate) schema: &'a str,
+    /// The TVIEW's table: the one just created, or the one registered. Its
+    /// schema and name are read from it, never resolved from a name.
+    pub(crate) table_oid: pg_sys::Oid,
     pub(crate) view_oid: pg_sys::Oid,
     pub(crate) definition: &'a str,
     pub(crate) columns: &'a ViewColumns,
     pub(crate) group_keys: Option<&'a crate::ddl::aggregate::GroupKeys>,
     pub(crate) derivation: &'a Derivation,
+    /// The declared GraphQL type name; `None` for `PascalCase(entity)`. A new
+    /// row takes it; an existing one keeps its own.
+    pub(crate) typename: Option<&'a str>,
 }
 
 impl Registration<'_> {
@@ -30,8 +33,8 @@ impl Registration<'_> {
     /// # Errors
     /// An `error` policy table no cascade reaches, a refused embed, a failed write.
     pub(crate) fn write(&self, declarations: Declarations, replace: bool) -> TViewResult<()> {
-        let tview = format!("tv_{}", self.entity);
-        let table_oid = relation_oid(self.schema, &tview)?;
+        let table_oid = self.table_oid;
+        let (schema, tview) = crate::ddl::relation_name(table_oid)?;
         let qualified = crate::utils::qualified_relname_from_oid(table_oid)?;
         let lineage = &self.derivation.lineage;
         crate::ddl::uncascaded::report_functions(
@@ -59,10 +62,10 @@ impl Registration<'_> {
             &lookups,
             self.columns,
             &tview,
-            self.schema,
+            &schema,
         )?);
         if let Some(index) = key_index(&tview, self.columns, &lineage.identity.name) {
-            indexes.extend(index.create(self.schema, &tview)?);
+            indexes.extend(index.create(&schema, &tview)?);
         }
         MetaRow {
             entity: self.entity,
@@ -73,6 +76,7 @@ impl Registration<'_> {
             group_keys: self.group_keys,
             uncascaded: &uncascaded,
             identity: &lineage.identity,
+            typename: self.typename,
         }
         .write(replace)?;
         crate::catalog::indexes::record(table_oid, &indexes)
@@ -89,17 +93,20 @@ struct MetaRow<'a> {
     pub(crate) group_keys: Option<&'a crate::ddl::aggregate::GroupKeys>,
     pub(crate) uncascaded: &'a Uncascaded,
     pub(crate) identity: &'a Identity,
+    pub(crate) typename: Option<&'a str>,
 }
 
 impl MetaRow<'_> {
     /// Insert the row, or with `replace` overwrite what registration derives of an
-    /// existing one (keeping `created_at`, `graphql_typename` and
+    /// existing one (keeping `created_at`, the GraphQL type name and
     /// `needs_reregister`: only `pg_tviews_reregister`, which also re-installs the
     /// triggers, clears the flag).
     ///
     /// # Errors
-    /// A failed write, or [`crate::error::TViewError::DependencyCycle`] when the
-    /// TVIEW closes a cycle of TVIEWs reading each other.
+    /// A failed write, [`crate::error::TViewError::TypenameTaken`] when a new
+    /// row's type name is another TVIEW's, or
+    /// [`crate::error::TViewError::DependencyCycle`] when the TVIEW closes a cycle
+    /// of TVIEWs reading each other.
     fn write(&self, replace: bool) -> TViewResult<()> {
         let declarations = &self.uncascaded.declarations;
         let group_keys = self.group_keys.map(serde_json::to_value).transpose()?;
@@ -119,6 +126,7 @@ impl MetaRow<'_> {
                 identity_column: self.identity.name.as_str(),
                 identity_type: pg_sys::Oid::from(self.identity.type_oid),
                 time_dependent: self.uncascaded.time_dependent,
+                typename: self.typename,
             },
             replace,
         )?;

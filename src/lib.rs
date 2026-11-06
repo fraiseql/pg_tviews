@@ -56,6 +56,7 @@ mod revision;
 mod stats;
 mod trigger;
 mod utils;
+mod visibility;
 
 // Feature modules
 mod admin;
@@ -85,7 +86,9 @@ pub extern "C-unwind" fn _PG_init() {
     crate::revision::note_preload();
     crate::config::register_gucs();
     crate::stats::init();
+    crate::concurrency::key::init();
     crate::cache::register_relcache_callback();
+    crate::owner::register_name_callbacks();
     crate::cache::set_catalog(crate::catalog::queries::meta_table_oid);
     crate::rebuild_worker::register();
 

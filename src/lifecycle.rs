@@ -74,17 +74,18 @@ pub mod validity {
             "INSERT INTO {} VALUES ($1) ON CONFLICT DO NOTHING RETURNING entity",
             table()
         );
-        let _owner = crate::owner::AsOwner::of_extension()?;
-        // No row when it was there already (`first()` of an empty result is an error).
-        let inserted = crate::utils::spi::connect_mut(|client| {
-            Ok::<_, pgrx::spi::Error>(
-                !client
-                    .update(&sql, None, &[crate::utils::spi::text(entity)])?
-                    .is_empty(),
-            )
+        crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+            // No row when it was there already (`first()` of an empty result is an error).
+            let inserted = crate::utils::spi::connect_mut(|client| {
+                Ok::<_, pgrx::spi::Error>(
+                    !client
+                        .update(&sql, None, &[crate::utils::spi::text(entity)])?
+                        .is_empty(),
+                )
+            })
+            .map_err(|e| crate::utils::spi::error(&sql, &e))?;
+            Ok(inserted)
         })
-        .map_err(|e| crate::utils::spi::error(&sql, &e))?;
-        Ok(inserted)
     }
 
     /// Forget `entity`: it is dropped, or no longer UNLOGGED.
@@ -93,8 +94,9 @@ pub mod validity {
     /// Returns an error if `pg_tview_valid` cannot be written.
     pub fn forget(entity: &str) -> TViewResult<()> {
         let sql = format!("DELETE FROM {} WHERE entity = $1", table());
-        let _owner = crate::owner::AsOwner::of_extension()?;
-        crate::utils::spi::run(&sql, &[crate::utils::spi::text(entity)])
+        crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+            crate::utils::spi::run(&sql, &[crate::utils::spi::text(entity)])
+        })
     }
 
     /// Make `entity`'s rows trustworthy before a write refreshes them: once per
@@ -144,10 +146,12 @@ pub mod validity {
         };
         let key = crate::utils::ident::quoted(&meta.identity.column);
         let (tv, view) = relations(&meta)?;
+        // A set difference, not an anti-join: the TVIEW was just filled by this
+        // write, and with its statistics still those of an empty table an
+        // anti-join is planned as a nested loop over every pair of rows.
         let missing = probe(
             &format!(
-                "SELECT EXISTS (SELECT 1 FROM {view} v \
-                                WHERE NOT EXISTS (SELECT 1 FROM {tv} t WHERE t.{key} = v.{key}))"
+                "SELECT EXISTS (SELECT v.{key} FROM {view} v EXCEPT SELECT t.{key} FROM {tv} t)"
             ),
             &[],
         )?;
@@ -177,12 +181,13 @@ pub mod validity {
         let Some(meta) = TviewMeta::load_by_entity(entity)? else {
             return Ok(());
         };
-        let owner = crate::owner::AsOwner::of_entity(entity)?;
-        let emptied = is_empty(&meta)? && {
-            let (_, view) = relations(&meta)?;
-            probe(&format!("SELECT EXISTS (SELECT 1 FROM {view})"), &[])?
-        };
-        drop(owner);
+        let emptied =
+            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+                Ok(is_empty(&meta)? && {
+                    let (_, view) = relations(&meta)?;
+                    probe(&format!("SELECT EXISTS (SELECT 1 FROM {view})"), &[])?
+                })
+            })?;
         if emptied {
             refill(entity)?;
             mark(entity, meta.tview_oid)?;

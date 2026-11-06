@@ -45,11 +45,16 @@ pub(crate) fn create_or_replace(
     query: &str,
     options: &serde_json::Value,
 ) -> TViewResult<&'static str> {
+    crate::concurrency::require_read_committed();
     let Name { schema, entity } = resolve::parse(name)?;
     let options = parse_options(options)?;
     let declares_time = matches!(options.time_refresh, Some(TimeRefresh::External { .. }));
-    super::lock_entity(&entity)?;
     let tv_name = format!("tv_{entity}");
+    // A role that may not replace it takes no lock; checked again under the lock.
+    if let Some(meta) = TviewMeta::load_by_entity(&entity)? {
+        crate::owner::require_owner(meta.tview_oid, &tv_name)?;
+    }
+    super::lock_entity(&entity);
 
     let declared = options.resolve()?;
     let registered = resolve::registered_schema(&entity)?;
@@ -120,6 +125,9 @@ pub(crate) fn create_or_replace(
         Ok(())
     };
 
+    // The user triggers on the TVIEW's table run in its refresh, as its owner,
+    // as do the functions its definition calls.
+    crate::catalog::function_paths::check(meta.view_oid, Some(meta.tview_oid))?;
     if comparison.same_view && declared.group_keys == current.group_keys {
         let retyped = retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         let same_declarations = declared.declarations.stored() == current.declarations;
@@ -148,12 +156,12 @@ pub(crate) fn create_or_replace(
     {
         replace_in_place(
             &entity,
-            &schema,
             &meta,
             &qualified_view,
             &normalized_sql,
             &comparison.base_tables,
         )?;
+        crate::catalog::function_paths::check(meta.view_oid, Some(meta.tview_oid))?;
         retype_drifted_columns(&entity, &meta, &qualified_tv)?;
         alter(&current)?;
         check_time_declared(&entity, declares_time)?;
@@ -245,14 +253,23 @@ pub(crate) fn create_only(
     if_not_exists: bool,
 ) -> TViewResult<Created> {
     let Name { schema, entity } = resolve::parse(name)?;
-    super::lock_entity(&entity)?;
-    if TviewMeta::load_by_entity(&entity)?.is_some() {
-        return Ok(if if_not_exists {
-            notice!("TVIEW tv_{entity} already exists, skipping");
-            Created::Skipped
-        } else {
-            Created::Exists(format!("tv_{entity}"))
-        });
+    let existing = || -> TViewResult<Option<Created>> {
+        Ok(TviewMeta::load_by_entity(&entity)?.map(|_| {
+            if if_not_exists {
+                notice!("TVIEW tv_{entity} already exists, skipping");
+                Created::Skipped
+            } else {
+                Created::Exists(format!("tv_{entity}"))
+            }
+        }))
+    };
+    // An existing TVIEW is answered without the lock; checked again under it.
+    if let Some(created) = existing()? {
+        return Ok(created);
+    }
+    super::lock_entity(&entity);
+    if let Some(created) = existing()? {
+        return Ok(created);
     }
     let schema = match schema {
         Some(schema) => schema,
@@ -269,13 +286,14 @@ fn create_new(entity: &str, schema: &str, query: &str, declared: &Declared) -> T
         &format!("tv_{entity}"),
         query,
         schema,
-        declared.group_keys.as_ref(),
-        declared.storage,
-        Some(declared.declarations.clone()),
+        create::Options {
+            group_keys: declared.group_keys.as_ref(),
+            storage: declared.storage,
+            declarations: Some(declared.declarations.clone()),
+            typename: declared.typename.as_deref(),
+            rebuilt_for: None,
+        },
     )?;
-    if declared.typename.is_some() {
-        crate::catalog::row::set_typename(entity, declared.typename.as_deref())?;
-    }
     if !declared.indexes.is_empty() {
         let table = TviewMeta::load_by_entity(entity)?
             .ok_or_else(|| crate::error::TViewError::TviewNotFound {
@@ -405,7 +423,6 @@ fn compare_definition(
 /// change. The tables, their indexes, privileges and dependents stay.
 fn replace_in_place(
     entity: &str,
-    schema: &str,
     meta: &TviewMeta,
     qualified_view: &str,
     definition: &str,
@@ -414,15 +431,18 @@ fn replace_in_place(
     let dependents = crate::catalog::queries::readers_of(entity, meta.view_oid, meta.tview_oid)?;
 
     // Writers lock a base table, then the TVIEW tables their flush writes: take
-    // the same order. SHARE on every table read, before or after, holds writers
+    // the same order. SHARE on a table read, before or after, holds its writers
     // off until the transaction ends; EXCLUSIVE on the TVIEW tables lets readers
-    // go on. Each as the table's owner: SHARE needs more than SELECT.
+    // go on, and holds off the flush of every write to a table left unlocked.
+    // Each as the table's owner: SHARE needs more than SELECT. Only tables the
+    // caller may attach triggers to are locked: another role's table, read by a
+    // dependent, is not the caller's to hold.
     let mut entities = vec![entity.to_string()];
     entities.extend(dependents.iter().map(|(dependent, _)| dependent.clone()));
     let tv_tables: Vec<pg_sys::Oid> = std::iter::once(meta.tview_oid)
         .chain(dependents.iter().map(|&(_, table)| table))
         .collect();
-    let mut read_tables = crate::utils::spi::oids(
+    let read = crate::utils::spi::oids(
         &format!(
             "SELECT DISTINCT r.relid FROM {}.reads r \
              JOIN pg_catalog.pg_class c ON c.oid = r.relid AND c.relkind IN ('r', 'p') \
@@ -431,15 +451,21 @@ fn replace_in_place(
         ),
         &[crate::utils::spi::text_array_of(&entities)],
     )?;
-    read_tables.extend_from_slice(new_base_tables);
-    read_tables.retain(|table| !tv_tables.contains(table));
+    // A table the new definition reads that the caller may not attach work to
+    // is refused below if it needs triggers.
+    let mut read_tables = Vec::new();
+    for &table in read.iter().chain(new_base_tables) {
+        if !tv_tables.contains(&table) && super::may_trigger(table)? {
+            read_tables.push(table);
+        }
+    }
     read_tables.sort_unstable_by_key(|table| table.to_u32());
     read_tables.dedup();
     for &table in &read_tables {
-        lock_as_owner(table, "SHARE")?;
+        super::lock_as_owner(table, "SHARE")?;
     }
     for &table in &tv_tables {
-        lock_as_owner(table, "EXCLUSIVE")?;
+        super::lock_as_owner(table, "EXCLUSIVE")?;
     }
 
     super::in_extension_schema(|| {
@@ -449,31 +475,28 @@ fn replace_in_place(
         ))
     })?;
     let read_before = crate::catalog::readers::tables_of(entity)?;
-    let reads = create::reregister_metadata(entity, schema, definition)?;
+    let reads = create::reregister_metadata(entity, definition)?;
     crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
-    {
-        // The rows are recomputed as the TVIEW's owner, as every refresh is.
-        let _owner = crate::owner::AsOwner::of_table(meta.tview_oid)?;
-        crate::refresh::full::reconcile(entity, meta)?;
-    }
+    // The rows are recomputed as the TVIEW's owner, as every refresh is.
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
+        crate::refresh::full::reconcile(frame, entity, meta)
+    })?;
 
-    for (dependent, table) in &dependents {
-        let _owner = crate::owner::AsOwner::of_table(*table)?;
-        create::reregister_tview(dependent)?;
-        let meta =
-            TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
-                name: dependent.clone(),
-            })?;
-        crate::refresh::full::reconcile(dependent, &meta)?;
+    // A TVIEW reading this one is re-derived and recomputed as its own owner,
+    // whose triggers on the tables it reads they are.
+    for (dependent, _) in &dependents {
+        // Its own owner, with its own text search configuration.
+        let owner = crate::owner::Owner::of_entity(dependent)?;
+        crate::owner::AsOwner::run(owner, |frame| {
+            create::rederive(dependent)?;
+            let meta =
+                TviewMeta::load_by_entity(dependent)?.ok_or_else(|| TViewError::TviewNotFound {
+                    name: dependent.clone(),
+                })?;
+            crate::refresh::full::reconcile(frame, dependent, &meta)
+        })?;
     }
     Ok(())
-}
-
-/// `LOCK TABLE` in `mode`, as the table's owner.
-fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
-    let qualified = crate::utils::qualified_relname_from_oid(table)?;
-    let _owner = crate::owner::AsOwner::of_table(table)?;
-    crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
 }
 
 #[cfg(test)]

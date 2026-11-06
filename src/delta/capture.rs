@@ -46,6 +46,8 @@ pub(super) fn add_read_set(
     if keys.is_empty() {
         return Ok(());
     }
-    let _owner = crate::owner::AsOwner::of_entity(&meta.entity_name)?;
-    crate::concurrency::reads::read_set(meta, keys, pass)
+    crate::owner::AsOwner::run(
+        crate::owner::Owner::of_entity(&meta.entity_name)?,
+        |_frame| crate::concurrency::reads::read_set(meta, keys, pass),
+    )
 }

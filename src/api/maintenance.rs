@@ -78,3 +78,23 @@ fn pg_tviews_ensure_propagation_indexes_all(
         crate::admin::ensure_propagation_indexes(&metas, dry_run)?,
     ))
 }
+
+/// The tag (`objid` in `pg_locks`) of the value lock on `value` of
+/// `column_name` of `relation` (a table a TVIEW reads, a partitioned table's
+/// root), or, with `column_name` NULL, of the key `value` of TVIEW table
+/// `relation` being created. Superusers only (`EXECUTE` revoked from `PUBLIC`).
+#[pg_extern]
+#[allow(clippy::needless_pass_by_value)] // Reason: pgrx passes SQL arguments by value
+fn pg_tviews_value_lock_tag(
+    relation: pgrx::PgRelation,
+    column_name: Option<&str>,
+    value: &str,
+) -> Result<i64, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    Ok(crate::concurrency::value_lock_tag(
+        relation.oid(),
+        column_name,
+        value,
+    )?)
+}

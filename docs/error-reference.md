@@ -16,6 +16,7 @@ Placeholders stand for the values each message carries.
 |---|---|---|---|---|
 | `42704` | `undefined_object` | `TviewNotFound` | TVIEW &lt;tview&gt; does not exist | SELECT schema, name, entity FROM tviews.registry lists the TVIEWs; name one by its entity, tv_&lt;entity&gt; or schema.tv_&lt;entity&gt;. |
 | `42P07` | `duplicate_table` | `RelationExists` | TVIEW &lt;name&gt; already exists | pg_tviews_create_or_replace() changes an existing TVIEW. |
+| `42710` | `duplicate_object` | `TypenameTaken` | GraphQL type name "&lt;typename&gt;" is already the type of tv_&lt;entity&gt;'s rows | Name this TVIEW's type with the typename option, or rename the other one's. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
 | `39P01` | `e_r_i_e_trigger_protocol_violated` | `TriggerMisused` | &lt;reason&gt; |  |
@@ -23,6 +24,7 @@ Placeholders stand for the values each message carries.
 | `42809` | `wrong_object_type` | `ColumnDdlRefused` | &lt;statement&gt; on TVIEW &lt;table&gt; is refused: a TVIEW's columns are its definition's | Change the definition with tviews.pg_tviews_create_or_replace(): the table follows it. |
 | `42939` | `reserved_name` | `IndexNameReserved` | index name &lt;index&gt; on TVIEW &lt;table&gt; is reserved for pg_tviews' own index | Give the index another name. pg_tviews creates its own indexes on a TVIEW (tviews.registry.managed_indexes lists them). |
 | `42501` | `insufficient_privilege` | `PermissionDenied` | &lt;reason&gt; |  |
+| `42P13` | `invalid_function_definition` | `FunctionSearchPath` | &lt;function&gt; sets search_path = &lt;search_path&gt;: a TVIEW's refresh runs it as the TVIEW's owner, in the writer's session, where a search_path not ending in pg_temp looks up the writer's temporary relations and types first | ALTER FUNCTION &lt;function&gt; SET search_path = &lt;search_path, pg_temp&gt; |
 | `42P17` | `invalid_object_definition` | `DependencyCycle` | relations would read each other in a cycle: &lt;relation&gt;, &lt;relation&gt; |  |
 | `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Flatten the views the TVIEW reads. |
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |
@@ -43,6 +45,7 @@ Placeholders stand for the values each message carries.
 | `42703` | `undefined_column` | A restore loads a TVIEW's catalog row whose plan reads a column the restored table lacks. |
 | `XX001` | `data_corrupted` | A restored TVIEW's plan numbers a column it does not name, or has a path from a table it maps no write of: `pg_tviews_reregister(entity)` re-derives it. |
 | `0A000` | `feature_not_supported` | A transaction at `REPEATABLE READ` or `SERIALIZABLE` writes to a table a TVIEW reads, or refreshes or rebuilds TVIEWs: writers run at `READ COMMITTED` (ADR 0207). Nothing was written. Reads of TVIEWs work at any level. |
+| `21000` | `cardinality_violation` | PostgreSQL's `ON CONFLICT DO UPDATE command cannot affect row a second time` from a refresh's upsert: seen once under the concurrency fuzzer, never reproduced (#278). Retry the transaction, and report it: test builds log what conflicted (`pg_tviews.test_diag_21000`). |
 | `55000` | `object_not_in_prerequisite_state` | A transaction commits with refresh work still queued (a missing or disabled flush trigger), or commits implicitly (several statements in one query string, a `COMMIT` inside a procedure) after writes made while refresh was suspended: the commit fails. Call `pg_tviews_resume_triggers()` before committing. |
 | `55000` | `object_not_in_prerequisite_state` | The library's catalog revision does not match the installed extension, or cannot be read: run `ALTER EXTENSION pg_tviews UPDATE` (the hint names the fix). Also: the library is not in `shared_preload_libraries`. |
 | `42883` | `undefined_function` | A catalog not yet updated calls a function this release removed: run `ALTER EXTENSION pg_tviews UPDATE`. |

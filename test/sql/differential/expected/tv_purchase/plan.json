@@ -79,5 +79,6 @@
       "table": "public.tb_customer"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

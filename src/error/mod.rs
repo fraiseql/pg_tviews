@@ -26,6 +26,9 @@ pub enum Limit {
         count: u64,
         max: u64,
     },
+    /// A statement linked more than `max` values of one relation its writer may
+    /// not write, each locked on its own: the relation is not named.
+    Links { max: usize },
 }
 
 /// Why a transaction cannot be prepared.
@@ -48,6 +51,9 @@ pub enum TViewError {
 
     /// The table or backing view a TVIEW needs is already taken.
     RelationExists { name: String },
+
+    /// Another TVIEW's rows already have this GraphQL type name.
+    TypenameTaken { typename: String, holder: String },
 
     /// A function argument is invalid.
     InvalidInput { parameter: String, reason: String },
@@ -72,6 +78,14 @@ pub enum TViewError {
 
     /// The current role may not do this.
     PermissionDenied { reason: String },
+
+    /// A function a TVIEW's refresh runs as its owner sets a `search_path` that
+    /// does not end in `pg_temp`: a writer's temporary objects would come first.
+    FunctionSearchPath {
+        function: String,
+        path: String,
+        fix: String,
+    },
 
     /// TVIEWs read each other in a cycle.
     DependencyCycle { entities: Vec<String> },
@@ -126,6 +140,7 @@ impl TViewError {
         match self {
             Self::TviewNotFound { .. } => PgSqlErrorCode::ERRCODE_UNDEFINED_OBJECT,
             Self::RelationExists { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_TABLE,
+            Self::TypenameTaken { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_OBJECT,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
             Self::TriggerMisused { .. } => {
@@ -135,6 +150,7 @@ impl TViewError {
             Self::ColumnDdlRefused { .. } => PgSqlErrorCode::ERRCODE_WRONG_OBJECT_TYPE,
             Self::IndexNameReserved { .. } => PgSqlErrorCode::ERRCODE_RESERVED_NAME,
             Self::PermissionDenied { .. } => PgSqlErrorCode::ERRCODE_INSUFFICIENT_PRIVILEGE,
+            Self::FunctionSearchPath { .. } => PgSqlErrorCode::ERRCODE_INVALID_FUNCTION_DEFINITION,
             Self::DependencyCycle { .. } => PgSqlErrorCode::ERRCODE_INVALID_OBJECT_DEFINITION,
             Self::DepthExceeded { .. } => PgSqlErrorCode::ERRCODE_STATEMENT_TOO_COMPLEX,
             Self::InvalidSelectStatement { .. } => PgSqlErrorCode::ERRCODE_SYNTAX_ERROR,
@@ -183,6 +199,10 @@ impl TViewError {
             Self::RelationExists { .. } => {
                 Some("pg_tviews_create_or_replace() changes an existing TVIEW.".into())
             }
+            Self::TypenameTaken { .. } => Some(
+                "Name this TVIEW's type with the typename option, or rename the other one's."
+                    .into(),
+            ),
             Self::KeyTypeRefused { .. } => Some(
                 "Key the rows on an integer column, and keep a uuid key in the id column.".into(),
             ),
@@ -210,6 +230,16 @@ impl TViewError {
                  after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
                  once, at resume or commit."
             )),
+            Self::RefreshLimit {
+                limit: Limit::Links { .. },
+            } => Some(
+                "Link fewer rows in one statement, or run it as a role with INSERT or UPDATE \
+                 on the tables the TVIEW reads: pg_tviews then locks such a table once."
+                    .into(),
+            ),
+            Self::FunctionSearchPath { function, fix, .. } => {
+                Some(format!("ALTER FUNCTION {function} SET search_path = {fix}"))
+            }
             Self::DepthExceeded { what, .. } if *what == "dependency" => {
                 Some("Flatten the views the TVIEW reads.".into())
             }
@@ -236,6 +266,34 @@ impl TViewError {
                 Some("tviews.pg_tviews_reregister(name) re-derives a TVIEW's metadata.".into())
             }
             _ => None,
+        }
+    }
+
+    /// This error without what it quotes of the rows or of `PostgreSQL`'s report:
+    /// for a caller without the privileges of the owner whose work raised it.
+    /// The variant, so the SQLSTATE, stays.
+    #[must_use]
+    pub fn without_values(self) -> Self {
+        match self {
+            Self::SpiError { .. } => Self::SpiError {
+                query: String::new(),
+                error: WITHHELD.to_string(),
+            },
+            Self::CatalogError { operation, .. } => Self::CatalogError {
+                operation,
+                pg_error: WITHHELD.to_string(),
+            },
+            Self::SerializationError { .. } => Self::SerializationError {
+                message: WITHHELD.to_string(),
+            },
+            Self::DuplicateKey {
+                tview, key_column, ..
+            } => Self::DuplicateKey {
+                tview,
+                key_column,
+                key: WITHHELD.to_string(),
+            },
+            other => other,
         }
     }
 
@@ -272,6 +330,18 @@ impl TViewError {
 
 /// The text form of a `PostgreSQL` error code: five characters of six bits each
 /// (`MAKE_SQLSTATE`).
+/// `undefined_object` for `ERRCODE_UNDEFINED_OBJECT`.
+#[must_use]
+pub fn condition(code: PgSqlErrorCode) -> String {
+    format!("{code:?}")
+        .trim_start_matches("ERRCODE_")
+        .to_lowercase()
+}
+
+/// What replaces a value-bearing part of an error for a caller without the
+/// privileges of the role whose work raised it.
+const WITHHELD: &str = "withheld: the work ran as the TVIEW's owner; the server log has the error";
+
 fn sqlstate_text(code: PgSqlErrorCode) -> String {
     let packed = code as isize;
     (0..5)
@@ -301,6 +371,10 @@ impl fmt::Display for TViewError {
         match self {
             Self::TviewNotFound { name } => write!(f, "TVIEW {name} does not exist"),
             Self::RelationExists { name } => write!(f, "TVIEW {name} already exists"),
+            Self::TypenameTaken { typename, holder } => write!(
+                f,
+                "GraphQL type name \"{typename}\" is already the type of tv_{holder}'s rows"
+            ),
             Self::InvalidInput { parameter, reason } => {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
             }
@@ -310,6 +384,12 @@ impl fmt::Display for TViewError {
             | Self::WrongState { reason } => {
                 write!(f, "{reason}")
             }
+            Self::FunctionSearchPath { function, path, .. } => write!(
+                f,
+                "{function} sets search_path = {path}: a TVIEW's refresh runs it as the \
+                 TVIEW's owner, in the writer's session, where a search_path not ending in \
+                 pg_temp looks up the writer's temporary relations and types first"
+            ),
             Self::KeyTypeRefused { column, found } => write!(
                 f,
                 "{column} is {found}: a TVIEW's pk_<entity> must be an integer key \
@@ -382,6 +462,13 @@ impl fmt::Display for TViewError {
                 "refreshing {tview} {how} would write {count} rows in one statement \
                  (max_refresh_rows = {max})"
             ),
+            Self::RefreshLimit {
+                limit: Limit::Links { max },
+            } => write!(
+                f,
+                "too many rows linked in one statement: more than {max} values of a table \
+                 its role may not write"
+            ),
             Self::CatalogError {
                 operation,
                 pg_error,
@@ -426,6 +513,10 @@ mod tests {
         let all = vec![
             TViewError::TviewNotFound { name: s() },
             TViewError::RelationExists { name: s() },
+            TViewError::TypenameTaken {
+                typename: s(),
+                holder: s(),
+            },
             TViewError::InvalidInput {
                 parameter: s(),
                 reason: s(),
@@ -445,6 +536,11 @@ mod tests {
                 index: s(),
             },
             TViewError::PermissionDenied { reason: s() },
+            TViewError::FunctionSearchPath {
+                function: s(),
+                path: s(),
+                fix: s(),
+            },
             TViewError::DependencyCycle { entities: vec![] },
             TViewError::DepthExceeded {
                 what: "dependency",
@@ -486,6 +582,7 @@ mod tests {
             match e {
                 TViewError::TviewNotFound { .. }
                 | TViewError::RelationExists { .. }
+                | TViewError::TypenameTaken { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
                 | TViewError::TriggerMisused { .. }
@@ -493,6 +590,7 @@ mod tests {
                 | TViewError::ColumnDdlRefused { .. }
                 | TViewError::IndexNameReserved { .. }
                 | TViewError::PermissionDenied { .. }
+                | TViewError::FunctionSearchPath { .. }
                 | TViewError::DependencyCycle { .. }
                 | TViewError::DepthExceeded { .. }
                 | TViewError::InvalidSelectStatement { .. }
@@ -619,12 +717,25 @@ mod tests {
             "42P07"
         );
         assert_eq!(
+            code(TViewError::TypenameTaken {
+                typename: "Post".into(),
+                holder: "post".into()
+            }),
+            "42710"
+        );
+        assert_eq!(
             code(TViewError::DependencyCycle { entities: vec![] }),
             "42P17"
         );
         assert_eq!(
             code(TViewError::RefreshLimit {
                 limit: Limit::Queue { size: 1, max: 1 }
+            }),
+            "54000"
+        );
+        assert_eq!(
+            code(TViewError::RefreshLimit {
+                limit: Limit::Links { max: 1024 }
             }),
             "54000"
         );

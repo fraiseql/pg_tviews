@@ -12,17 +12,20 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "v0.3.0"
+  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
 
 jobs:
   cassert:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -50,7 +53,7 @@ jobs:
       - name: Build and install pg_tviews and jsonb_delta
         run: |
           cargo pgrx install --release --no-default-features --features "pg18 test-hooks" --pg-config "$PG_CONFIG"
-          git clone --depth 1 --branch "${JSONB_DELTA_REF}" "${JSONB_DELTA_REPO}" /tmp/jsonb_delta
+          git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
           (cd /tmp/jsonb_delta && cargo pgrx install --release --no-default-features \
              --features pg18 --pg-config "$PG_CONFIG")
 
@@ -104,6 +107,18 @@ jobs:
           MODES="$MODES_ALL" KEEP=1 ./test/concurrency/fuzz/run.sh 150 "1 2 3 4" 8 mixed
           KEEP=1 ./test/concurrency/fuzz/run.sh 600 "1" 8 values
 
+      # #278: a 21000 seen once at 32 clients, every statement from the differential
+      # harness. Each refresh upsert logs what a 21000 conflicted with (DIAG21000).
+      - name: Concurrent fuzzer (10 min, 32 clients, MIX=100, 21000 diagnostic)
+        if: ${{ !cancelled() }}
+        run: |
+          MIX=100 EXTRA_PGOPTIONS="-c pg_tviews.test_diag_21000=on" KEEP=1 \
+            ./test/concurrency/fuzz/run.sh 600 "1" 32 mixed
+
+      - name: 21000 diagnostics
+        if: failure()
+        run: grep -A3 DIAG21000 "$HOME/.pgrx/18.log" || echo "no DIAG21000 in the server log"
+
       - name: Keep a failed fuzz seed's database
         if: failure()
         run: |
@@ -114,7 +129,7 @@ jobs:
 
       - name: Upload kept fuzz databases
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-kept
           path: fuzz-kept/

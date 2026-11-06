@@ -1,5 +1,6 @@
 mod cached;
 pub mod collections;
+pub mod function_paths;
 pub mod graph;
 pub(crate) mod indexes;
 mod partition;
@@ -186,7 +187,7 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent, graphql_typename, \
+         time_dependent, typename, \
          EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id, \
          (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
@@ -234,9 +235,10 @@ fn cached(entity: &str) -> Option<Rc<TviewMeta>> {
     meta
 }
 
-/// Cache a catalog row just read, unless the extension's own script is running
+/// Cache a catalog row read by a read that started in `read_in`
+/// ([`crate::cache::epoch`]), unless the extension's own script is running
 /// ([`meta_select`]).
-fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
+fn remember(read_in: u64, loaded: TviewMeta) -> Rc<TviewMeta> {
     let meta = Rc::new(loaded);
     if crate::revision::in_own_script() {
         return meta;
@@ -249,12 +251,12 @@ fn remember(loaded: TviewMeta) -> Rc<TviewMeta> {
         .map(|c| c.parent_table_oid)
         .collect();
     crate::cache::watch(&parents);
-    METAS.with(|m| m.insert(meta.entity_name.clone(), meta.clone()));
+    METAS.with(|m| m.insert_read_in(read_in, meta.entity_name.clone(), meta.clone()));
     meta
 }
 
-impl crate::owner::AsOwner {
-    /// Switch to the owner of `entity`'s `tv_*` table.
+impl crate::owner::Owner {
+    /// The owner of `entity`'s `tv_*` table.
     ///
     /// # Errors
     /// Returns an error if the entity is not registered or its table is gone.
@@ -263,7 +265,16 @@ impl crate::owner::AsOwner {
             TviewMeta::load_by_entity(entity)?.ok_or_else(|| crate::TViewError::TviewNotFound {
                 name: entity.to_string(),
             })?;
-        Self::of_table(meta.tview_oid)
+        Self::of_tview(&meta)
+    }
+
+    /// The owner of the TVIEW `meta` describes, with its text search
+    /// configuration.
+    ///
+    /// # Errors
+    /// Returns an error if its table is gone.
+    pub fn of_tview(meta: &TviewMeta) -> crate::TViewResult<Self> {
+        Ok(Self::of_table(meta.tview_oid)?.with_text_search(meta.plan.text_search.as_deref()))
     }
 }
 
@@ -353,15 +364,16 @@ impl TviewMeta {
     /// another entity that does not decode is left for its own read.
     fn load(entities: &[String], wanted: &str) -> crate::TViewResult<Option<Rc<Self>>> {
         let mut found = None;
+        let read_in = crate::cache::epoch();
         for (entity, meta) in Self::read(
             "WHERE entity OPERATOR(pg_catalog.=) ANY ($1)",
             &[crate::utils::spi::text_array_of(entities)],
             Derived::Strict,
         )? {
             if entity == wanted {
-                found = Some(remember(meta?));
+                found = Some(remember(read_in, meta?));
             } else if let Ok(meta) = meta {
-                remember(meta);
+                remember(read_in, meta);
             }
         }
         Ok(found)
@@ -540,8 +552,7 @@ impl TviewMeta {
             (Err(e), Derived::Strict) => return Err(e),
         };
 
-        let typename: Rc<str> =
-            typename(&entity_name, row.named::<String>("graphql_typename")?).into();
+        let typename: Rc<str> = row.named::<String>("typename")?.unwrap_or_default().into();
         let collections = collections::decode(
             &typename,
             row.named::<pgrx::JsonB>("collections")?

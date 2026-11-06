@@ -48,11 +48,38 @@ pub(crate) fn aggregate_embeds(
         .collect()
 }
 
+/// [`derive`] in an owner frame of `owner`, the TVIEW's owner (or owner-to-be).
+///
+/// # Errors
+/// What [`derive`] returns.
+pub(crate) fn derive_as(
+    owner: crate::owner::Owner,
+    entity_name: &str,
+    group_keys: Option<&crate::ddl::aggregate::GroupKeys>,
+    base_tables: &[pg_sys::Oid],
+    view_oid: pg_sys::Oid,
+    declarations: &Declarations,
+) -> TViewResult<Derivation> {
+    let mut derivation = crate::owner::AsOwner::run(owner, |frame| {
+        derive(
+            frame,
+            entity_name,
+            group_keys,
+            base_tables,
+            view_oid,
+            declarations,
+        )
+    })?;
+    derivation.plan.text_search = owner.text_search().map(str::to_string);
+    Ok(derivation)
+}
+
 /// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local
 /// paths of its local tables (for an aggregate TVIEW, one per declared group
 /// key), the mapping of every base table, its embeds and its direct-patch
 /// map.
-pub(crate) fn derive(
+fn derive(
+    frame: &crate::owner::OwnerFrame,
     entity_name: &str,
     group_keys: Option<&crate::ddl::aggregate::GroupKeys>,
     base_tables: &[pg_sys::Oid],
@@ -60,7 +87,7 @@ pub(crate) fn derive(
     declarations: &Declarations,
 ) -> TViewResult<Derivation> {
     let others = crate::catalog::registered::all()?;
-    let mut lineage = crate::lineage::analyze(entity_name, view_oid, base_tables, &others)?;
+    let mut lineage = crate::lineage::analyze(frame, entity_name, view_oid, base_tables, &others)?;
     aggregate_embeds(&lineage, entity_name)?;
     let undeclared_functions =
         crate::ddl::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;

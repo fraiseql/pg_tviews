@@ -23,6 +23,7 @@ fn table(relid: u32, relname: &str, kind: TableKind) -> TableLineage {
         unwatched: None,
         tview: None,
         links: None,
+        guard: None,
     }
 }
 

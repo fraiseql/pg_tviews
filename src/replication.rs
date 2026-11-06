@@ -9,15 +9,12 @@
 //! [`pg_tviews_rebuild_all`] once recovery has finished.
 
 use crate::error::{TViewError, TViewResult};
-use crate::utils::ident;
 use pgrx::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 /// Catalog facts about one TVIEW, read in a single query.
 pub struct TviewRelation {
     pub entity: String,
-    pub schema: String,
-    pub table: String,
     pub unlogged: bool,
     /// The `tv_*` table's OID, whose owner reads the backing view.
     pub table_oid: pg_sys::Oid,
@@ -30,21 +27,23 @@ impl TviewRelation {
             .into_iter()
             .map(|t| Self {
                 entity: t.entity,
-                schema: t.schema,
-                table: t.name,
                 unlogged: t.unlogged,
                 table_oid: t.oid,
             })
             .collect())
     }
 
-    fn qualified(&self, name: &str) -> String {
-        format!("{}.{}", ident::quoted(&self.schema), ident::quoted(name))
-    }
-
-    /// Whether the `tv_*` table has no rows.
-    pub fn table_is_empty(&self) -> TViewResult<bool> {
-        has_no_rows(&self.qualified(&self.table))
+    /// Whether the `tv_*` table has no rows, as the caller reads it: `None` when
+    /// the caller may not read it, or row security applies to its reads. Never
+    /// read as the owner, which would tell the caller what it may not read.
+    pub fn table_is_empty(&self) -> TViewResult<Option<bool>> {
+        // Unknown counts as active.
+        if !crate::visibility::may_read_relation(self.table_oid)
+            || crate::visibility::rls_active_for_caller(self.table_oid).unwrap_or(true)
+        {
+            return Ok(None);
+        }
+        has_no_rows(self.table_oid).map(Some)
     }
 
     /// Whether the table is an UNLOGGED TVIEW that PostgreSQL reset (after
@@ -56,8 +55,16 @@ impl TviewRelation {
 
 /// Read-only on purpose (`select`, not `Spi::get_one`, which assigns a
 /// transaction id): it must run on a hot standby.
-fn has_no_rows(qualified: &str) -> TViewResult<bool> {
-    let sql = format!("SELECT NOT EXISTS (SELECT 1 FROM {qualified}) AS empty");
+fn has_no_rows(table: pg_sys::Oid) -> TViewResult<bool> {
+    let sql = crate::lineage::render_template(&format!(
+        "SELECT NOT EXISTS (SELECT 1 FROM {{r:{}}}) AS empty",
+        table.to_u32()
+    ))
+    .map_err(|e| crate::utils::spi::error("the TVIEW's emptiness", &e))?
+    .ok_or_else(|| TViewError::CatalogError {
+        operation: "Read a TVIEW's emptiness".to_string(),
+        pg_error: format!("relation {} is gone", table.to_u32()),
+    })?;
     crate::utils::spi::connect(|client| {
         let rows = client.select(&sql, Some(1), &[])?;
         rows.first().get_one::<bool>()
@@ -93,7 +100,7 @@ pub(crate) fn replication_status()
         let is_empty = if recovering && rel.unlogged {
             None
         } else {
-            Some(rel.table_is_empty()?)
+            rel.table_is_empty()?
         };
         let needs_rebuild = if recovering {
             None

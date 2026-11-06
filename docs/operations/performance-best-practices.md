@@ -130,8 +130,10 @@ SELECT pg_tviews_resume_triggers();    -- rebuilds every affected TVIEW once
 COMMIT;
 ```
 
-The rebuild uses `TRUNCATE`, which blocks readers of that TVIEW until the transaction
-commits, so keep it for maintenance windows, migrations and backfills.
+Run by the TVIEW's owner, the rebuild uses `TRUNCATE`, which blocks readers of that
+TVIEW until the transaction commits, so keep it for maintenance windows, migrations and
+backfills. Run by any other role, it changes only the rows that differ from the view:
+no reader waits, but it reads the whole view and compares every row.
 
 ## Index Strategy
 

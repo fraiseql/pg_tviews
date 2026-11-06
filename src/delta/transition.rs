@@ -139,10 +139,11 @@ pub(super) fn with_transition_tables<T>(
         .relation()
         .map_err(|e| crate::utils::spi::error("the trigger's table", &e))?
         .oid();
-    let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    crate::utils::spi::connect_over_transition_tables(
-        std::ptr::from_ref(trigger.trigger_data()).cast_mut(),
-        |client| f(client, table),
-    )
-    .map_err(|e| crate::utils::spi::error("a query over the transition tables", &e))
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+        crate::utils::spi::connect_over_transition_tables(
+            std::ptr::from_ref(trigger.trigger_data()).cast_mut(),
+            |client| f(client, table),
+        )
+        .map_err(|e| crate::utils::spi::error("a query over the transition tables", &e))
+    })
 }

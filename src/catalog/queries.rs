@@ -33,14 +33,17 @@ pub struct Registration<'a> {
     pub identity_column: &'a str,
     pub identity_type: Oid,
     pub time_dependent: bool,
+    /// The declared GraphQL type name; `None` for `PascalCase(entity)`.
+    pub typename: Option<&'a str>,
 }
 
 /// Insert `row`, or with `replace` overwrite what registration derives of an
-/// existing one (keeping `created_at`, `graphql_typename` and
+/// existing one (keeping `created_at`, the GraphQL type name and
 /// `needs_reregister`), as the extension's owner.
 ///
 /// # Errors
-/// A [`TViewError::SpiError`] when the row cannot be written.
+/// [`TViewError::TypenameTaken`] when a new row's type name is another TVIEW's,
+/// a [`TViewError::SpiError`] when the row cannot be written.
 pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<()> {
     let on_conflict = if replace {
         "ON CONFLICT (entity) DO UPDATE SET \
@@ -58,7 +61,8 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
             entity, view_oid, table_oid, definition, plan, group_keys,
             uncascaded_oids, uncascaded_policy, identity,
             uncascaded_table_oids, uncascaded_table_policies,
-            function_read_functions, function_read_tables, time_refresh, time_dependent
+            function_read_functions, function_read_tables, time_refresh, time_dependent,
+            graphql_typename, typename
         ) VALUES (
             $1, $2::pg_catalog.oid::pg_catalog.regclass, $3::pg_catalog.oid::pg_catalog.regclass,
             $4, $5, $6, $7::pg_catalog.oid[]::pg_catalog.regclass[], $8,
@@ -67,7 +71,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
                     'name', $10::pg_catalog.text,
                     'type', pg_catalog.format_type($11::pg_catalog.oid, NULL)))),
             $12::pg_catalog.oid[]::pg_catalog.regclass[], $13,
-            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17)
+            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19)
         {on_conflict}",
         super::meta_table()
     );
@@ -84,7 +88,12 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         identity_column,
         identity_type,
         time_dependent,
+        typename: declared_typename,
     } = row;
+    let typename = super::typename(entity, declared_typename.map(str::to_string));
+    if !replace {
+        super::row::require_typename_free(entity, &typename)?;
+    }
     let args = [
         crate::utils::spi::text(entity),
         crate::utils::spi::oid(view_oid),
@@ -103,11 +112,14 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::oid_array(declared.function_read_tables),
         crate::utils::spi::text(declared.time_refresh),
         crate::utils::spi::boolean(time_dependent),
+        crate::utils::spi::text(declared_typename),
+        crate::utils::spi::text(typename.as_str()),
     ];
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
-        query: sql,
-        error: e.to_string(),
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
+            query: sql.clone(),
+            error: e.to_string(),
+        })
     })
 }
 
@@ -116,31 +128,32 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    let args = [
-        crate::utils::spi::text(entity),
-        crate::utils::spi::text(declared.policy),
-        crate::utils::spi::oid_array(declared.table_oids),
-        crate::utils::spi::text_array(declared.table_policies),
-        crate::utils::spi::text_array(declared.function_read_functions),
-        crate::utils::spi::oid_array(declared.function_read_tables),
-        crate::utils::spi::text(declared.time_refresh),
-    ];
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET uncascaded_policy = $2, \
-                 uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
-                 uncascaded_table_policies = $4, function_read_functions = $5, \
-                 function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
-                 time_refresh = $7 \
-             WHERE entity = $1",
-            super::meta_table()
-        ),
-        &args,
-    )
-    .map_err(|e| TViewError::CatalogError {
-        operation: "Store the uncascaded policies".to_string(),
-        pg_error: e.to_string(),
+    crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+        let args = [
+            crate::utils::spi::text(entity),
+            crate::utils::spi::text(declared.policy),
+            crate::utils::spi::oid_array(declared.table_oids),
+            crate::utils::spi::text_array(declared.table_policies),
+            crate::utils::spi::text_array(declared.function_read_functions),
+            crate::utils::spi::oid_array(declared.function_read_tables),
+            crate::utils::spi::text(declared.time_refresh),
+        ];
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET uncascaded_policy = $2, \
+                     uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     uncascaded_table_policies = $4, function_read_functions = $5, \
+                     function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
+                     time_refresh = $7 \
+                 WHERE entity = $1",
+                super::meta_table()
+            ),
+            &args,
+        )
+        .map_err(|e| TViewError::CatalogError {
+            operation: "Store the uncascaded policies".to_string(),
+            pg_error: e.to_string(),
+        })
     })
 }
 
@@ -150,33 +163,46 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TViewResult<()> {
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(
-        &format!(
-            "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
-             WHERE entity = $1 AND group_keys->>$2 = $3",
-            super::meta_table()
-        ),
-        &[
-            crate::utils::spi::text(entity),
-            crate::utils::spi::text(relname),
-            crate::utils::spi::text(old),
-            crate::utils::spi::text(new),
-        ],
-    )
-    .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))
+    crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
+        crate::utils::spi::run(
+            &format!(
+                "UPDATE {} SET group_keys = jsonb_set(group_keys, ARRAY[$2], to_jsonb($4)) \
+                 WHERE entity = $1 AND group_keys->>$2 = $3",
+                super::meta_table()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::text(relname),
+                crate::utils::spi::text(old),
+                crate::utils::spi::text(new),
+            ],
+        )
+        .map_err(|e| crate::utils::spi::catalog_error("Rename a group key column", &e))
+    })
 }
 
-/// Delete `entity`'s row, as the extension's owner.
+/// Delete `entity`'s row, as the extension's owner: the OID its table had, `None`
+/// when no row was registered.
 ///
 /// # Errors
 /// Returns the statement's error.
-pub fn delete(entity: &str) -> TViewResult<()> {
+pub fn delete(entity: &str) -> TViewResult<Option<Oid>> {
     let args = [crate::utils::spi::text(entity)];
-    let sql = format!("DELETE FROM {} WHERE entity = $1", super::meta_table());
+    let sql = format!(
+        "DELETE FROM {} WHERE entity = $1 RETURNING table_oid::pg_catalog.oid",
+        super::meta_table()
+    );
     // The catalog is written as the extension's owner.
-    let _owner = crate::owner::AsOwner::of_extension()?;
-    crate::utils::spi::run(&sql, &args)
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::connect_mut(|client| {
+            let deleted = client.update(&sql, None, &args)?;
+            if deleted.is_empty() {
+                return Ok(None);
+            }
+            deleted.first().get::<Oid>(1)
+        })
+        .map_err(|e| crate::utils::spi::error(&sql, &e))
+    })
 }
 
 // --- Drops -------------------------------------------------------------------
@@ -299,16 +325,23 @@ pub fn leftover_view(schema: &str, name: &str) -> TViewResult<Option<Oid>> {
 // --- Backing view owners and privileges -------------------------------------
 
 /// For each backing view (of the TVIEW whose table is `$1`, of every one when
-/// `$1` is NULL) on which a role other than its owner holds a privilege, the
-/// statement that revokes them all, as `(view, statement)`.
+/// `$1` is NULL) on which a role other than its owner holds a privilege, on the
+/// view or on one of its columns, the statement that revokes them all, as
+/// `(view, statement)`: `REVOKE ALL` on a relation also revokes its column
+/// privileges.
 const GRANT_REVOCATIONS: &str = "\
     SELECT v.oid, pg_catalog.format('REVOKE ALL ON %I.%I FROM %s CASCADE', n.nspname, v.relname, \
-               pg_catalog.string_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' \
-                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END, ', ')) \
+               pg_catalog.string_agg(DISTINCT CASE WHEN g.grantee = 0 THEN 'PUBLIC' \
+                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(g.grantee)) END, ', ')) \
     FROM {meta} m JOIN pg_catalog.pg_class v ON v.oid = m.view_oid::pg_catalog.oid \
-    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace, \
-         pg_catalog.aclexplode(v.relacl) a \
-    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND a.grantee <> v.relowner \
+    JOIN pg_catalog.pg_namespace n ON n.oid = v.relnamespace \
+    CROSS JOIN LATERAL ( \
+        SELECT a.grantee FROM pg_catalog.aclexplode(v.relacl) a \
+        UNION \
+        SELECT c.grantee FROM pg_catalog.pg_attribute att \
+        CROSS JOIN LATERAL pg_catalog.aclexplode(att.attacl) c \
+        WHERE att.attrelid = v.oid AND att.attnum > 0 AND NOT att.attisdropped) g \
+    WHERE ($1 IS NULL OR m.table_oid::pg_catalog.oid = $1) AND g.grantee <> v.relowner \
     GROUP BY v.oid, n.nspname, v.relname ORDER BY v.oid";
 
 /// The `REVOKE` statements that leave the backing view of the TVIEW whose table
@@ -661,8 +694,6 @@ pub fn view_column_type(table: Oid, column: &str) -> TViewResult<Option<Oid>> {
 /// A TVIEW's table, as [`tables`] lists it.
 pub struct Table {
     pub entity: String,
-    pub schema: String,
-    pub name: String,
     pub unlogged: bool,
     pub oid: Oid,
 }
@@ -673,12 +704,10 @@ pub struct Table {
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
 pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
     let query = format!(
-        "SELECT m.entity, n.nspname::text AS schema, t.relname::text AS tbl, \
-                t.relpersistence = 'u' AS unlogged, \
+        "SELECT m.entity, t.relpersistence = 'u' AS unlogged, \
                 m.table_oid::oid AS table_oid \
          FROM {} m \
          JOIN pg_class t ON t.oid = m.table_oid \
-         JOIN pg_namespace n ON n.oid = t.relnamespace \
          WHERE $1::text IS NULL OR m.entity = $1 \
          ORDER BY m.entity",
         super::meta_table()
@@ -689,8 +718,6 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
         for row in client.select(&query, None, &args)? {
             out.push(Table {
                 entity: row["entity"].value()?.unwrap_or_default(),
-                schema: row["schema"].value()?.unwrap_or_default(),
-                name: row["tbl"].value()?.unwrap_or_default(),
                 unlogged: row["unlogged"].value()?.unwrap_or(false),
                 oid: row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid),
             });
@@ -703,18 +730,20 @@ pub fn tables(entity: Option<&str>) -> TViewResult<Vec<Table>> {
     })
 }
 
-/// The GraphQL type name ([`super::typename`]) and quoted, schema-qualified
-/// table of each of `entities`, as `(entity, typename, table)`.
+/// The GraphQL type name ([`super::typename`]), quoted, schema-qualified table
+/// and table OID of each of `entities`, as `(entity, typename, table, oid)`.
 ///
 /// # Errors
 /// A [`TViewError::CatalogError`] when the catalog cannot be read.
-pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, String, String)>> {
+pub fn typenames_and_tables(
+    entities: Vec<String>,
+) -> TViewResult<Vec<(String, String, String, Oid)>> {
     crate::utils::spi::connect(|client| {
         let args = [crate::utils::spi::text_array(entities)];
         let mut out = Vec::new();
         for row in client.select(
             &format!(
-                "SELECT m.entity, m.graphql_typename, \
+                "SELECT m.entity, m.typename, m.table_oid, \
                         quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS tbl \
                  FROM {} m \
                  JOIN pg_class c ON c.oid = m.table_oid \
@@ -726,10 +755,10 @@ pub fn typenames_and_tables(entities: Vec<String>) -> TViewResult<Vec<(String, S
             &args,
         )? {
             let entity: String = row["entity"].value()?.unwrap_or_default();
-            let typename: Option<String> = row["graphql_typename"].value()?;
+            let typename: String = row["typename"].value()?.unwrap_or_default();
             let table: String = row["tbl"].value()?.unwrap_or_default();
-            let typename = super::typename(&entity, typename);
-            out.push((entity, typename, table));
+            let oid: Oid = row["table_oid"].value()?.unwrap_or(pg_sys::InvalidOid);
+            out.push((entity, typename, table, oid));
         }
         Ok::<_, spi::Error>(out)
     })

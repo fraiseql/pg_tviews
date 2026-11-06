@@ -15,6 +15,7 @@ pub mod capture;
 mod mapping;
 mod partition;
 mod render;
+pub mod resync;
 mod transition;
 mod trigger;
 

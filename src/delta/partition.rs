@@ -180,65 +180,66 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         MappingKind::AllKeys => return Ok(()),
         _ => None,
     };
-    let _owner = crate::owner::AsOwner::of_entity(entity)?;
-    // The owner reads the partition itself, under the partition's own privileges
-    // and row security, not the root's: one it cannot read whole is refreshed in
-    // full.
-    let readable = crate::utils::spi::one::<bool>(
-        "SELECT pg_catalog.has_table_privilege($1, 'SELECT') AND NOT c.relrowsecurity \
-         FROM pg_catalog.pg_class c WHERE c.oid = $1",
-        &[crate::utils::spi::regclass(partition)],
-    )
-    .map_err(|e| crate::utils::spi::error("has_table_privilege", &e))?
-    .unwrap_or(false);
-    let Some(keys_sql) = keys_sql.filter(|_| readable) else {
-        crate::concurrency::enqueue_refresh_all(entity);
-        return Ok(());
-    };
-    let rows = format!(
-        "SELECT * FROM {}",
-        crate::utils::qualified_relname_from_oid(partition)?
-    );
-    let delta = match computed_columns(entity, root)? {
-        Some(columns) => format!("SELECT {columns} FROM ({rows}) r"),
-        None => rows,
-    };
-    let key_type = &meta.key_type;
-    let sql = format!(
-        "WITH {DELTA} AS ({delta}) \
-         SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
-        key_sql_type(key_type)
-    );
-    // Read-write: a fresh snapshot, which sees every row committed before the locks.
-    let lookup = || {
-        crate::utils::spi::connect_mut(|client| {
-            let mut keys = Vec::new();
-            for row in crate::utils::spi::kept_update(client, &sql, &[])? {
-                keys.extend(key_of(&row, key_type)?);
-            }
-            Ok::<_, TViewError>(keys)
-        })
-        .map_err(|e| crate::utils::spi::error(&sql, &e))
-    };
-    let keys = if entering {
-        super::capture::locked_keys(
-            &meta,
-            mapping,
-            |column| {
-                crate::utils::spi::connect_mut(|client| {
-                    texts(client, None, &changed_values(&delta, column), &[])
-                })
-                .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
-            },
-            lookup,
-        )?
-    } else {
-        lookup()?
-    };
-    if !keys.is_empty() {
-        crate::queue::enqueue_refresh_bulk(entity, keys);
-    }
-    Ok(())
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+        // The owner reads the partition itself, under the partition's own privileges
+        // and row security, not the root's: one it cannot read whole is refreshed in
+        // full.
+        let readable = crate::utils::spi::one::<bool>(
+            "SELECT pg_catalog.has_table_privilege($1, 'SELECT') AND NOT c.relrowsecurity \
+             FROM pg_catalog.pg_class c WHERE c.oid = $1",
+            &[crate::utils::spi::regclass(partition)],
+        )
+        .map_err(|e| crate::utils::spi::error("has_table_privilege", &e))?
+        .unwrap_or(false);
+        let Some(keys_sql) = keys_sql.filter(|_| readable) else {
+            crate::concurrency::enqueue_refresh_all(entity);
+            return Ok(());
+        };
+        let rows = format!(
+            "SELECT * FROM {}",
+            crate::utils::qualified_relname_from_oid(partition)?
+        );
+        let delta = match computed_columns(entity, root)? {
+            Some(columns) => format!("SELECT {columns} FROM ({rows}) r"),
+            None => rows,
+        };
+        let key_type = &meta.key_type;
+        let sql = format!(
+            "WITH {DELTA} AS ({delta}) \
+             SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
+            key_sql_type(key_type)
+        );
+        // Read-write: a fresh snapshot, which sees every row committed before the locks.
+        let lookup = || {
+            crate::utils::spi::connect_mut(|client| {
+                let mut keys = Vec::new();
+                for row in crate::utils::spi::kept_update(client, &sql, &[])? {
+                    keys.extend(key_of(&row, key_type)?);
+                }
+                Ok::<_, TViewError>(keys)
+            })
+            .map_err(|e| crate::utils::spi::error(&sql, &e))
+        };
+        let keys = if entering {
+            super::capture::locked_keys(
+                &meta,
+                mapping,
+                |column| {
+                    crate::utils::spi::connect_mut(|client| {
+                        texts(client, None, &changed_values(&delta, column), &[])
+                    })
+                    .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
+                },
+                lookup,
+            )?
+        } else {
+            lookup()?
+        };
+        if !keys.is_empty() {
+            crate::queue::enqueue_refresh_bulk(entity, keys);
+        }
+        Ok(())
+    })
 }
 
 /// Map one changed row of a partitioned `mapped` / `all_keys` table, from the row
@@ -298,34 +299,35 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                  SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
                 key_sql_type(key_type)
             );
-            let _owner = crate::owner::AsOwner::of_entity(entity)?;
-            // As for a statement's rows (map_statement), on the partition tree's
-            // root. Read-write: a fresh snapshot, which sees what the locks
-            // waited for.
-            let keys = super::capture::locked_keys(
-                &meta,
-                mapping,
-                |column| {
-                    crate::utils::spi::connect_mut(|client| {
-                        texts(client, None, &changed_values(&delta, column), &images)
-                    })
-                    .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
-                },
-                || {
-                    crate::utils::spi::connect_mut(|client| {
-                        let mut keys = Vec::new();
-                        for row in crate::utils::spi::kept_update(client, &sql, &images)? {
-                            keys.extend(key_of(&row, key_type)?);
-                        }
-                        Ok::<_, TViewError>(keys)
-                    })
-                    .map_err(|e| crate::utils::spi::error(&sql, &e))
-                },
-            )?;
-            if !keys.is_empty() {
-                crate::queue::enqueue_refresh_bulk(entity, keys);
-            }
-            Ok(true)
+            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+                // As for a statement's rows (map_statement), on the partition tree's
+                // root. Read-write: a fresh snapshot, which sees what the locks
+                // waited for.
+                let keys = super::capture::locked_keys(
+                    &meta,
+                    mapping,
+                    |column| {
+                        crate::utils::spi::connect_mut(|client| {
+                            texts(client, None, &changed_values(&delta, column), &images)
+                        })
+                        .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
+                    },
+                    || {
+                        crate::utils::spi::connect_mut(|client| {
+                            let mut keys = Vec::new();
+                            for row in crate::utils::spi::kept_update(client, &sql, &images)? {
+                                keys.extend(key_of(&row, key_type)?);
+                            }
+                            Ok::<_, TViewError>(keys)
+                        })
+                        .map_err(|e| crate::utils::spi::error(&sql, &e))
+                    },
+                )?;
+                if !keys.is_empty() {
+                    crate::queue::enqueue_refresh_bulk(entity, keys);
+                }
+                Ok(true)
+            })
         }
         MappingKind::AllKeys => Ok(true),
         _ => Ok(false),

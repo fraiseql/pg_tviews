@@ -24,6 +24,8 @@ The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data):
   group     GROUP BY the child's fk_, keyed by the group (group_keys or not)
   last      DISTINCT ON the child's fk_: one child per parent
   top       DISTINCT ON the root's pk over a LEFT JOIN of its children
+  lookup    a count of another table's rows filtered by constants (=, IN, IS
+            NULL, ANDed), linked to no key, under uncascaded_policy full_refresh
 Any of them may filter soft-deleted rows (deleted_at IS NULL).
 """
 
@@ -81,6 +83,7 @@ KINDS = [
     "group",
     "last",
     "top",
+    "lookup",
 ]
 
 
@@ -405,6 +408,38 @@ class Case:
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
         return Shape(tv, key, sql, {}, [], t)
+
+    def shape_lookup(self) -> Shape | None:
+        """A read of another table linked to no key, filtered by constants: a
+        write refreshes the TVIEW in full only when a row it changed meets the
+        filter (#284)."""
+        r = self.rng
+        t = r.choice(self.tables)
+        others = [o for o in self.tables if o is not t and o.cols_of(("int", "bool"))]
+        if not others:
+            return None
+        o = r.choice(others)
+        tv = self.tv_name(f"{t.entity}_k")
+        key = "pk_" + tv[3:]
+        col, typ = r.choice([(c, ty) for c, ty in o.cols if ty in ("int", "bool")])
+        if typ == "bool":
+            conds = [f"x.{col} = {r.choice(['true', 'false'])}"]
+        elif self.chance(0.5):
+            conds = [f"x.{col} = {r.randint(-3, 40)}"]
+        else:
+            values = ", ".join(str(r.randint(-3, 40)) for _ in range(3))
+            conds = [f"x.{col} IN ({values})"]
+        if self.chance(0.4):
+            conds.append(f"x.{r.choice(o.cols)[0]} IS NULL")
+        if o.soft and self.chance(0.3):
+            conds.append("x.deleted_at IS NULL")
+        lookup = f"(SELECT count(*) FROM {o.name} x WHERE {' AND '.join(conds)})"
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id, "
+            f"jsonb_build_object({self.obj('t', t)}, 'k', {lookup}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {"uncascaded_policy": "full_refresh"}, [], t)
 
     def shape_array(self) -> Shape | None:
         r = self.rng

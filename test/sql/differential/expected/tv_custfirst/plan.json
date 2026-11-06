@@ -69,5 +69,6 @@
       "table": "public.tb_order"
     }
   ],
+  "text_search": "pg_catalog.english",
   "version": 3
 }

@@ -16,6 +16,13 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 upgraded=pg_tviews_upgrade
 fresh=pg_tviews_fresh
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Catalogs the update refuses (fixtures_refused.sql), and what its error names.
+current="$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../../Cargo.toml" | head -1)"
+refused=(typename_clash lost_privilege)
+declare -A refusal=(
+    [typename_clash]="these are shared: Post (tv_post, tv_post_)"
+    [lost_privilege]="tv_lost (upgrade_lost_owner lacks SELECT on "
+)
 
 case "${1:-}" in
 before)
@@ -23,8 +30,21 @@ before)
     psql -X -d postgres -qc "CREATE DATABASE $upgraded" >/dev/null
     psql -X -d "$upgraded" -q -f "$here/fixtures.sql"
     psql -X -d "$upgraded" -q -f "$here/verify.sql"
-    echo "fixtures created with pg_tviews $(psql -X -At -d "$upgraded" -c \
+    previous="$(psql -X -At -d "$upgraded" -c \
         "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")"
+    echo "fixtures created with pg_tviews $previous"
+    # The rules the update applies to an existing catalog (an older release is
+    # dropped and recreated instead): in the upgraded database, and one database
+    # per catalog the update must refuse.
+    if [[ -f "$here/../../sql/pg_tviews--${previous}--${current}.sql" ]]; then
+        psql -X -d "$upgraded" -q -f "$here/fixtures_security.sql"
+        for case in "${refused[@]}"; do
+            psql -X -d postgres -qc "DROP DATABASE IF EXISTS ${upgraded}_$case" >/dev/null
+            psql -X -d postgres -qc "CREATE DATABASE ${upgraded}_$case" >/dev/null
+            psql -X -d "${upgraded}_$case" -q -v case="$case" -f "$here/fixtures_refused.sql"
+        done
+        echo "security fixtures and refused catalogs created"
+    fi
     ;;
 after)
     mode="${2:-}"
@@ -53,6 +73,11 @@ after)
                  "TRUNCATE tb_comment"; do
         [[ "$write" == *tb_event* ]] && [[ -z "$(psql -X -At -d "$upgraded" -c \
             "SELECT 1 FROM pg_catalog.pg_class WHERE relname = 'tb_event'")" ]] && continue
+        # A release before the TRUNCATE trigger runs no pg_tviews code on TRUNCATE.
+        [[ "$write" == TRUNCATE* ]] && [[ -z "$(psql -X -At -d "$upgraded" -c \
+            "SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
+              WHERE t.tgrelid = 'tb_comment'::pg_catalog.regclass
+                AND p.proname = 'pg_tview_truncate_trigger'")" ]] && continue
         if out="$(psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "BEGIN" -c "$write" \
                 -c "ROLLBACK" 2>&1)"; then
             [[ "$mode" == update ]] || fail "a write succeeded against an older catalog"
@@ -130,7 +155,9 @@ SQL
         ;;
     update)
         start=$(date +%s%N)
-        psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE"
+        out="$(psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
+            || fail "ALTER EXTENSION pg_tviews UPDATE: $out"
+        echo "$out"
         echo "ALTER EXTENSION pg_tviews UPDATE took $(( ($(date +%s%N) - start) / 1000000 )) ms"
         # The update re-derived every TVIEW: none is left to re-register.
         left="$(psql -X -At -d "$upgraded" -c \
@@ -142,6 +169,24 @@ SQL
             "SELECT count(*) FROM pg_catalog.pg_class WHERE relkind = 'i' AND relname LIKE 'idx\_tv\_%\_pk\_unique'")"
         [[ "$left" == 0 ]] || fail "$left pk_unique index(es) survived re-registration"
         psql -X -d "$upgraded" -q -f "$here/verify_after.sql"
+        if [[ -n "$(psql -X -At -d "$upgraded" -c "SELECT 1 FROM pg_namespace WHERE nspname = 'sec'")" ]]; then
+            grep -q "tv_tag runs sec.label(text), whose search_path (sec) does not end in pg_temp" <<<"$out" \
+                || fail "the update did not warn about sec.label: $out"
+            psql -X -d "$upgraded" -q -f "$here/verify_security.sql"
+            echo "the update re-derived as owners, revoked column grants, reported function paths"
+            for case in "${refused[@]}"; do
+                if out="$(psql -X -d "${upgraded}_$case" -v ON_ERROR_STOP=1 \
+                        -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)"; then
+                    fail "the update accepted the $case catalog"
+                fi
+                grep -qF -- "${refusal[$case]}" <<<"$out" || fail "the $case refusal: $out"
+                [[ "$(psql -X -At -d "${upgraded}_$case" -c \
+                    "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")" != "$current" ]] \
+                    || fail "the refused $case update changed the extension's version"
+                psql -X -d postgres -qc "DROP DATABASE ${upgraded}_$case" >/dev/null
+            done
+            echo "the update refused the catalogs it must: ${refused[*]}"
+        fi
         ;;
     *) fail "usage: $0 after update|recreate" ;;
     esac
@@ -175,6 +220,9 @@ SQL
                      AND p.proname IN ('pg_tview_trigger_handler', 'pg_tview_flush_trigger',
                                        'pg_tview_delta_trigger', 'pg_tview_truncate_trigger')
                      AND t.tgparentid = 0
+                     -- The security fixtures (fixtures_security.sql) have no reference.
+                     AND t.tgrelid NOT IN (SELECT c.oid FROM pg_catalog.pg_class c
+                                           WHERE c.relnamespace = pg_catalog.to_regnamespace('sec'))
                    ORDER BY 1"
         psql -X -At -d "$upgraded" -c "$triggers" >"$tmp/upgraded_triggers"
         psql -X -At -d "$reference" -c "$triggers" >"$tmp/fresh_triggers"

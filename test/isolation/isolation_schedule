@@ -50,3 +50,11 @@ test: prepared-holds-value-locks
 test: mixed-plan-versions
 test: deferred-mutations
 test: deferred-savepoint-rollback
+test: guarded-lookup-vs-insert
+test: resync-vs-rename
+test: suspend-catch-up-vs-reader
+test: registration-lock-private
+test: escalation-unprivileged-writer
+test: create-vs-write
+test: create-lock-needs-trigger
+test: rebuild-owner-scoped

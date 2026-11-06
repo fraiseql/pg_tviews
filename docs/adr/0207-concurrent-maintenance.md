@@ -198,8 +198,13 @@ internal error. Specs: `local-child-vs-new-parent`, `aggregate-new-group-vs-writ
 
 The tag is `LOCKTAG_ADVISORY` with a field PostgreSQL's own advisory functions never use:
 
-- `field1` = database, `field2` = relation OID, `field3` = a 32-bit FNV-1a hash of
-  (attnum, the value's lock form). The lock form is the hash the column type's equality uses
+- `field1` = database, `field2` = relation OID, `field3` = SipHash-2-4 of (attnum, the
+  value's lock form), keyed with a 128-bit secret the postmaster draws from
+  `pg_strong_random` into shared memory at start and truncated to 32 bits: `pg_locks`
+  shows the tags to every role, and an unkeyed hash would let any of them test which
+  value is locked. Without `shared_preload_libraries` there is no key, and pg_tviews
+  refuses to run at all (`55000`); a superuser computes a tag with
+  `pg_tviews_value_lock_tag`. The lock form is the hash the column type's equality uses
   (its default hash operator class), in the written column's type and collation, as text, so
   equal values with different text forms (`5` and `5.00`, `Ann` and `ann` under a
   case-insensitive collation) take the same lock on both sides;
@@ -227,6 +232,14 @@ One lock per value exhausts the shared lock table at the default `max_locks_per_
 on one relation (default 64, per transaction, space and side), a transaction locks the
 relation instead. Values already held stay held.
 
+A refresh's escalated lock blocks every writer of the relation, so a refresh locks a relation
+whole only when the role that wrote may write that relation itself (`INSERT` or `UPDATE`,
+checked once per relation and transaction, for the role that called into `pg_tviews`, not
+the TVIEW's owner it refreshes as). A role that could not block those writers with plain
+PostgreSQL keeps locking values, one per value, up to 16 times the threshold; past that the
+statement fails with 54000 ("too many rows linked in one statement"), naming no relation. A
+writer's escalation is not gated: it locks values of the rows it changed, which it may write.
+
 ### Fresh snapshots
 
 The queries that find TVIEW rows (mapping queries, the embed lookup) and that compute them run
@@ -251,7 +264,10 @@ deadlock remains possible, reported by PostgreSQL with 40P01, which is retryable
 
 - A write can wait for a concurrent transaction writing related rows: an insert of a post
   waits for an open rename of its author, and the reverse. Deadlocks between such writes are
-  reported with 40P01.
+  reported with 40P01. A transaction left open holds its locks until it ends, as with row
+  locks: set `idle_in_transaction_session_timeout` for writer roles.
+- A role without `INSERT` or `UPDATE` on a table a TVIEW reads links at most 16 times
+  `pg_tviews.lock_escalation_threshold` of its rows in one transaction (54000 past that).
 - Writers at REPEATABLE READ or SERIALIZABLE are refused (0A000); fraiseql's mutations run at
   READ COMMITTED and keep rules spanning rows with constraints and `SELECT … FOR UPDATE`.
 - After a link change the capture runs the lookup twice and the read-set query once more,
@@ -323,4 +339,17 @@ served no workload pg_tviews is built for: fraiseql's mutations run at READ COMM
 writers are now refused with 0A000 before they write; the fail-fast policy, the cross-check
 (`concurrency/crosscheck.rs`) and their 40001 are gone. The REPEATABLE READ and SERIALIZABLE
 specs were rewritten to expect the refusal.
+
+**0.1.0-beta.36: keyed tags and gated escalation.** `pg_locks` shows every role the tags of
+every lock, so the 32-bit FNV-1a hash of a value let any role test which value another
+transaction held. The tag is now SipHash-2-4 keyed with a secret the postmaster draws at
+start ([Lock tags and modes](#lock-tags-and-modes)); a superuser matches it with
+`pg_tviews_value_lock_tag(relation regclass, column_name text, value text)`, which converts
+`value` to the column's type as the lock form does (a NULL `column_name` names a TVIEW key
+being created). A refresh's escalation took a whole-relation lock on any relation a TVIEW
+reads, whichever role wrote: it now needs `INSERT` or `UPDATE` on the relation for the role
+that called into pg_tviews, otherwise the refresh keeps value locks up to 16 times the
+threshold and fails with 54000 past it ([Escalation](#escalation)). The registration lock
+serializing DDL on one entity moved from `pg_advisory_xact_lock(1953917285, …)`, which any
+role could take, to an advisory tag of pg_tviews' own (`field4` 21624).
 

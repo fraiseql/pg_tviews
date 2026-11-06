@@ -6,7 +6,7 @@ be retried.** The exceptions are listed [below](#exceptions); the design is
 [ADR 0207](adr/0207-concurrent-maintenance.md).
 
 A transaction at `REPEATABLE READ` or `SERIALIZABLE` that writes to a table a TVIEW
-reads, or refreshes or rebuilds TVIEWs, is refused with `0A000` before it writes: its
+reads, or creates, refreshes or rebuilds TVIEWs, is refused with `0A000` before it writes: its
 snapshot cannot see what it would wait for, so pg_tviews could only fail it after the
 fact. Reads of TVIEWs work at every level (reports, `pg_dump`). fraiseql's mutation
 functions keep rules that span rows with constraints (`UNIQUE`, `CHECK`, exclusion) and
@@ -86,7 +86,15 @@ link** (it inserts and deletes no row, and updates only columns its TVIEWs show,
 columns they join, filter, group or order by) takes no shared value lock: two such
 writes, say two users editing their own `bio`, each refreshing posts that show both
 users, only wait for each other's row locks, in key order, as two plain `UPDATE`s of
-those rows would. Readers are never blocked, except by `pg_tviews_refresh()` (`ACCESS EXCLUSIVE`).
+those rows would.
+
+Readers of a TVIEW wait only while it is rebuilt whole (`TRUNCATE`, which takes
+`ACCESS EXCLUSIVE`): by `pg_tviews_refresh()` or a resume
+([below](#suspended-refresh)) run with the privileges of its owner, by the operator
+functions `pg_tviews_refresh_all()` and `pg_tviews_rebuild_all(only_empty => false)`,
+and by DDL on its table. Every other refresh changes rows in place. Creating a TVIEW
+takes `SHARE` on the tables its definition reads: their readers don't wait, their
+writers do ([Locks](#locks)).
 
 A statement takes its locks in one pass, in a fixed order: its exclusive locks on the
 values it changed and, after a link change, the shared locks of the rows it reaches.
@@ -120,13 +128,17 @@ item the count of its place's current items), compose the aggregate at read time
 | A full refresh caused by a write (`TRUNCATE` of a base table, a table under the `full_refresh` policy) | the TVIEW and every relation it reads, locked whole; row locks on the rows that differ | end of transaction |
 | `pg_tviews_refresh(entity)` | the same, and `ACCESS EXCLUSIVE` on each TVIEW it rebuilds (`TRUNCATE` + `INSERT`) | end of transaction |
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it; readers are not blocked | end of transaction |
-| Creating, replacing or dropping a TVIEW | advisory lock `pg_advisory_xact_lock(1953917285, hashtext(entity))`, so DDL on one entity runs one call at a time | end of transaction |
+| Creating or replacing a TVIEW | `SHARE` on the tables whose writes refresh it (for a replace, also those of the TVIEWs reading it) that the caller may attach triggers to, taken as each table's owner before the fill: the call waits for writes in flight to those tables, and their writers wait for it, so the new TVIEW starts from committed rows and misses no write. A replace also takes `EXCLUSIVE` on the TVIEW tables it recomputes, which holds off the flush of every write to a table it did not lock | end of transaction |
+| Creating, replacing or dropping a TVIEW | pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624), so DDL on one entity runs one call at a time; a role that may not change the TVIEW is refused before it takes the lock | end of transaction |
 
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'
 own: `objsubid` is 21622 for a value (or the key of a row being created) and 21623 for
 a relation's intent and escalated locks, `classid` is the relation, `objid` a hash of
-the value. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
-nor block them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
+the value keyed with a secret the server makes at start: no role can tell from it which
+value is locked, and a superuser computes the tag of a value with
+[`pg_tviews_value_lock_tag`](reference/api.md#pg_tviews_value_lock_tag). A registration lock has `objsubid` 21624 and a hash of the entity, keyed with the same server secret, as
+`classid`. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
+nor block any of them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
 released by `ROLLBACK TO SAVEPOINT` when taken after the savepoint; a link changed
 after the savepoint is forgotten with them.
 
@@ -142,6 +154,19 @@ transaction locks the relation instead of its values, so a bulk write never exha
 the shared lock table: one transaction renaming 20,000 users holds a few dozen locks, and
 writes linking rows to any of those users wait for it.
 
+A refresh escalates the same way only for a relation the role that called into
+pg_tviews (the writer, not the TVIEW's owner the refresh runs as) may write itself, with
+`INSERT` or `UPDATE`, checked once per relation and transaction: a whole-relation lock
+blocks every writer of that relation. For any other role the refresh keeps one lock per
+value, up to 16 times `pg_tviews.lock_escalation_threshold`; past that the statement
+fails with `54000` ("too many rows linked in one statement"), naming no relation. A
+write's own locks on the values it changed escalate without this check: the writer may
+write those rows, but they include the keys of embedded TVIEW rows its flush changed, so
+a bulk write can lock a whole TVIEW table that other TVIEWs read. A full refresh
+(`TRUNCATE` of a base table, the catch-up after `pg_tviews_resume_triggers()`) locks
+every relation its TVIEW reads, whatever the caller may write. Both hold until the
+transaction ends.
+
 ```sql
 -- Who waits for whom
 SELECT l.pid, c.relname AS relation,
@@ -154,6 +179,17 @@ WHERE l.locktype = 'advisory' AND l.objsubid IN (21622, 21623)
 ORDER BY l.granted, l.pid;
 ```
 
+A superuser finds who holds or waits for the lock on one value, here `pk_user` 1 of
+`tb_user`:
+
+```sql fragment
+SELECT l.pid, l.mode, l.granted, pg_blocking_pids(l.pid) AS blocked_by
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.objsubid = 21622
+  AND l.classid = 'tb_user'::regclass
+  AND l.objid::bigint = tviews.pg_tviews_value_lock_tag('tb_user', 'pk_user', '1');
+```
+
 `pg_tviews_show_queue()` counts a transaction's `value_locks`,
 `value_lock_escalations`, `value_lock_waits` and `value_lock_wait_ms`.
 
@@ -161,8 +197,11 @@ ORDER BY l.granted, l.pid;
 
 `pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`
 or the end of the transaction, whichever comes first: suspension never outlives the
-transaction that started it. Resuming rebuilds the TVIEWs that changed and those that
-embed them (each with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does).
+transaction that started it. Resuming brings the TVIEWs that changed, and those that
+embed them, to their views. A caller with the privileges of a TVIEW's owner rebuilds
+it (`TRUNCATE`, with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does): its readers wait
+until the transaction ends. Any other caller changes only the rows that differ, as a
+write's full refresh does, and no reader waits.
 
 ## Settings
 

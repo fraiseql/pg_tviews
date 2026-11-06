@@ -1,0 +1,47 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_begin w_other a_rebuild w_sleep w_commit a_create a_create_private a_reset
+step w_begin: BEGIN;
+step w_other: INSERT INTO tb_other (pk_other, fk_item, v) VALUES (2, NULL, 'v2');
+step a_rebuild: 
+  SET lock_timeout = '200ms';
+  SELECT tviews.pg_tviews_create_or_replace('tv_item', $$
+    SELECT i.pk_item, i.id, jsonb_build_object('title', i.title) AS data, o.v AS extra
+    FROM tb_item i LEFT JOIN tb_other o ON o.fk_item = i.pk_item $$);
+  RESET lock_timeout;
+ <waiting ...>
+step w_sleep: SELECT pg_sleep(1);
+pg_sleep
+--------
+        
+(1 row)
+
+step a_rebuild: <... completed>
+ERROR:  canceling statement due to lock timeout
+step w_commit: COMMIT;
+step a_create: 
+  SET ROLE regress_rbo_creator;
+  SELECT tviews.pg_tviews_create('tv_mine', $$
+    SELECT m.pk_mine, m.id, jsonb_build_object('x', m.x) AS data FROM tb_mine m $$);
+  SELECT count(*) AS tv_mine_rows FROM tv_mine;
+  RESET ROLE;
+
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_mine created
+(1 row)
+
+tv_mine_rows
+------------
+           1
+(1 row)
+
+step a_create_private: 
+  SET ROLE regress_rbo_creator;
+  SELECT tviews.pg_tviews_create('tv_peek', $$
+    SELECT m.pk_mine AS pk_peek, m.id,
+           jsonb_build_object('s', (SELECT s FROM owner_view LIMIT 1)) AS data
+    FROM tb_mine m $$);
+
+ERROR:  Failed to create TVIEW: permission denied to read view public.owner_view
+step a_reset: RESET ROLE;
