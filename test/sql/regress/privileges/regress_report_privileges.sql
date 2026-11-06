@@ -6,8 +6,8 @@
 -- caller learns nothing of its rows. Its type goes to `omitted_types`, as a type not
 -- asked for does (#230), and its rows are neither listed nor read, so the call no
 -- longer fails 42501. A collection is listed only when the caller may read both
--- the child and the parent TVIEW. The rule is table-level SELECT and USAGE on
--- the TVIEW's schema.
+-- the child and the parent TVIEW, its child type invalidated otherwise. The rule
+-- is table-level SELECT and USAGE on the TVIEW's schema.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_report_privileges.sql
 
@@ -99,16 +99,17 @@ COMMIT;
 RESET ROLE;
 
 -- 4. Collections: Comment.fk_post names posts, which the writer may not read.
+--    No post is named; Comment is invalidated and stands for all its collections.
 SET pg_tviews.publish_changes = rows;
 SET ROLE report_writer_270;
 BEGIN;
 UPDATE tb_comment SET fk_post = 2 WHERE pk_comment = 1;
 SELECT tviews.pg_tviews_flush_and_report() AS r \gset
 SELECT must(reported(:'r', 'Comment') = 1, 'collections, comment missing: ' || :'r');
-SELECT must(NOT (:'r'::jsonb)->'collections' ? 'Comment.fk_post',
-            'collections, posts named: ' || :'r');
-SELECT must((:'r'::jsonb)->'collections' ? 'Comment.fk_user',
-            'collections, readable parent missing: ' || :'r');
+SELECT must(NOT (:'r'::jsonb)->'collections' ?| ARRAY['Comment.fk_post', 'Comment.fk_user'],
+            'collections, listed for an invalidated type: ' || :'r');
+SELECT must((:'r'::jsonb)->'invalidated_types' ? 'Comment',
+            'collections, unreadable parent not invalidated: ' || :'r');
 COMMIT;
 RESET ROLE;
 RESET pg_tviews.publish_changes;

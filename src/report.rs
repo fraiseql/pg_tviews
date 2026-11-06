@@ -183,27 +183,21 @@ fn caller_rows(
 /// `null` when not asked for.
 type Rows = HashMap<(String, i64), Value>;
 
-/// Under row security, the changed rows a read as the caller returns (with
-/// their data when `include_data`), read before the limit applies, and the
-/// entities with deleted rows, which cannot be read any more.
+/// Under row security, the inserted and updated rows a read as the caller
+/// returns (with their data when `include_data`), read before the limit
+/// applies. A deleted row cannot be read any more.
 ///
 /// # Errors
 /// A failed read.
-fn read_under_row_security<'a>(
-    changes: &[&'a NetChange],
+fn read_under_row_security(
+    changes: &[&NetChange],
     info: &HashMap<String, EntityInfo>,
     include_data: bool,
-) -> TViewResult<(Rows, BTreeSet<&'a str>)> {
+) -> TViewResult<Rows> {
     let mut rows = HashMap::new();
-    let mut deleted = BTreeSet::new();
     let mut pks_by_entity: HashMap<&str, (pgrx::pg_sys::Oid, Vec<i64>)> = HashMap::new();
-    for c in changes {
-        let Some(i) = info.get(&c.entity).filter(|i| i.row_security) else {
-            continue;
-        };
-        if c.change == Change::Deleted {
-            deleted.insert(c.entity.as_str());
-        } else {
+    for c in changes.iter().filter(|c| c.change != Change::Deleted) {
+        if let Some(i) = info.get(&c.entity).filter(|i| i.row_security) {
             pks_by_entity
                 .entry(&c.entity)
                 .or_insert_with(|| (i.oid, Vec::new()))
@@ -216,7 +210,7 @@ fn read_under_row_security<'a>(
             rows.insert((entity.to_string(), pk), data);
         }
     }
-    Ok((rows, deleted))
+    Ok(rows)
 }
 
 fn build_report(
@@ -267,16 +261,16 @@ fn build_report(
         .filter(listed)
         .collect();
 
-    let (mut rows, shielded) = read_under_row_security(&changes, &info, include_data)?;
-    let shielded: BTreeSet<String> = shielded.into_iter().map(typename).collect();
-    let mut changes: Vec<NetChange> = changes
-        .into_iter()
-        .filter(|c| {
+    // Every change asked for is either listed or its type is invalidated: under
+    // row security, a row a read as the caller does not return is not listed.
+    let mut rows = read_under_row_security(&changes, &info, include_data)?;
+    let (changes, unlisted): (Vec<&NetChange>, Vec<&NetChange>) =
+        changes.into_iter().partition(|c| {
             !row_security(&c.entity)
                 || (c.change != Change::Deleted && rows.contains_key(&(c.entity.clone(), c.pk)))
-        })
-        .cloned()
-        .collect();
+        });
+    let mut unlisted: BTreeSet<String> = unlisted.iter().map(|c| typename(&c.entity)).collect();
+    let mut changes: Vec<NetChange> = changes.into_iter().cloned().collect();
     changes.sort_by(|a, b| (&a.entity, a.pk).cmp(&(&b.entity, b.pk)));
     let (reported, left_out) = changes.split_at(changes.len().min(max_entities));
 
@@ -320,8 +314,10 @@ fn build_report(
         };
         item.insert("operation".into(), Value::String(op.into()));
         if include_data {
-            // A row written then removed by a later, unjournaled path is skipped.
+            // A row written then removed by a path that journals no row is
+            // not listed: its type is invalidated.
             let Some(data) = rows.remove(&(c.entity.clone(), c.pk)) else {
+                unlisted.insert(typename(&c.entity));
                 continue;
             };
             item.insert("data".into(), data);
@@ -334,7 +330,7 @@ fn build_report(
         .map(|c| c.entity.as_str())
         .chain(overflow.iter().map(String::as_str).filter(|e| asked(e)))
         .map(typename)
-        .chain(shielded)
+        .chain(unlisted)
         .collect();
     let types = |keep: &dyn Fn(&str) -> bool| -> BTreeSet<String> {
         entities
@@ -405,8 +401,10 @@ fn visible_parents(
 /// type in `invalidated` (rows left out past `max_entities`, an overflowed
 /// journal, an unlistable parent) stands for all its collections, as a type in
 /// the feed's `t` does: they are not listed. A collection whose child type is
-/// `hidden`, or whose parent TVIEW the caller may not read, is left out; one of
-/// a type in `row_secured` too, its type then in `invalidated`.
+/// `hidden` is left out. Every other collection is listed or its child type is
+/// `invalidated`: so is one of a type in `row_secured`, one whose parent TVIEW
+/// the caller may not read, and one naming a parent a read as the caller does
+/// not return.
 ///
 /// # Errors
 /// A captured id that is not JSON.
@@ -421,24 +419,22 @@ fn collections(
     invalidated: &mut BTreeSet<String>,
 ) -> TViewResult<Value> {
     let mut parent_readable: HashMap<pgrx::pg_sys::Oid, bool> = HashMap::new();
-    let asked: Vec<_> = parents
+    let mut asked = Vec::new();
+    for entry @ (c, _) in parents
         .iter()
         .filter(|(c, _)| wanted.is_none_or(|w| w.contains(&*c.child_type)))
         .filter(|(c, _)| !hidden.contains(&*c.child_type))
-        .filter(|(c, _)| {
-            let secured = row_secured.contains(&*c.child_type);
-            if secured {
-                invalidated.insert(c.child_type.to_string());
-            }
-            !secured
-        })
-        .filter(|(c, _)| {
-            *parent_readable
+    {
+        let listable = !row_secured.contains(&*c.child_type)
+            && *parent_readable
                 .entry(c.parent_table_oid)
-                .or_insert_with(|| crate::visibility::may_read_relation(c.parent_table_oid))
-        })
-        .cloned()
-        .collect();
+                .or_insert_with(|| crate::visibility::may_read_relation(c.parent_table_oid));
+        if listable {
+            asked.push(entry.clone());
+        } else {
+            invalidated.insert(c.child_type.to_string());
+        }
+    }
     let mut ids: std::collections::BTreeMap<&str, (&str, pgrx::pg_sys::Oid, BTreeSet<String>)> =
         std::collections::BTreeMap::new();
     for ((collection, _), listed) in asked.iter().zip(feed::listed(&asked)) {
@@ -456,14 +452,19 @@ fn collections(
             }
         }
     }
-    let mut out = Map::new();
+    let mut listed = Vec::new();
     for (key, (child, parent, ids)) in ids {
         if invalidated.contains(child) {
             continue;
         }
         // Unknown counts as active: the parents are then read as the caller.
         let ids = if crate::visibility::rls_active_for_caller(parent).unwrap_or(true) {
-            visible_parents(parent, &ids)?
+            let visible = visible_parents(parent, &ids)?;
+            if visible.len() < ids.len() {
+                invalidated.insert(child.to_string());
+                continue;
+            }
+            visible
         } else {
             ids
         };
@@ -474,7 +475,15 @@ fn collections(
             .map_err(|e| TViewError::SerializationError {
                 message: format!("{key}: unreadable parent id: {e}"),
             })?;
-        out.insert(key.to_string(), Value::Array(values));
+        listed.push((key, child, values));
     }
-    Ok(Value::Object(out))
+    // A child type invalidated after its first collections were read stands
+    // for those too.
+    Ok(Value::Object(
+        listed
+            .into_iter()
+            .filter(|(_, child, _)| !invalidated.contains(*child))
+            .map(|(key, _, values)| (key.to_string(), Value::Array(values)))
+            .collect(),
+    ))
 }
