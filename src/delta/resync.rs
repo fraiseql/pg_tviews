@@ -63,12 +63,15 @@ pub fn resync(source: Oid, keys: &[i64]) -> TViewResult<Vec<Resynced>> {
     // other session renames or drops it meanwhile.
     unsafe { pg_sys::LockRelationOid(source, pg_sys::AccessShareLock.cast_signed()) };
     let name = qualified(source)?;
-    if !may(source, pg_sys::ACL_UPDATE) {
+    if !crate::visibility::may_act_on_rows(source, pg_sys::ACL_UPDATE) {
         return Err(TViewError::PermissionDenied {
-            reason: format!("permission denied to resync {name}: it needs UPDATE on the table"),
+            reason: format!(
+                "permission denied to resync {name}: it needs UPDATE on the table and USAGE on \
+                 its schema"
+            ),
         });
     }
-    if !may(source, pg_sys::ACL_SELECT) {
+    if !crate::visibility::may_act_on_rows(source, pg_sys::ACL_SELECT) {
         return Err(TViewError::PermissionDenied {
             reason: format!("resync reads {name} as you: SELECT on it is required"),
         });
@@ -265,19 +268,6 @@ fn lookup(
         }
         Ok(out)
     })
-}
-
-/// Whether the current user holds `mode` (`UPDATE`, `SELECT`) on the table
-/// `relid`, or on each of its columns.
-fn may(relid: Oid, mode: u32) -> bool {
-    let mode = pg_sys::AclMode::from(mode);
-    // SAFETY: ACL checks by OID for the current user, outside any owner frame.
-    unsafe {
-        let user = pg_sys::GetUserId();
-        pg_sys::pg_class_aclcheck(relid, user, mode) == pg_sys::AclResult::ACLCHECK_OK
-            || pg_sys::pg_attribute_aclcheck_all(relid, user, mode, pg_sys::AclMaskHow::ACLMASK_ALL)
-                == pg_sys::AclResult::ACLCHECK_OK
-    }
 }
 
 /// The single-column integer primary key of `source`.

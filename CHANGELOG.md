@@ -70,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows that given rows of a base table reach, as an `UPDATE` of them would, without
   writing them or firing a trigger, for writes made while pg_tviews' triggers did not
   fire. A key whose row is gone deletes the row of each TVIEW keyed by it. Needs `UPDATE`
-  on the table; returns the rows changed per TVIEW.
+  and `SELECT` on the table and `USAGE` on its schema; returns the rows changed per TVIEW.
 
 ### Changed
 
@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Creating a TVIEW waits for writes in flight to the tables it reads**, so a write
   committed during the create is never missed. Creating or replacing a TVIEW now needs
   `READ COMMITTED`, like writing to its tables.
+- **Replacing a TVIEW that another TVIEW embeds works in autocommit.** The embedding
+  TVIEW's rows are recomputed before the replace returns; an implicit commit failed with
+  "queued refreshes … were never applied".
 - **`pg_tviews_resync` on a partition resyncs through its partitioned table**; a table no
   TVIEW reads is refused (`22023`). Resync and bulk enqueues respect
   `pg_tviews.max_queue_size`.

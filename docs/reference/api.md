@@ -40,7 +40,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reregister_all(strict boolean DEFAULT false)`](#pg_tviews_reregister_all) | `TABLE(entity text, status text)` | operator, and owner of each TVIEW |
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
-| [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` on `source` |
+| [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` and `SELECT` on `source`, `USAGE` on its schema |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
 | [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
 | [`pg_tviews_show_mapping_query(tview text, base_table oid)`](#pg_tviews_show_mapping_query) | `text` | owner |
@@ -302,8 +302,9 @@ rebuilds the TVIEW. `source` needs a single-column integer primary key, and a TV
 must read it (`22023` otherwise). A partition's rows are read from the partition and
 mapped through the TVIEWs reading its partitioned table.
 
-The caller needs `UPDATE` on `source`, what the write itself would need, and `SELECT`:
-the rows are read once, as the caller (`42501` without either). A table whose row
+The caller needs `UPDATE` on `source`, what the write itself would need, `SELECT`
+(the rows are read once, as the caller), on the table or on each of its columns, and
+`USAGE` on its schema (`42501` without any of them). A table whose row
 security applies to the caller is refused (`42501`): ask its owner. Each TVIEW's owner
 maps the rows it is handed, without reading `source`, and each TVIEW refreshes as its
 owner. More distinct keys than `pg_tviews.max_queue_size` is `54000`, checked before
@@ -816,7 +817,7 @@ definition in `DETAIL` and the fix in `HINT`. Every message is listed in the
 | `42601` | `syntax_error` | the definition does not parse, or is more than one `SELECT` |
 | `0A000` | `feature_not_supported` | a definition pg_tviews cannot maintain: a composite or expression `DISTINCT ON` key, a table read with its inheritance children, a table a logical replication subscription writes, nesting over 32 query levels, a `CREATE TABLE tv_* AS` form it cannot turn into a TVIEW, … ([Supported shapes](shapes.md)) |
 | `42804` | `datatype_mismatch` | a `pk_<entity>` that is not an integer, or an `id` that is not a `uuid` ([Keys](ddl.md#keys)) |
-| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function; a creator without `TRIGGER` on a table the definition reads; a temporary relation or type of the session named like one a TVIEW's owner resolves; `pg_tviews_resync` without `SELECT` or `UPDATE` on the table, or under its row security |
+| `42501` | `insufficient_privilege` | the caller does not own the TVIEW, or may not execute the function; a creator without `TRIGGER` on a table the definition reads; a temporary relation or type of the session named like one a TVIEW's owner resolves; `pg_tviews_resync` without `SELECT` or `UPDATE` on the table or `USAGE` on its schema, or under its row security |
 | `42P13` | `invalid_function_definition` | a function the TVIEW's refresh runs (one its definition calls, a trigger on its table) sets a `search_path` that does not end in `pg_temp` |
 | `42P17` | `invalid_object_definition` | TVIEWs would read each other in a cycle |
 | `42703` | `undefined_column` | a required column (`pk_<entity>`, …) is missing |

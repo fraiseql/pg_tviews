@@ -323,23 +323,22 @@ pub fn check_installable(
         }
         let (schema, relname, _) = get_table_name(table_oid)?;
         let qi_table = format!("{}.{}", ident::quoted(&schema), ident::quoted(&relname));
-        let (may_trigger, subscribed) = crate::utils::spi::connect(|client| {
+        let subscribed = crate::utils::spi::connect(|client| {
             client
                 .select(
-                    "SELECT pg_catalog.has_table_privilege($1, 'TRIGGER'), \
-                            EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
                                     WHERE s.srrelid = $1)",
                     None,
                     &[crate::utils::spi::oid(Some(table_oid))],
                 )?
                 .first()
-                .get_two::<bool, bool>()
+                .get_one::<bool>()
         })
         .map_err(|e| TViewError::CatalogError {
             operation: format!("Check the triggers tv_{entity} needs on {qi_table}"),
             pg_error: e.to_string(),
         })?;
-        if may_trigger != Some(true) && !read_before.contains(&table_oid) {
+        if !crate::visibility::caller_may_trigger(table_oid) && !read_before.contains(&table_oid) {
             let how = if embedded {
                 format!("this TVIEW's writes would refresh tv_{entity}")
             } else {
