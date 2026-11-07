@@ -174,7 +174,7 @@ Bulk statements are handled by the statement-level trigger every TVIEW has:
 -- - Single operations: Same performance (~1-2ms)
 -- - Bulk operations: 100-500× faster (10ms vs 5 seconds for 1000 rows)
 -- - Memory usage: Slightly higher
--- - Compatibility: PostgreSQL 16–18
+-- - Compatibility: PostgreSQL 18
 ```
 
 ### Index Optimization

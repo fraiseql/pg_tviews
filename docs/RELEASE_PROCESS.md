@@ -8,7 +8,7 @@ pull request that changes it must do, is in
 
 ## Before tagging
 
-- [ ] CI is green on the commit to tag: every SQL suite on PostgreSQL 16, 17 and 18
+- [ ] CI is green on the commit to tag: every SQL suite on PostgreSQL 18
       (`ci.yml`), lints and unit tests (`clippy.yml`), the upgrade matrix
       (`upgrade.yml`), the nightly assertion build (`nightly.yml`).
 - [ ] `CONFITURE_REF` in `.github/workflows/confiture.yml` pins the confiture commit

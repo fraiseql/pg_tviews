@@ -11,8 +11,6 @@
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
 \set VERBOSITY terse
-SELECT current_setting('server_version_num')::int >= 180000 AS pg18 \gset
-\if :pg18
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
 CREATE EXTENSION jsonb_delta;
@@ -138,6 +136,3 @@ UPDATE tb_kiosk SET name = 'k2';
 SELECT assert_fresh('tv_stand', 'pk_stand', 'a STORED generated column');
 
 \echo '#179 virtual generated columns: PASS'
-\else
-\echo '#179 virtual generated columns: PASS (skipped: no virtual generated columns before PostgreSQL 18)'
-\endif

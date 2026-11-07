@@ -13,7 +13,7 @@ replacement.
 
 | | |
 |---|---|
-| PostgreSQL | 16, 17, 18 |
+| PostgreSQL | 18 |
 | pgrx | 0.17.0 |
 | Rust | 1.98 (`rust-toolchain.toml`), to build from source |
 | jsonb_delta | optional: without it rows are recomputed, never patched |

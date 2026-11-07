@@ -8,9 +8,7 @@ CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 \ir ../lib/assert_fresh.sql
 
--- Generated columns are virtual on PostgreSQL 18 (its default), STORED before.
-SELECT CASE WHEN current_setting('server_version_num')::int >= 180000 THEN 'VIRTUAL'
-            ELSE 'STORED' END AS generated \gset
+\set generated VIRTUAL
 
 -- No foreign keys: the generator may orphan rows, which the views must handle.
 CREATE TABLE tb_customer (pk_customer int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

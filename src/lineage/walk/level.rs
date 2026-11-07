@@ -499,9 +499,8 @@ impl Walker<'_> {
                 }
                 pg_sys::RTEKind::RTE_JOIN => Ok(RteInfo::Join((*rte).joinaliasvars)),
                 pg_sys::RTEKind::RTE_FUNCTION => Ok(self.function_rte(rte)),
-                // PostgreSQL 18: grouped Vars point at the GROUP entry, whose
+                // Grouped Vars point at the GROUP entry, whose
                 // expressions are those of the level.
-                #[cfg(not(any(feature = "pg16", feature = "pg17")))]
                 pg_sys::RTEKind::RTE_GROUP => Ok(RteInfo::Join((*rte).groupexprs)),
                 _ => Ok(RteInfo::Other),
             }

@@ -37,7 +37,7 @@ In each database that has pg_tviews:
 ```bash
 PGDATABASE=mydb docs/operations/upgrade/scripts/pre-upgrade-checks.sh
 ```
-It checks the PostgreSQL version (16, 17 or 18), the installed and available
+It checks the PostgreSQL version (18), the installed and available
 extension versions, health-check errors and prepared transactions. The essentials by
 hand:
 ```sql
@@ -64,8 +64,7 @@ cp lib/pg_tviews.so            "$(pg_config --pkglibdir)/"
 cp extension/pg_tviews.control "$(pg_config --sharedir)/extension/"
 cp extension/pg_tviews--*.sql  "$(pg_config --sharedir)/extension/"
 ```
-Or from source: `cargo pgrx install --release --pg-config "$(which pg_config)"`
-(add `--no-default-features --features pg16` or `pg17` for those versions).
+Or from source: `cargo pgrx install --release --pg-config "$(which pg_config)"`.
 
 Stop PostgreSQL before overwriting the library (overwriting a loaded library crashes
 its backends), then start it. Check that the new version is available:

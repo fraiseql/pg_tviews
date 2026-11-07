@@ -1,8 +1,8 @@
 # PostgreSQL Minor Version Upgrade
 
 ## Scope
-Upgrading PostgreSQL within the same major version (for example 16.4 to 16.6, or 18.0
-to 18.1). pg_tviews supports PostgreSQL 16, 17 and 18.
+Upgrading PostgreSQL within the same major version (for example 18.0
+to 18.1). pg_tviews supports PostgreSQL 18.
 
 ## What it means for pg_tviews
 - A minor upgrade replaces the server binaries and restarts the server. The data
@@ -30,7 +30,7 @@ psql -X -v ON_ERROR_STOP=1 -d mydb -f docs/operations/runbooks/scripts/health-ch
 ```
 
 ### Step 2: Install the new binaries and restart
-Follow your packaging (for example `apt install --only-upgrade postgresql-16`), then
+Follow your packaging (for example `apt install --only-upgrade postgresql-18`), then
 restart with a clean (`fast` or `smart`) shutdown:
 ```bash
 sudo systemctl restart postgresql
@@ -84,7 +84,7 @@ reinstall the release matching `extversion`, or update the extension:
 [Extension Updates](../extension/extension-minor-update.md).
 
 ## Related Guides
-- [Upgrading to PostgreSQL 16 from 15](pg15-to-pg16.md)
+- [Upgrading to PostgreSQL 18](to-pg18.md)
 - [Extension Updates](../extension/extension-minor-update.md)
 - [Troubleshooting Upgrades](troubleshooting-upgrades.md)
 - [Emergency Procedures](../../runbooks/04-incident-response/emergency-procedures.md)
