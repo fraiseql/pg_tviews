@@ -21,7 +21,7 @@ env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
+  JSONB_DELTA_REF: "32e7fd6bc724ffec31350fc3d02dbf50050d832f"  # v0.3.2
 
 jobs:
   upgrade-path:

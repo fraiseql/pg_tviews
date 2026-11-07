@@ -13,12 +13,12 @@ permissions:
 
 env:
   PGRX_VERSION: "0.17.0"
-  # jsonb_delta v0.3.0 (pgrx 0.17.0) builds for pg16-18 and ships 0.3.0 as its
-  # default_version. It is a byte-identical SQL drop-in over the 0.1.0/0.2.0
-  # contract pg_tviews is built against: detection is by extension presence
-  # only (no version pin), so CREATE EXTENSION lands on 0.3.0 unchanged.
+  # jsonb_delta v0.3.2 (pgrx 0.17.0) builds for pg16-18 and ships 0.3.2 as its
+  # default_version. Its install SQL is byte-identical to 0.3.0, the documented
+  # minimum, which is a SQL drop-in over the 0.1.0/0.2.0 contract pg_tviews is
+  # built against: detection is by extension presence only (no version pin).
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
+  JSONB_DELTA_REF: "32e7fd6bc724ffec31350fc3d02dbf50050d832f"  # v0.3.2
 
 jobs:
   test:
@@ -90,7 +90,7 @@ jobs:
           cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR} test-hooks" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
-      - name: Build and install jsonb_delta (real extension, 0.3.0)
+      - name: Build and install jsonb_delta (real extension, 0.3.2)
         run: |
           git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
           cd /tmp/jsonb_delta
@@ -120,10 +120,11 @@ jobs:
             n="$(psql -d postgres -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='$ext'")"
             test "$n" = "1" || { echo "FATAL: extension '$ext' not available in the cluster"; exit 1; }
           done
-          # Prove the suites exercise jsonb_delta 0.3.0 (the documented minimum),
-          # since the test scripts CREATE EXTENSION at default_version.
+          # Prove the suites exercise the pinned jsonb_delta (0.3.2, whose SQL
+          # equals the documented minimum 0.3.0), since the test scripts
+          # CREATE EXTENSION at default_version.
           jd_ver="$(psql -d postgres -tAc "SELECT default_version FROM pg_available_extensions WHERE name='jsonb_delta'")"
-          test "$jd_ver" = "0.3.0" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.0"; exit 1; }
+          test "$jd_ver" = "0.3.2" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.2"; exit 1; }
           psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
             || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
 
