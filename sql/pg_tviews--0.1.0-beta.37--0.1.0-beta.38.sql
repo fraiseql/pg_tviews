@@ -1,4 +1,4 @@
--- pg_tviews 0.1.0-beta.36 → 0.1.0-beta.37
+-- pg_tviews 0.1.0-beta.37 → 0.1.0-beta.38
 --
 -- Pending upgrade script: a pull request that changes the extension SQL adds its
 -- statements above the re-derivation (docs/development/extension-versioning.md).
