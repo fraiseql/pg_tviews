@@ -173,3 +173,23 @@ BEGIN
         RAISE EXCEPTION 'upgrade check: data_gin_index does not follow the managed GIN';
     END IF;
 END $$;
+
+-- The TVIEW reading a materialized view re-registered without a trigger on it,
+-- and a REFRESH still refreshes it (#308).
+SELECT pg_catalog.to_regclass('public.tv_byline') IS NOT NULL AS matview_fixture \gset
+\if :matview_fixture
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.mv_user_name'::regclass) THEN
+        RAISE EXCEPTION 'upgrade check: a trigger on materialized view mv_user_name';
+    END IF;
+END $$;
+UPDATE public.tb_user SET name = name || '+';
+REFRESH MATERIALIZED VIEW public.mv_user_name;
+DO $$ BEGIN
+    IF EXISTS ((SELECT pk_byline, data FROM public.tv_byline EXCEPT SELECT pk_byline, data FROM tviews.public__tv_byline)
+               UNION ALL
+               (SELECT pk_byline, data FROM tviews.public__tv_byline EXCEPT SELECT pk_byline, data FROM public.tv_byline)) THEN
+        RAISE EXCEPTION 'upgrade check: tv_byline does not follow a REFRESH of mv_user_name';
+    END IF;
+END $$;
+\endif

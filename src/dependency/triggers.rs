@@ -374,6 +374,9 @@ struct Member {
     relid: pg_sys::Oid,
     root: pg_sys::Oid,
     partitioned: bool,
+    /// No trigger watches it (a materialized view, a foreign table, a sequence):
+    /// a plan reads it, but it gets no trigger, as at creation ([`trigger_plan`]).
+    unwatched: bool,
 }
 
 /// Each table of `tables` with every member of its partition tree and of its
@@ -381,7 +384,7 @@ struct Member {
 fn members(tables: &[pg_sys::Oid]) -> TViewResult<Vec<Member>> {
     let query = "SELECT m.relid, \
                         COALESCE(pg_catalog.pg_partition_root(m.relid)::pg_catalog.oid, m.relid), \
-                        c.relkind = 'p' \
+                        c.relkind = 'p', c.relkind \
                  FROM (SELECT relid::pg_catalog.oid FROM pg_catalog.pg_partition_tree( \
                            COALESCE(pg_catalog.pg_partition_root($1), $1)) \
                        UNION SELECT relid::pg_catalog.oid FROM pg_catalog.pg_partition_tree($1) \
@@ -396,11 +399,14 @@ fn members(tables: &[pg_sys::Oid]) -> TViewResult<Vec<Member>> {
                     row.get::<pg_sys::Oid>(1)?,
                     row.get::<pg_sys::Oid>(2)?,
                     row.get::<bool>(3)?,
+                    row.get::<i8>(4)?,
                 ) {
-                    (Some(relid), Some(root), Some(partitioned)) => Some(Member {
+                    (Some(relid), Some(root), Some(partitioned), Some(relkind)) => Some(Member {
                         relid,
                         root,
                         partitioned,
+                        unwatched: crate::lineage::Unwatched::of_relkind(relkind.cast_unsigned())
+                            .is_some(),
                     }),
                     _ => None,
                 },
@@ -450,6 +456,11 @@ pub fn sync_tables(tables: &[pg_sys::Oid]) -> TViewResult<()> {
     };
     for member in members(tables)? {
         let mut wanted: Vec<&TriggerSpec> = Vec::new();
+        if member.unwatched {
+            let keep = kept_whole || kept.contains(&member.relid);
+            sync_table(&member, &wanted, keep)?;
+            continue;
+        }
         for reader in &readers(member.relid, member.partitioned).readers {
             wanted.extend(specs(reader.set, member.partitioned));
         }
