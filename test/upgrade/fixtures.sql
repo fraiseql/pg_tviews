@@ -206,3 +206,16 @@ CREATE TABLE tb_event_2 PARTITION OF tb_event FOR VALUES FROM (100) TO (200);
 INSERT INTO tb_event (pk_event, kind) VALUES (1, 'a'), (150, 'b');
 SELECT pg_tviews_create('tv_event', $$
     SELECT pk_event, id, jsonb_build_object('kind', kind) AS data FROM tb_event $$);
+
+-- A materialized view read under full_refresh (#189, from 0.1.0-beta.26): no
+-- trigger watches it, and re-registering the TVIEW installs none (#308).
+SELECT COALESCE(NULLIF(pg_catalog.split_part(extversion, 'beta.', 2), '')::int >= 26, false)
+       AS matview_fixture
+FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews' \gset
+\if :matview_fixture
+CREATE MATERIALIZED VIEW mv_user_name AS SELECT pk_user, name FROM tb_user;
+SELECT pg_tviews_create('tv_byline', $$
+    SELECT p.pk_post AS pk_byline, p.id, jsonb_build_object('author', m.name) AS data
+    FROM tb_post p LEFT JOIN mv_user_name m ON m.pk_user = p.fk_user $$,
+    '{"uncascaded_tables": {"mv_user_name": "full_refresh"}}'::jsonb);
+\endif

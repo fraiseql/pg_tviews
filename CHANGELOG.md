@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI builds and tests against jsonb_delta **0.3.2**. Its install SQL is the same as
   0.3.0's, so 0.3.0 stays the documented minimum and no install needs to change.
 
+### Fixed
+
+- **Re-registering a TVIEW that reads a materialized view, a foreign table or a
+  sequence** (#308). `pg_tviews_reregister()`, `pg_tviews_reregister_all()` and so
+  `ALTER EXTENSION pg_tviews UPDATE` failed with `relation "…" cannot have triggers`
+  (or `"…" is a foreign table`), so an update aborted for the whole database.
+  Re-registration now installs no trigger on a relation no trigger watches, as
+  `pg_tviews_create()` never did.
+
 ## [0.1.0-beta.37] - 2026-11-07
 
 ### Fixed
