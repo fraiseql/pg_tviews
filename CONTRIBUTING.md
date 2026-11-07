@@ -16,7 +16,7 @@
 ## Lint policy
 
 `Cargo.toml` holds the policy CI enforces (`cargo clippy --all-targets -- -D warnings`
-on PostgreSQL 16, 17 and 18):
+on PostgreSQL 18):
 
 - clippy `all`, `pedantic` and `cargo` deny, `nursery` warns (and so fails under
   `-D warnings`); `undocumented_unsafe_blocks` and `unsafe_op_in_unsafe_fn` deny;

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **PostgreSQL 16 and 17 are no longer supported.** pg_tviews supports PostgreSQL 18
+  only: `CREATE EXTENSION` refuses an older server, the `pg16` and `pg17` Cargo
+  features are gone, and CI runs every suite on 18. A database on 16 or 17 moves to
+  PostgreSQL 18 first, on the release it runs now
+  ([Upgrading to PostgreSQL 18](docs/operations/upgrade/postgresql/to-pg18.md)).
+
+### Changed
+
+- CI builds and tests against jsonb_delta **0.3.2**. Its install SQL is the same as
+  0.3.0's, so 0.3.0 stays the documented minimum and no install needs to change.
+
 ### Fixed
 
 - **Re-registering a TVIEW that reads a materialized view, a foreign table or a

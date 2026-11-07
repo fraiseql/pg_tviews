@@ -13,12 +13,12 @@ permissions:
 
 env:
   PGRX_VERSION: "0.17.0"
-  # jsonb_delta v0.3.0 (pgrx 0.17.0) builds for pg16-18 and ships 0.3.0 as its
-  # default_version. It is a byte-identical SQL drop-in over the 0.1.0/0.2.0
-  # contract pg_tviews is built against: detection is by extension presence
-  # only (no version pin), so CREATE EXTENSION lands on 0.3.0 unchanged.
+  # jsonb_delta v0.3.2 (pgrx 0.17.0) builds for pg18 and ships 0.3.2 as its
+  # default_version. Its install SQL is byte-identical to 0.3.0, the documented
+  # minimum, which is a SQL drop-in over the 0.1.0/0.2.0 contract pg_tviews is
+  # built against: detection is by extension presence only (no version pin).
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
+  JSONB_DELTA_REF: "32e7fd6bc724ffec31350fc3d02dbf50050d832f"  # v0.3.2
 
 jobs:
   test:
@@ -27,12 +27,12 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Supported PostgreSQL versions: every one runs every suite. One more pg18
-      # run loads another library's executor and utility hooks before pg_tviews',
+      # PostgreSQL 18, the one supported version, runs every suite. A second run
+      # loads another library's executor and utility hooks before pg_tviews',
       # so errors raised under a foreign hook are exercised (pg_stat_statements
       # ships with the server packages).
       matrix:
-        pg: ["16", "17", "18"]
+        pg: ["18"]
         preload: [""]
         include:
           - pg: "18"
@@ -90,7 +90,7 @@ jobs:
           cargo pgrx install --release --no-default-features --features "pg${PG_MAJOR} test-hooks" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config" --sudo
 
-      - name: Build and install jsonb_delta (real extension, 0.3.0)
+      - name: Build and install jsonb_delta (real extension, 0.3.2)
         run: |
           git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
           cd /tmp/jsonb_delta
@@ -120,10 +120,11 @@ jobs:
             n="$(psql -d postgres -tAc "SELECT count(*) FROM pg_available_extensions WHERE name='$ext'")"
             test "$n" = "1" || { echo "FATAL: extension '$ext' not available in the cluster"; exit 1; }
           done
-          # Prove the suites exercise jsonb_delta 0.3.0 (the documented minimum),
-          # since the test scripts CREATE EXTENSION at default_version.
+          # Prove the suites exercise the pinned jsonb_delta (0.3.2, whose SQL
+          # equals the documented minimum 0.3.0), since the test scripts
+          # CREATE EXTENSION at default_version.
           jd_ver="$(psql -d postgres -tAc "SELECT default_version FROM pg_available_extensions WHERE name='jsonb_delta'")"
-          test "$jd_ver" = "0.3.0" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.0"; exit 1; }
+          test "$jd_ver" = "0.3.2" || { echo "FATAL: jsonb_delta default_version is '$jd_ver', expected 0.3.2"; exit 1; }
           psql -d postgres -tAc "SHOW shared_preload_libraries" | grep -q pg_tviews \
             || { echo "FATAL: pg_tviews not in shared_preload_libraries"; exit 1; }
 
@@ -134,20 +135,20 @@ jobs:
         run: REGRESS_NO_SKIP=1 ./test/run_regression_tests.sh
 
       # Every TVIEW shape equals its backing view after each of a few hundred
-      # seeded random writes. The pg18 job runs every mode (test/lib/modes.sh): the
+      # seeded random writes. The run without a foreign preload runs every mode (test/lib/modes.sh): the
       # patch path and the caches off as well.
       - name: Differential suite (test/sql/differential/run.sh)
         if: ${{ !cancelled() }}
         run: |
           source test/lib/modes.sh
-          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
+          if [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
           ./test/sql/differential/run.sh 60 "1 2 3 4 5"
 
       # Generated shapes: seeded random schemas and TVIEW definitions (joins,
       # embedded TVIEWs, aggregates, arrays, UNION, CTE, DISTINCT ON), each equal
       # to its view after every random write and mutation; the nightly run draws more.
       - name: Generated shapes (test/sql/differential/gen/run.sh)
-        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        if: ${{ !cancelled() && matrix.preload == '' }}
         run: |
           source test/lib/modes.sh
           MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 5 "1" 40
@@ -155,13 +156,13 @@ jobs:
       # What the oracle cannot see: each shape's stored plan and triggers, and the
       # feed of a fixed script, against test/sql/differential/expected/.
       - name: Golden files (test/sql/differential/golden.sh)
-        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        if: ${{ !cancelled() && matrix.preload == '' }}
         run: ./test/sql/differential/golden.sh
 
       # The walker read through the plan registration would store, one case per
       # query shape, against test/sql/plans/expected/.
       - name: Plan snapshots (test/sql/plans/run.sh)
-        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        if: ${{ !cancelled() && matrix.preload == '' }}
         run: ./test/sql/plans/run.sh
 
       # Random transactions from 8 clients at every isolation level: every TVIEW
@@ -172,7 +173,7 @@ jobs:
         run: |
           export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
           source test/lib/modes.sh
-          if [ "${PG_MAJOR}" = 18 ] && [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
+          if [ -z "${{ matrix.preload }}" ]; then export MODES="$MODES_ALL"; fi
           ./test/concurrency/fuzz/run.sh 60 "1 2 3" 8 mixed
           ./test/concurrency/fuzz/run.sh 30 "1" 8 values
 
@@ -183,7 +184,7 @@ jobs:
 
       # Two-phase commit through pgbouncer in transaction pooling mode.
       - name: pgbouncer suite (test/pgbouncer/run.sh)
-        if: ${{ !cancelled() && matrix.pg == '18' && matrix.preload == '' }}
+        if: ${{ !cancelled() && matrix.preload == '' }}
         run: |
           sudo apt-get install -y pgbouncer
           sudo systemctl stop pgbouncer 2>/dev/null || true

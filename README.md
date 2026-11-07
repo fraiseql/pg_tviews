@@ -391,7 +391,7 @@ shapes](docs/reference/shapes.md) lists each shape and what pg_tviews does with 
 
 ```bash
 # Prerequisites
-# - PostgreSQL 16, 17 or 18 (the supported versions; CREATE EXTENSION refuses older ones)
+# - PostgreSQL 18 (the supported version; CREATE EXTENSION refuses older ones)
 # - Rust toolchain (pinned in rust-toolchain.toml)
 
 # Install pgrx (must match project version)
@@ -403,8 +403,7 @@ cargo pgrx init
 # Clone and build
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
-                               # --no-default-features --features pg16 (or pg17)
+cargo pgrx install --release   # PostgreSQL 18
 
 # Preload the library, then restart PostgreSQL
 #   postgresql.conf: shared_preload_libraries = 'pg_tviews'

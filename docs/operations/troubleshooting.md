@@ -48,7 +48,7 @@ extension control file`)
    SELECT name, default_version, installed_version
    FROM pg_available_extensions WHERE name IN ('pg_tviews', 'jsonb_delta');
    ```
-2. **Install the build for this server's `pg_config`** (PostgreSQL 16, 17 or 18):
+2. **Install the build for this server's `pg_config`** (PostgreSQL 18):
    ```bash
    cargo pgrx install --release --pg-config "$(which pg_config)"
    ```

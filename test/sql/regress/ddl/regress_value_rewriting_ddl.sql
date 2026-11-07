@@ -23,9 +23,7 @@ CREATE EXTENSION jsonb_delta;
 CREATE EXTENSION pg_tviews;
 \ir ../../lib/assert_fresh.sql
 
-SELECT current_setting('server_version_num')::int >= 170000 AS has_set_expression \gset
-SELECT CASE WHEN current_setting('server_version_num')::int >= 180000 THEN 'VIRTUAL'
-            ELSE 'STORED' END AS generated \gset
+\set generated VIRTUAL
 
 -- ── generated columns ────────────────────────────────────────────────────────
 CREATE TABLE tb_gen (pk_gen bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -39,13 +37,11 @@ SELECT tviews.pg_tviews_create('tv_gen', $$
 SELECT tviews.pg_tviews_create('tv_raw', $$
     SELECT pk_gen AS pk_raw, id, jsonb_build_object('a', a) AS data FROM tb_gen $$);
 
-\if :has_set_expression
 ALTER TABLE tb_gen ALTER COLUMN g SET EXPRESSION AS (a * 100);
 SELECT assert_fresh('tv_gen', 'pk_gen', 'SET EXPRESSION of a stored generated column');
 ALTER TABLE tb_gen ALTER COLUMN v SET EXPRESSION AS (a * 1000);
 SELECT assert_fresh('tv_gen', 'pk_gen', 'SET EXPRESSION of a generated column');
 SELECT assert_fresh('tv_raw', 'pk_raw', 'SET EXPRESSION of a column tv_raw does not read');
-\endif
 ALTER TABLE tb_gen ALTER COLUMN g DROP EXPRESSION;
 UPDATE tb_gen SET a = a + 1;
 SELECT assert_fresh('tv_gen', 'pk_gen', 'DROP EXPRESSION, then a write');

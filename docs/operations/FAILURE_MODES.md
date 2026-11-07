@@ -179,7 +179,7 @@ prepared transaction keeps its locks until then.
    psql -d mydb -c "SELECT tviews.pg_tviews_version();"
    ```
 2. Install pg_tviews (and jsonb_delta) built for the new PostgreSQL version, then run
-   `pg_upgrade`. Supported versions: 16, 17, 18.
+   `pg_upgrade`. Supported version: 18.
 3. Verify:
    ```sql
    SELECT tviews.pg_tviews_version();

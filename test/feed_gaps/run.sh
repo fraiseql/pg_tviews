@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The change feed's gap counter (#247) against a throwaway cluster whose NOTIFY
 # queue fills in seconds: pg_tviews preloaded, max_notify_queue_pages at its
-# minimum (PostgreSQL 17+; skipped on older servers). pg_tviews and jsonb_delta
+# minimum. pg_tviews and jsonb_delta
 # must be installed for $PGBIN.
 #
 #   PGBIN=/usr/lib/postgresql/18/bin test/feed_gaps/run.sh
@@ -23,12 +23,6 @@ cleanup() {
     rm -rf "$dir"
 }
 trap cleanup EXIT
-
-major="$("$PGBIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')"
-if (( major < 17 )); then
-    echo "feed gaps: SKIP (max_notify_queue_pages needs PostgreSQL 17+, found $major)"
-    exit 0
-fi
 
 "$PGBIN/initdb" -D "$dir/data" -U postgres -A trust >/dev/null
 "$PGBIN/pg_ctl" -D "$dir/data" \

@@ -16,8 +16,8 @@
 
 Behaviour that needs a server is tested in SQL, not with `#[pg_test]`: a SQL test
 runs against the installed extension exactly as users call it. CI
-(`.github/workflows/ci.yml`) runs every SQL suite on PostgreSQL 16, 17 and 18, and
-once more on 18 with another library's hooks loaded first (`pg_stat_statements`).
+(`.github/workflows/ci.yml`) runs every SQL suite on PostgreSQL 18, and
+once more with another library's hooks loaded first (`pg_stat_statements`).
 
 ## Running the suites
 

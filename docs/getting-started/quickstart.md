@@ -4,7 +4,7 @@ Install pg_tviews, create a TVIEW, and watch it follow writes to its tables.
 
 ## Prerequisites
 
-- PostgreSQL 16, 17 or 18 installed and running
+- PostgreSQL 18 installed and running
 - Rust toolchain (the version pinned in `rust-toolchain.toml`, for building the extension)
 - A database for testing
 
@@ -29,8 +29,7 @@ cargo pgrx init
 ```bash
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-cargo pgrx install --release   # PostgreSQL 18; for 16 or 17 add
-                               # --no-default-features --features pg16 (or pg17)
+cargo pgrx install --release   # PostgreSQL 18
 ```
 
 ## 2. Enable the Extension

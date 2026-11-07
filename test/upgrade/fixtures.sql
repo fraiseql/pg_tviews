@@ -143,9 +143,7 @@ SELECT pg_tviews_create('tv_long_entity_name_for_the_upgrade_fitter_check_abcdef
     SELECT pk_long_entity_name_for_the_upgrade_fitter_check_abcdefghij, id, jsonb_build_object('label', label) AS data
     FROM tb_long_entity_name_for_the_upgrade_fitter_check_abcdefghij $$);
 \endif
--- A virtual generated column (PostgreSQL 18) read through a join (#179).
-SELECT current_setting('server_version_num')::int >= 180000 AS virtual_fixture \gset
-\if :virtual_fixture
+-- A virtual generated column read through a join (#179).
 CREATE TABLE tb_badge (pk_badge int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
     name text NOT NULL, label text GENERATED ALWAYS AS (upper(name)));
 CREATE TABLE tb_holder (pk_holder int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -155,7 +153,6 @@ INSERT INTO tb_holder (pk_holder, fk_badge) VALUES (1, 1), (2, 1);
 SELECT pg_tviews_create('tv_holder', $$
     SELECT h.pk_holder, h.id, jsonb_build_object('badge', b.label) AS data
     FROM tb_holder h JOIN tb_badge b ON b.pk_badge = h.fk_badge $$);
-\endif
 -- A TVIEW dropped with its schema while its base table lives elsewhere: from
 -- 0.1.0-beta.25 its backing view was left in tviews (#186); the upgrade drops it.
 -- Schema-qualified TVIEW names need the tviews schema (0.1.0 has neither).

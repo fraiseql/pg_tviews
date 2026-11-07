@@ -38,8 +38,8 @@ created again; the base tables keep their rows. The procedures:
   [Minor Version Upgrade](upgrade/postgresql/minor-version-upgrade.md).
 - Major versions: pg_upgrade or pg_dump/pg_restore with the same pg_tviews release
   installed for the new major version, then update pg_tviews. pg_tviews supports
-  PostgreSQL 16, 17 and 18; a server on 15 moves first
-  ([Upgrading from PostgreSQL 15](upgrade/postgresql/pg15-to-pg16.md)).
+  PostgreSQL 18; a server on an older major moves first
+  ([Upgrading to PostgreSQL 18](upgrade/postgresql/to-pg18.md)).
 
 After any restart that was not a clean shutdown, or a physical restore, UNLOGGED TVIEWs
 are empty:

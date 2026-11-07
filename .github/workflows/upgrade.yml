@@ -21,7 +21,7 @@ env:
   PG_MAJOR: "18"
   PGRX_VERSION: "0.17.0"
   JSONB_DELTA_REPO: "https://github.com/evoludigit/jsonb_delta.git"
-  JSONB_DELTA_REF: "f5c495030a92fcf112be098e9ef15f8f24d4a728"  # v0.3.0
+  JSONB_DELTA_REF: "32e7fd6bc724ffec31350fc3d02dbf50050d832f"  # v0.3.2
 
 jobs:
   upgrade-path:
@@ -34,10 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         # `previous`: the latest release, updated by `ALTER EXTENSION UPDATE`;
-        # `v0.1.0-beta.25`: an older one, dropped and recreated. Releases ship a
-        # PostgreSQL 18 build: on another major the release is built from its tag.
+        # `v0.1.0-beta.25`: an older one, dropped and recreated.
         from: [ previous ]
-        pg: [ "18", "16" ]
+        pg: [ "18" ]
         include:
           - from: v0.1.0-beta.25
             pg: "18"
@@ -89,19 +88,12 @@ jobs:
           jsonb-delta-repo: ${{ env.JSONB_DELTA_REPO }}
           jsonb-delta-ref: ${{ env.JSONB_DELTA_REF }}
 
-      - name: Install the previous release (its tarball on 18, its tag built elsewhere)
+      - name: Install the previous release (its tarball)
         if: steps.previous.outputs.skip != 'true'
         run: |
           pg_config="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
-          if [ "${PG_MAJOR}" = 18 ]; then
-            sudo cp /tmp/previous/lib/pg_tviews.so "$("$pg_config" --pkglibdir)/"
-            sudo cp /tmp/previous/extension/pg_tviews* "$("$pg_config" --sharedir)/extension/"
-          else
-            git fetch -q --depth 1 origin tag "${{ steps.previous.outputs.tag }}"
-            git worktree add -q /tmp/previous-src "${{ steps.previous.outputs.tag }}"
-            (cd /tmp/previous-src && cargo pgrx install --release --no-default-features \
-               --features "pg${PG_MAJOR}" --pg-config "$pg_config" --sudo)
-          fi
+          sudo cp /tmp/previous/lib/pg_tviews.so "$("$pg_config" --pkglibdir)/"
+          sudo cp /tmp/previous/extension/pg_tviews* "$("$pg_config" --sharedir)/extension/"
           sudo -u postgres psql -p "${PGPORT}" \
             -c "ALTER SYSTEM SET shared_preload_libraries = 'pg_tviews';"
           sudo pg_ctlcluster "${PG_MAJOR}" main restart

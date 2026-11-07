@@ -866,7 +866,7 @@ registration, `tv_<entity>` and its triggers.
 
 Two statements change the values a TVIEW reads without writing a row, and refresh the
 TVIEWs reading them in the statement: `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`
-(PostgreSQL 17 and later) on a generated column a definition reads, and
+on a generated column a definition reads, and
 `ALTER TYPE … RENAME VALUE` of an enum a TVIEW shows (a column of it, of a domain or an
 array over it, or a label named in the definition). `DROP EXPRESSION` keeps the
 values: nothing to refresh.

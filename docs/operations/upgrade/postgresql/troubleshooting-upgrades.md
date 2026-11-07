@@ -59,9 +59,9 @@ SELECT name, default_version, installed_version
 FROM pg_available_extensions WHERE name = 'pg_tviews';
 ```
 
-### `pg_tviews requires PostgreSQL 16 or later`
-`CREATE EXTENSION pg_tviews` on PostgreSQL 15 or older. Upgrade PostgreSQL first:
-[Upgrading from PostgreSQL 15](pg15-to-pg16.md).
+### `pg_tviews requires PostgreSQL 18 or later`
+`CREATE EXTENSION pg_tviews` on PostgreSQL 17 or older. Upgrade PostgreSQL first:
+[Upgrading to PostgreSQL 18](to-pg18.md).
 
 ### `could not access file "pg_tviews"` at server start
 `shared_preload_libraries` names pg_tviews but `pg_tviews.so` is missing for this
@@ -133,5 +133,5 @@ taken before the upgrade. Do not drop the extension to "reset" it:
 ## Related Guides
 - [Extension Updates](../extension/extension-minor-update.md)
 - [PostgreSQL Minor Upgrade](minor-version-upgrade.md)
-- [Upgrading from PostgreSQL 15](pg15-to-pg16.md)
+- [Upgrading to PostgreSQL 18](to-pg18.md)
 - [Extension versioning](../../../development/extension-versioning.md)

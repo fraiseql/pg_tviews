@@ -13,12 +13,6 @@
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
 
-SELECT current_setting('server_version_num')::int >= 180000 AS pg18 \gset
-\if :pg18
-\else
-\echo 'virtual column links: PASS (no virtual generated columns before PostgreSQL 18)'
-\quit
-\endif
 
 DROP EXTENSION IF EXISTS pg_tviews CASCADE;
 DROP EXTENSION IF EXISTS jsonb_delta CASCADE;
