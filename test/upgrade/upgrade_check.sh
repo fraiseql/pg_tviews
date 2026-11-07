@@ -174,7 +174,16 @@ SQL
                 || fail "the update did not warn about sec.label: $out"
             psql -X -d "$upgraded" -q -f "$here/verify_security.sql"
             echo "the update re-derived as owners, revoked column grants, reported function paths"
+            checked=()
             for case in "${refused[@]}"; do
+                # The previous release refused to build this catalog: nothing to update.
+                if [[ -n "$(psql -X -At -d "${upgraded}_$case" -c \
+                        "SELECT 1 FROM pg_catalog.pg_class WHERE oid = to_regclass('public.upgrade_unreachable')")" ]]; then
+                    echo "the $case catalog cannot be built with the previous release: $(psql -X -At \
+                        -d "${upgraded}_$case" -c "SELECT reason FROM public.upgrade_unreachable")"
+                    psql -X -d postgres -qc "DROP DATABASE ${upgraded}_$case" >/dev/null
+                    continue
+                fi
                 if out="$(psql -X -d "${upgraded}_$case" -v ON_ERROR_STOP=1 \
                         -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)"; then
                     fail "the update accepted the $case catalog"
@@ -184,8 +193,9 @@ SQL
                     "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")" != "$current" ]] \
                     || fail "the refused $case update changed the extension's version"
                 psql -X -d postgres -qc "DROP DATABASE ${upgraded}_$case" >/dev/null
+                checked+=("$case")
             done
-            echo "the update refused the catalogs it must: ${refused[*]}"
+            echo "the update refused the catalogs it must: ${checked[*]:-none}"
         fi
         ;;
     *) fail "usage: $0 after update|recreate" ;;

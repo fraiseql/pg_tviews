@@ -6,8 +6,9 @@
 --   sec.folded('upgrade'), which records who plans it. The update re-derives every
 --   TVIEW as its owner: only upgrade_owner may be recorded.
 -- - A column grant on tv_doc's backing view: the update leaves the view its owner's.
--- - tv_tag calls sec.label(), whose search_path does not end in pg_temp: the update
---   warns, and the health check reports it.
+-- - tv_tag calls sec.label(), whose search_path no longer ends in pg_temp: the update
+--   warns, and the health check reports it. A release that refuses such a function at
+--   create time still holds one changed afterwards, so the path is set after the create.
 -- - tv_shop's guards compare a char(2) code and test IS NULL over an outer join:
 --   the update re-derives them by the current rules.
 
@@ -38,7 +39,7 @@ BEGIN
     RETURN sec.who(step);
 END $$;
 CREATE FUNCTION sec.label(t text) RETURNS text LANGUAGE sql IMMUTABLE
-    SET search_path = sec AS $$ SELECT upper(t) $$;
+    SET search_path = sec, pg_temp AS $$ SELECT upper(t) $$;
 ALTER FUNCTION sec.label(text) OWNER TO upgrade_owner;
 
 SET ROLE upgrade_owner;
@@ -68,6 +69,7 @@ SELECT pg_tviews_create('sec.tv_shop', $q$
         'open', n.pk_notice IS NULL) AS data
     FROM sec.tb_shop s LEFT JOIN sec.tb_notice n ON n.kind = 'closed'
     WHERE n.pk_notice IS NULL $q$, '{"uncascaded_policy": "full_refresh"}');
+ALTER FUNCTION sec.label(text) SET search_path = sec;
 RESET ROLE;
 
 SELECT format('GRANT SELECT (data) ON %s TO upgrade_column_reader', view)

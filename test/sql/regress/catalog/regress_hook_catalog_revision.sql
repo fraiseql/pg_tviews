@@ -54,8 +54,9 @@ BEGIN
         'DROP TABLE plain_t'
     ] LOOP
         got := ddl_error(stmt);
+        -- The remedy depends on how old the catalog is (regress_versioning.sql).
         IF coalesce(got, '') NOT LIKE
-           '%library catalog revision%does not match the installed extension%ALTER EXTENSION pg_tviews UPDATE%' THEN
+           '%library catalog revision%does not match the installed extension%' THEN
             RAISE EXCEPTION '#227 FAIL: % under an older catalog: %', stmt, coalesce(got, 'no error');
         END IF;
     END LOOP;

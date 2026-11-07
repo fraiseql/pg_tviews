@@ -153,8 +153,9 @@ parent's row tag.
   that ran the write evicts by collection synchronously, from `collections`, instead of
   every result composing the child type. It lists the parents the rows it reports named,
   under the report's `reset`, `types` and savepoints, resolved as the last flush left
-  them; a parent the feed would publish by type puts the child type in
-  `invalidated_types`, and a type there stands for all its collections, as in `t`. The
+  them; a parent the feed would publish by type, or one the caller cannot read, puts
+  the child type in `invalidated_types`, and a type there stands for all its
+  collections, as in `t`. The
   rows must have been written with `rows`: otherwise nothing was captured and the
   report has no `collections`, whatever the setting when it runs.
 - A collection's parent is the TVIEW `tviews.registry.references` names: of two TVIEWs

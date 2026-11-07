@@ -129,6 +129,15 @@ A frame gives four guarantees:
   PostgreSQL report it quotes. The server log has the whole error. The owner, its
   members and superusers get it unchanged.
 
+What a TVIEW holds is what its owner's read returns, after the create too. A write
+copied into a TVIEW without that read (a direct, derived or fan-out patch) is taken
+only while the owner may read every relation its plan reads (`SELECT`, and `USAGE` on
+the schema) and no row security applies to the owner there; otherwise the row is
+recomputed as the owner, so a privilege revoked since fails the write (`42501`) and a
+policy filters the row as it filters the read. Re-deriving a TVIEW refuses it when a
+role reading for it may no longer read what it reads, and the health check's
+`owner_reads` component names it.
+
 Stored plans name relations by OID; the names they also hold are for messages. SQL is
 rendered from those OIDs inside the frame, right before it runs, so a renamed relation
 is still the one read and a relation taking its old name never is.
@@ -146,7 +155,7 @@ owner frame, by one module, `src/visibility.rs`:
 
 | Function | What the caller sees |
 |---|---|
-| `pg_tviews_flush_and_report()` | the rows of readable TVIEWs only, the others' types in `omitted_types`; under row security, only the changed rows a read as the caller returns (deleted rows not listed, the type in `invalidated_types`); collections only when the child and parent TVIEWs are readable, and only parents a read as the caller returns |
+| `pg_tviews_flush_and_report()` | the rows of readable TVIEWs only, the others' types in `omitted_types`; under row security, only the changed rows a read as the caller returns; collections only when the child and parent TVIEWs are readable and a read as the caller returns every parent named. A change of a readable type left out for these reasons is named by its type in `invalidated_types`, never by its row |
 | `pg_tviews_show_queue()` | queued keys of readable TVIEWs without row security; the others' types in `omitted_types`; `queue_size` counts every key |
 | `pg_tviews_show_replication()` | `is_empty` read as the caller from the `tv_*` table, by OID; NULL unless readable without row security |
 | `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source`; a TVIEW's count of changed rows is NULL unless the caller reads it without row security |

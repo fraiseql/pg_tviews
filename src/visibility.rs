@@ -84,7 +84,8 @@ pub fn caller_may_trigger(relid: Oid) -> bool {
 
 /// Whether `user` holds `USAGE` on the schema of `relid`. False for a relation
 /// or schema that is gone.
-fn schema_usable(relid: Oid, user: Oid) -> bool {
+#[must_use]
+pub fn schema_usable(relid: Oid, user: Oid) -> bool {
     // SAFETY: catalog lookups and an ACL check by OID. The schema's ACL check
     // follows a syscache probe that found it, with no invalidation processed in
     // between.

@@ -501,15 +501,17 @@ it, or no `USAGE` on its schema), or of a TVIEW dropped since, are left out the 
 asked for or not, and its type listed in `omitted_types`: the report discloses no more
 than reading the TVIEWs would, and never fails on one the caller may not read. Under row
 security, a changed row is listed only when a read as the caller returns it, with or
-without `include_data`; deleted rows cannot be read any more, so those of a TVIEW under
-row security are not listed and its type is in `invalidated_types`. When the rows were
+without `include_data`; deleted rows cannot be read any more. Every other change of a
+readable TVIEW is listed or its type is in `invalidated_types`: a row under row security
+the caller does not read back, deleted or not, names its type, never itself. When the rows were
 written with `pg_tviews.publish_changes =
 'rows'`, `collections` names the collections they left or joined, as the change feed's
-`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order, for the collections
-whose child and parent TVIEWs the caller may both read, and only the parents a read as
-the caller returns. A child type in
-`invalidated_types` (rows left out, or a parent the feed cannot list) stands for all its
-collections, which are then not listed. Otherwise the key is absent: nothing was
+`c` does: `{"Comment.fk_post": [<post id>, …]}`, ids in text order. A collection is
+listed when the caller may read its child TVIEW without row security and its parent
+TVIEW, and a read as the caller returns every parent it names; otherwise its child type
+is in `invalidated_types`. A child type in `invalidated_types` (rows left out, a parent
+the feed cannot list, or one the caller cannot read) stands for all its collections,
+which are then not listed. Otherwise the key is absent: nothing was
 captured. See [GraphQL cascade](../user-guides/graphql-cascade.md).
 
 ```sql
@@ -567,7 +569,7 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `function_paths`, `reregister`
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`, `reregister`
 (TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
@@ -576,6 +578,12 @@ definition calls, through operators, aggregates and views, and the user triggers
 table) whose `search_path` setting does not end in `pg_temp`, with the setting that
 fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
 before the rule stays, and is reported here and warned about whenever it is re-derived.
+
+`owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
+what it reads: the TVIEW's owner or the owner of a view it reads through, lacking
+`SELECT` on a relation or `USAGE` on its schema (a privilege revoked after the create).
+Such a TVIEW's next refresh fails, and re-deriving it (`pg_tviews_reregister()`, every
+update) refuses it (`42501`): grant each privilege named, or drop the TVIEW.
 
 `contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
 yields rows (a restore that left the data out, a table emptied by hand). It reads each

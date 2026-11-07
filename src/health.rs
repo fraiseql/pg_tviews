@@ -48,6 +48,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             seq_scan_check(),
             contents_check(),
             function_paths_check(),
+            owner_reads_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -327,6 +328,44 @@ fn function_paths_check() -> Check {
             format!(
                 "functions whose search_path does not end in pg_temp: {}; fix each with \
                  ALTER FUNCTION … SET search_path = <schemas>, pg_temp",
+                sample(&found)
+            ),
+        )
+    }
+}
+
+/// TVIEWs read for by a role that may no longer read what it reads (a privilege
+/// revoked after the create): their next refresh fails, and the update refuses
+/// them. Reads the catalog only.
+fn owner_reads_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("owner_reads", format!("could not be checked: {e}")),
+    };
+    let mut found = Vec::new();
+    for meta in &metas {
+        match crate::catalog::owner_reads::lacking(meta) {
+            Ok(lacking) if lacking.is_empty() => {}
+            Ok(lacking) => found.push(format!("tv_{} ({})", meta.entity_name, lacking.join("; "))),
+            Err(e) => {
+                return error(
+                    "owner_reads",
+                    format!("tv_{} could not be checked: {e}", meta.entity_name),
+                );
+            }
+        }
+    }
+    if found.is_empty() {
+        ok(
+            "owner_reads",
+            "The roles reading for every TVIEW may read what they read",
+        )
+    } else {
+        error(
+            "owner_reads",
+            format!(
+                "roles that may no longer read what they read for a TVIEW: {}; grant each \
+                 privilege named, or drop the TVIEW",
                 sample(&found)
             ),
         )

@@ -94,14 +94,15 @@ EXCEPTION WHEN OTHERS THEN
     RETURN msg || ' / ' || hint;
 END $f$;
 
--- The previous release's catalog: update the extension.
+-- A catalog older than the previous release's (0.1.0-beta.36, revision 12, which
+-- this release keeps): no update reaches this release; drop and recreate.
 SELECT set_revision(11);
 \c
 SET client_min_messages TO WARNING;
 DO $$ BEGIN
     IF coalesce(write_error(), '') NOT LIKE
-       '%library catalog revision%does not match the installed extension (11)%ALTER EXTENSION pg_tviews UPDATE%' THEN
-        RAISE EXCEPTION '#137 FAIL: previous catalog not refused: %', write_error();
+       '%library catalog revision%does not match the installed extension (11)%DROP EXTENSION pg_tviews CASCADE%' THEN
+        RAISE EXCEPTION '#137 FAIL: a catalog before the previous release not refused: %', write_error();
     END IF;
 END $$;
 -- An older catalog: no update reaches this release; drop and recreate.

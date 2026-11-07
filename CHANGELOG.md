@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The change report names the type of every change it does not list.**
+  `pg_tviews_flush_and_report()` lists a changed row of a readable TVIEW, or puts its
+  type in `invalidated_types` (and `truncated` is true): under row security, a row a read
+  as the caller does not return names its type, as a deleted row already did. A
+  collection whose parent TVIEW the caller may not read, or naming a parent a read as
+  the caller does not return, puts its child type there, which stands for all its
+  collections. The type is named, never the row.
+- **What a TVIEW holds is what its owner's read returns, after the create too.** A write
+  copied into a TVIEW without reading (a direct, derived or fan-out patch) is taken only
+  while the TVIEW's owner may read every relation its plan reads and no row security
+  applies to the owner there; otherwise the row is recomputed as the owner. A privilege
+  revoked from the owner since the create fails the write (`42501`), as an INSERT
+  already did, and a policy filters the row as it filters the read.
+- **Every update re-checks what each TVIEW's readers may read.** Re-deriving a TVIEW
+  (`pg_tviews_reregister()`, `pg_tviews_reregister_all()`, and so every
+  `ALTER EXTENSION pg_tviews UPDATE`) refuses one whose owner, or the owner of a view it
+  reads through, may no longer read what it reads (`42501`, naming the TVIEW, the role
+  and the privilege). This was checked by the 0.1.0-beta.36 update only.
+
+### Added
+
+- **Health check component `owner_reads`**: an `ERROR` naming each TVIEW whose owner, or
+  the owner of a view it reads through, may no longer read what it reads.
+
 ## [0.1.0-beta.36] - 2026-11-06
 
 ### Security

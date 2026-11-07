@@ -110,7 +110,10 @@ tviews.pg_tviews_flush_and_report(
 - **Only what the caller may read**: the refreshes run as each TVIEW's owner, but the
   report runs as the caller. Rows of a TVIEW the caller has no table-level `SELECT` on are
   left out, ids included, and its type listed in `omitted_types`. Grant the mutation's
-  role `SELECT` on the TVIEWs its response selects.
+  role `SELECT` on the TVIEWs its response selects. Under row security, a changed row
+  is listed only when a read as the caller returns it: one the caller does not read back,
+  deleted or not, puts its type in `invalidated_types`, so a cache evicts the type. The
+  same holds for a collection whose parent the caller cannot read.
 - **Collections**: when the rows were written with `pg_tviews.publish_changes = 'rows'`,
   the report also carries `collections`, the parents whose composed child lists the
   reported rows changed, as
@@ -121,7 +124,8 @@ tviews.pg_tviews_flush_and_report(
   since the last reset is listed once, before and after each write, ids in text order;
   `types` filters by the child type; `reset` and savepoints apply as to rows. A
   collection whose parents cannot be listed (a parent TVIEW without an `id` column, past
-  the feed's byte budget) puts its child type in `invalidated_types` instead, and a type
+  the feed's byte budget, a parent the caller cannot read) puts its child type in
+  `invalidated_types` instead, and a type
   there (rows left out past `max_entities` too) stands for all its collections, which
   are then not listed. Rows written without `rows` captured nothing: the key is absent,
   whatever the setting when the report runs. Absent means "not known", `{}` means
