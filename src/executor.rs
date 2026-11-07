@@ -193,35 +193,6 @@ impl Drop for OwnSnapshot {
     }
 }
 
-#[cfg(any(feature = "pg16", feature = "pg17"))]
-#[pg_guard]
-unsafe extern "C-unwind" fn executor_run(
-    query_desc: *mut pg_sys::QueryDesc,
-    direction: pg_sys::ScanDirection::Type,
-    count: u64,
-    execute_once: bool,
-) {
-    // SAFETY: the executor passes the started query it runs.
-    let writing = unsafe { writes_tracked_table(query_desc) };
-    {
-        let _frame = Frame::push();
-        // SAFETY: as above.
-        let _snapshot = unsafe { OwnSnapshot::activate(query_desc) };
-        // SAFETY: an error raised in the previous hook comes back as a Rust panic,
-        // which pops the frame on its way out.
-        unsafe {
-            match PREV_EXECUTOR_RUN {
-                Some(prev) => pg_sys::ffi::pg_guard_ffi_boundary(|| {
-                    prev(query_desc, direction, count, execute_once);
-                }),
-                None => pg_sys::standard_ExecutorRun(query_desc, direction, count, execute_once),
-            }
-        }
-    }
-    flush_after_reading_statement(writing);
-}
-
-#[cfg(not(any(feature = "pg16", feature = "pg17")))]
 #[pg_guard]
 unsafe extern "C-unwind" fn executor_run(
     query_desc: *mut pg_sys::QueryDesc,

@@ -3,14 +3,14 @@
 -- existing one as is: refuse one owned by another role, which could replace the
 -- objects created in it. The install script never uses CREATE OR REPLACE or
 -- IF NOT EXISTS, so an object planted under one of its names is an error too.
--- Supported PostgreSQL versions: 16, 17, 18. Refuse older servers here, before
+-- Supported PostgreSQL version: 18. Refuse older servers here, before
 -- anything loads the library, with a message instead of a load error. The library
 -- must be preloaded: its hooks, its shared statistics and its rebuild worker exist
 -- only then, and there is no mode without them.
 DO $$
 BEGIN
-    IF pg_catalog.current_setting('server_version_num')::int < 160000 THEN
-        RAISE EXCEPTION 'pg_tviews requires PostgreSQL 16 or later (this server is %)',
+    IF pg_catalog.current_setting('server_version_num')::int < 180000 THEN
+        RAISE EXCEPTION 'pg_tviews requires PostgreSQL 18 or later (this server is %)',
             pg_catalog.current_setting('server_version');
     END IF;
     IF NOT pg_catalog.current_setting('shared_preload_libraries')

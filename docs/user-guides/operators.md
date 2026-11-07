@@ -8,7 +8,7 @@ schema to work on.
 
 ## Requirements
 
-- PostgreSQL 16, 17 or 18. `CREATE EXTENSION` refuses older versions.
+- PostgreSQL 18. `CREATE EXTENSION` refuses older versions.
 - The library preloaded in every server that runs pg_tviews (see below).
 - The `jsonb_delta` extension, which pg_tviews requires to patch documents in place
   (`CREATE EXTENSION pg_tviews CASCADE` installs it).

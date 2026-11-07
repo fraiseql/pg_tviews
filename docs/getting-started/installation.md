@@ -7,7 +7,7 @@ Building pg_tviews from source, enabling it in a database, upgrading and removin
 pg_tviews is a compiled extension that PostgreSQL must preload
 (`shared_preload_libraries`). It runs where you install the server software yourself:
 
-- **self-hosted PostgreSQL** 16, 17 or 18 (build from source, or the release tarball);
+- **self-hosted PostgreSQL** 18 (build from source, or the release tarball);
 - **Kubernetes**: the operator mounts the extension's files into the PostgreSQL image
   (CloudNativePG 1.27+ image-volume extensions on PostgreSQL 18, with
   `extension_control_path`; a custom operand image otherwise) and preloads the library.
@@ -20,7 +20,7 @@ queries over plain views. Why, and what a SQL-only edition would cost:
 
 ## Requirements
 
-- **PostgreSQL** 16, 17 or 18, with its server development files (`pg_config`);
+- **PostgreSQL** 18, with its server development files (`pg_config`);
   `CREATE EXTENSION` refuses older versions
 - **Rust**: the toolchain pinned in `rust-toolchain.toml` (rustup installs it on the
   first build)
@@ -38,18 +38,16 @@ source ~/.cargo/env
 # pgrx, at the version pg_tviews uses
 cargo install --locked cargo-pgrx --version 0.17.0
 
-# Point pgrx at the PostgreSQL you install into (here 17)
-cargo pgrx init --pg17 "$(command -v pg_config)"
+# Point pgrx at the PostgreSQL you install into
+cargo pgrx init --pg18 "$(command -v pg_config)"
 
 # Build and install into that PostgreSQL
 git clone https://github.com/fraiseql/pg_tviews.git
 cd pg_tviews
-cargo pgrx install --release --pg-config "$(command -v pg_config)" \
-    --no-default-features --features pg17
+cargo pgrx install --release --pg-config "$(command -v pg_config)"
 ```
 
-The default feature is `pg18`: for PostgreSQL 18, leave out
-`--no-default-features --features …`; for 16, use `pg16`. Pass `--pg-config`
+Pass `--pg-config`
 explicitly so the files go to the server you run, not to a PostgreSQL that pgrx
 manages.
 
@@ -57,9 +55,9 @@ The server development files come from your distribution:
 
 | Platform | Package |
 |---|---|
-| Debian, Ubuntu (PGDG) | `postgresql-server-dev-17` |
-| RHEL, Rocky (PGDG) | `postgresql17-devel` |
-| macOS (Homebrew) | `postgresql@17` |
+| Debian, Ubuntu (PGDG) | `postgresql-server-dev-18` |
+| RHEL, Rocky (PGDG) | `postgresql18-devel` |
+| macOS (Homebrew) | `postgresql@18` |
 
 ## 2. Load the library
 

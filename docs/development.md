@@ -27,12 +27,12 @@ dedicated PR.
 **Ubuntu/Debian:**
 ```bash
 sudo apt-get update
-sudo apt-get install postgresql-17 postgresql-server-dev-17
+sudo apt-get install postgresql-18 postgresql-server-dev-18
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install postgresql@17
+brew install postgresql@18
 ```
 
 **Arch Linux:**
@@ -53,7 +53,7 @@ cargo install --locked cargo-pgrx
 cargo pgrx init
 
 # Or specify a specific version
-cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 ```
 
 ### 5. Install jsonb_delta
@@ -140,12 +140,7 @@ cargo pgrx install --release
 ### Testing Build
 
 ```bash
-# Run all tests for PostgreSQL 17
-cargo pgrx test pg17
-
-# Run tests for every supported version (16, 17, 18)
-cargo pgrx test pg16
-cargo pgrx test pg17
+# Run all tests for PostgreSQL 18
 cargo pgrx test pg18
 ```
 
@@ -175,7 +170,7 @@ Check PostgreSQL logs for extension errors:
 
 ```bash
 # View PostgreSQL logs
-tail -f /var/log/postgresql/postgresql-17-main.log
+tail -f /var/log/postgresql/postgresql-18-main.log
 
 # Or check systemd logs
 journalctl -u postgresql -f
@@ -240,14 +235,14 @@ cargo test --lib  # Should pass now
 ```bash
 # Improve code quality while maintaining tests
 cargo test --lib
-cargo pgrx test pg17
+cargo pgrx test pg18
 ```
 
 ### 5. Integration Test (QA)
 
 ```bash
 # Run full test suite
-cargo pgrx test pg17
+cargo pgrx test pg18
 psql -d test_db -f test/sql/*.sql
 ```
 
@@ -291,13 +286,13 @@ pg_config --version
 sudo systemctl status postgresql
 
 # Try specifying pg_config path explicitly
-cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 ```
 
 **Extension fails to load:**
 ```bash
 # Check PostgreSQL logs
-tail -f /var/log/postgresql/postgresql-17-main.log
+tail -f /var/log/postgresql/postgresql-18-main.log
 
 # Verify jsonb_delta is installed
 psql -c "SELECT * FROM pg_extension WHERE extname = 'jsonb_delta';"

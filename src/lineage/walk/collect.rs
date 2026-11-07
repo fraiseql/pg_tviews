@@ -50,12 +50,9 @@ pub(super) unsafe fn referenced_columns(
         depth: 0,
         vars: Vec::new(),
     };
-    // Join aliases (and PostgreSQL 18 GROUP entries) are resolved below, not
+    // Join aliases (and GROUP entries) are resolved below, not
     // walked: they name every column of the join.
-    #[cfg(not(any(feature = "pg16", feature = "pg17")))]
     let flags = pg_sys::QTW_IGNORE_JOINALIASES | pg_sys::QTW_IGNORE_GROUPEXPRS;
-    #[cfg(any(feature = "pg16", feature = "pg17"))]
-    let flags = pg_sys::QTW_IGNORE_JOINALIASES;
     // SAFETY: a read-only walk of a valid Query.
     unsafe {
         pg_sys::query_tree_walker(
@@ -81,7 +78,6 @@ pub(super) unsafe fn referenced_columns(
         let behind = unsafe {
             match (*rte).rtekind {
                 pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
-                #[cfg(not(any(feature = "pg16", feature = "pg17")))]
                 pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
                 _ => None,
             }
@@ -190,10 +186,7 @@ pub(super) unsafe fn column_read_counts(
         depth: 0,
         vars: Vec::new(),
     };
-    #[cfg(not(any(feature = "pg16", feature = "pg17")))]
     let flags = pg_sys::QTW_IGNORE_JOINALIASES | pg_sys::QTW_IGNORE_GROUPEXPRS;
-    #[cfg(any(feature = "pg16", feature = "pg17"))]
-    let flags = pg_sys::QTW_IGNORE_JOINALIASES;
     // SAFETY: a read-only walk of a valid Query.
     unsafe {
         pg_sys::query_tree_walker(
@@ -271,7 +264,6 @@ pub(super) fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) ->
     let behind = unsafe {
         match (*rte).rtekind {
             pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
-            #[cfg(not(any(feature = "pg16", feature = "pg17")))]
             pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
             _ => None,
         }

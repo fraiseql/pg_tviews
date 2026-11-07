@@ -91,6 +91,6 @@ creation: keep the writers paused until the last TVIEW exists.
 ## Rehearse
 
 `test/upgrade/upgrade_check.sh` does both procedures on fixture TVIEWs (CI runs them
-from the previous release on PostgreSQL 16 and 18, and from 0.1.0-beta.25): the window
+from the previous release and from 0.1.0-beta.25, on PostgreSQL 18): the window
 refuses row, statement, partition and `TRUNCATE` writes, every old function reaches
 pg_tviews' code, and the updated catalog equals a fresh install's.

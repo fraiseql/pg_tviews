@@ -14,10 +14,10 @@ say() { printf '%-12s %s\n' "$1" "$2"; }
 
 say "database" "$(q "SELECT current_database()")"
 
-# pg_tviews supports PostgreSQL 16, 17 and 18.
+# pg_tviews supports PostgreSQL 18.
 version_num="$(q "SELECT current_setting('server_version_num')::int")"
-if (( version_num < 160000 )); then
-    say "FAIL" "PostgreSQL $(q "SHOW server_version") is not supported: upgrade PostgreSQL to 16 or later first"
+if (( version_num < 180000 )); then
+    say "FAIL" "PostgreSQL $(q "SHOW server_version") is not supported: upgrade PostgreSQL to 18 first"
     problems=1
 else
     say "ok" "PostgreSQL $(q "SHOW server_version")"

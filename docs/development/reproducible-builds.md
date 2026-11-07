@@ -17,9 +17,7 @@ the same bytes.
 | Flags | `SOURCE_DATE_EPOCH=1`; `RUSTFLAGS` with `opt-level=3`, no debug info, stripped symbols, PIC, RELRO + `BIND_NOW`, non-executable stack |
 
 The container runs `cargo pgrx package --no-default-features --features pg18` into
-`/out`. pg_tviews supports PostgreSQL 16, 17 and 18; to build for 16 or 17, change the
-`postgresql-*` packages, the `cargo pgrx init` line and the `pg18` feature in the
-Dockerfile.
+`/out`. pg_tviews supports PostgreSQL 18 only.
 
 ## Build
 

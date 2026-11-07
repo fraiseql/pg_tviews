@@ -6,13 +6,13 @@ Procedures for upgrading PostgreSQL and pg_tviews on servers that run TVIEWs.
 
 | Upgrade | Guide | Downtime | What pg_tviews needs |
 |---------|-------|----------|----------------------|
-| PostgreSQL minor (16.4 to 16.6) | [Minor Version Upgrade](postgresql/minor-version-upgrade.md) | a restart | nothing; rebuild UNLOGGED TVIEWs only after an unclean shutdown |
-| PostgreSQL 15 to 16+ | [pg15 to pg16](postgresql/pg15-to-pg16.md) | pg_upgrade or dump/restore | same pg_tviews release built for the new major; update pg_tviews afterwards |
+| PostgreSQL minor (18.0 to 18.1) | [Minor Version Upgrade](postgresql/minor-version-upgrade.md) | a restart | nothing; rebuild UNLOGGED TVIEWs only after an unclean shutdown |
+| An older PostgreSQL to 18 | [To PostgreSQL 18](postgresql/to-pg18.md) | pg_upgrade or dump/restore | same pg_tviews release built for the new major; update pg_tviews afterwards |
 | pg_tviews: from the previous release | [Upgrading pg_tviews](../upgrade.md) | a restart, then one statement per database; writes refused in between | `ALTER EXTENSION pg_tviews UPDATE` (it re-derives every TVIEW) |
 | pg_tviews: from an older release, `0.1.0` installs included | [Upgrading pg_tviews](../upgrade.md#from-an-older-release) | until the last TVIEW is created again | `DROP EXTENSION pg_tviews CASCADE`, `CREATE EXTENSION pg_tviews`, the TVIEWs created again |
 | Problems | [Troubleshooting Upgrades](postgresql/troubleshooting-upgrades.md) | | |
 
-Supported PostgreSQL versions: 16, 17, 18. How pg_tviews versions its extension SQL and
+Supported PostgreSQL version: 18. How pg_tviews versions its extension SQL and
 update script: [Extension versioning](../../development/extension-versioning.md).
 
 ## Rules that apply to every upgrade
