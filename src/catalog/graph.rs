@@ -28,6 +28,9 @@ pub struct EntityDepGraph {
     /// `(child, parent)` → the parent's output columns equal to the child's key:
     /// the parents of a refreshed child row are the rows holding its key in one.
     pub lookup_columns: HashMap<(String, String), Vec<String>>,
+
+    /// Entity → its place in [`Self::topo_order`].
+    ranks: HashMap<String, usize>,
 }
 
 impl EntityDepGraph {
@@ -89,9 +92,30 @@ impl EntityDepGraph {
             parents,
             children,
             document_edges,
+            ranks: ranks(&topo_order),
             topo_order,
             lookup_columns,
         })
+    }
+
+    /// A graph of no edges whose entities come in `topo_order`.
+    #[cfg(test)]
+    pub fn ordered(topo_order: Vec<String>) -> Self {
+        Self {
+            parents: HashMap::new(),
+            children: HashMap::new(),
+            document_edges: HashSet::new(),
+            ranks: ranks(&topo_order),
+            topo_order,
+            lookup_columns: HashMap::new(),
+        }
+    }
+
+    /// `entity`'s place in the topological order; `usize::MAX` for an entity the
+    /// graph does not know, which comes after every known one.
+    #[must_use]
+    pub fn rank(&self, entity: &str) -> usize {
+        self.ranks.get(entity).copied().unwrap_or(usize::MAX)
     }
 
     /// The columns of `tv_<parent>` holding the key of a `child` row (none when
@@ -102,29 +126,15 @@ impl EntityDepGraph {
             .get(&(child.to_string(), parent.to_string()))
             .map_or(&[], Vec::as_slice)
     }
+}
 
-    /// `items` in dependency order: grouped by the entity `entity_of` gives each,
-    /// the groups in topological order, then those of entities the graph does
-    /// not know, by name (none is dropped). Each group keeps its order.
-    pub fn in_order<T>(&self, items: Vec<T>, entity_of: impl Fn(&T) -> &str) -> Vec<T> {
-        let mut groups: HashMap<String, Vec<T>> = HashMap::new();
-        for item in items {
-            groups
-                .entry(entity_of(&item).to_string())
-                .or_default()
-                .push(item);
-        }
-        let mut sorted = Vec::new();
-        for entity in &self.topo_order {
-            if let Some(group) = groups.remove(entity) {
-                sorted.extend(group);
-            }
-        }
-        let mut rest: Vec<_> = groups.into_iter().collect();
-        rest.sort_by(|a, b| a.0.cmp(&b.0));
-        sorted.extend(rest.into_iter().flat_map(|(_, group)| group));
-        sorted
-    }
+/// Each entity of `topo_order` with its place in it.
+fn ranks(topo_order: &[String]) -> HashMap<String, usize> {
+    topo_order
+        .iter()
+        .enumerate()
+        .map(|(i, entity)| (entity.clone(), i))
+        .collect()
 }
 
 /// Topological sort using Kahn's algorithm, dependencies first.
@@ -197,35 +207,6 @@ fn topological_sort(
 mod tests {
     use super::*;
 
-    #[test]
-    fn in_order_groups_by_entity_in_topological_order() {
-        // company -> user -> post
-        let graph = EntityDepGraph {
-            parents: HashMap::new(),
-            children: HashMap::new(),
-            document_edges: HashSet::new(),
-            topo_order: vec!["company".into(), "user".into(), "post".into()],
-            lookup_columns: HashMap::new(),
-        };
-        let keys = vec![
-            ("post", "10"),
-            ("user", "some-uuid"),
-            ("company", "1"),
-            ("user", "42"),
-            ("post", "text-val"),
-        ];
-        assert_eq!(
-            graph.in_order(keys, |k| k.0),
-            [
-                ("company", "1"),
-                ("user", "some-uuid"),
-                ("user", "42"),
-                ("post", "10"),
-                ("post", "text-val"),
-            ]
-        );
-    }
-
     fn depends_on(edges: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for (entity, dep) in edges {
@@ -285,21 +266,6 @@ mod tests {
         let edges = depends_on(&[("a", "b"), ("b", "a")]);
 
         assert!(topological_sort(&entities, &edges).is_err());
-    }
-
-    #[test]
-    fn in_order_keeps_entities_missing_from_the_graph() {
-        let graph = EntityDepGraph {
-            parents: HashMap::new(),
-            children: HashMap::new(),
-            document_edges: HashSet::new(),
-            topo_order: vec!["user".into()],
-            lookup_columns: HashMap::new(),
-        };
-        assert_eq!(
-            graph.in_order(vec![("unknown", 1), ("user", 2)], |k| k.0),
-            [("user", 2), ("unknown", 1)]
-        );
     }
 
     fn meta(

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub(super) struct Flush {
     pub(super) graph: std::rc::Rc<EntityDepGraph>,
     /// Keys still to refresh.
-    pub(super) pending: HashSet<RefreshKey>,
+    pub(super) pending: super::pending::Pending,
     /// The direct-patch chains of the pending keys.
     pub(super) patches: HashMap<RefreshKey, PatchState>,
     /// For a parent key patched from its children's patches: each `(child
@@ -39,9 +39,13 @@ impl Flush {
         patches: HashMap<RefreshKey, PatchState>,
     ) -> Self {
         let processed = HashSet::with_capacity(pending.len().max(16));
+        let mut queued = super::pending::Pending::new(std::rc::Rc::clone(&graph));
+        for key in pending {
+            queued.insert(key);
+        }
         Self {
             graph,
-            pending,
+            pending: queued,
             patches,
             guards: HashMap::new(),
             processed,
