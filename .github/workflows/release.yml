@@ -87,6 +87,12 @@ jobs:
       - name: Fetch the locked dependency tree
         run: cargo fetch --locked
 
+      # publish uploads the crate without compiling it: the build that proves it
+      # compiles from its packaged sources runs here, with no credential,
+      # before anything is written into the checkout (cargo package wants it clean).
+      - name: Check the crate builds from its package
+        run: cargo package --locked --no-default-features --features pg18
+
       - name: Build extension
         env:
           # `cargo pgrx package` has no --locked: offline, it builds only what
@@ -111,11 +117,6 @@ jobs:
             -cf - -C dist lib extension | gzip -n > "release/pg_tviews-${RELEASE}.tar.gz"
           tar tzf "release/pg_tviews-${RELEASE}.tar.gz"
           (cd release && sha256sum "pg_tviews-${RELEASE}.tar.gz" > SHA256SUMS)
-
-      # publish uploads the crate without compiling it: the build that proves it
-      # compiles from its packaged sources runs here, with no credential.
-      - name: Check the crate builds from its package
-        run: cargo package --locked --no-default-features --features pg18
 
       - name: Install SBOM tools
         run: |
