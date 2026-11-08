@@ -585,9 +585,15 @@ what it reads: the TVIEW's owner or the owner of a view it reads through, lackin
 Such a TVIEW's next refresh fails, and re-deriving it (`pg_tviews_reregister()`, every
 update) refuses it (`42501`): grant each privilege named, or drop the TVIEW.
 
-`contents` is a `WARNING` listing the TVIEWs whose table is empty while their definition
-yields rows (a restore that left the data out, a table emptied by hand). It reads each
-empty table's backing view as the TVIEW's owner, the only role that may read it.
+`contents` is `OK` only when every registered TVIEW was checked and holds rows. Otherwise
+it is a `WARNING` listing first the TVIEWs whose table is empty while their definition
+yields rows (a restore that left the data out, a table emptied by hand), then each TVIEW
+not checked, with the reason: `owner's privileges required`, or `unlogged, refill
+pending` (an UNLOGGED TVIEW that PostgreSQL reset; its next write refills it). A TVIEW is
+checked for a caller that has its owner's privileges, or that may read the whole TVIEW
+table: `SELECT` on it, `USAGE` on its schema, and no row security applying to the
+caller. It reads each empty table's backing view as the TVIEW's owner, the only role
+that may read it. On a standby in recovery nothing is read.
 
 `seq_scans` is a `WARNING` listing the TVIEWs whose mapping query (how writes to a base
 table map to TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows.

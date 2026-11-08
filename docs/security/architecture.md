@@ -161,8 +161,12 @@ owner frame, by one module, `src/visibility.rs`:
 | `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source`; a TVIEW's count of changed rows is NULL unless the caller reads it without row security |
 | Change feed (`pg_tviews.publish_changes`, a superuser setting) | listeners on `tviews_changes` receive the ids of changed rows of every TVIEW, readable by them or not ([ADR 0231](../adr/0231-publish-changes.md) §7): a channel is not a relation, and the setting is off by default |
 
-The health check plans or reads a TVIEW as its owner (`seq_scans`, `contents`) only for
-a caller with the owner's privileges; the other TVIEWs are counted in the message.
+The health check plans a TVIEW as its owner (`seq_scans`) only for a caller with the
+owner's privileges; the other TVIEWs are counted in the message. `contents` reads a TVIEW
+as its owner for a caller with the owner's privileges or that may read the whole TVIEW
+table (`SELECT`, its schema's `USAGE`, no row security applying): whether an empty table's
+definition yields rows tells such a caller only what a correct table would show it. The
+other TVIEWs are listed as not checked.
 
 ## Effects on other roles
 

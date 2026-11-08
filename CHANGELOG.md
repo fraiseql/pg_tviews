@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pg_tviews_check_health()`'s `contents` is `OK` only when it checked every TVIEW**
+  (#304). It said `OK` while skipping UNLOGGED TVIEWs and the TVIEWs of owners whose
+  privileges the caller lacks. Each TVIEW it does not check is now listed under
+  `WARNING`, after any empty ones, with the reason: `owner's privileges required` or
+  `unlogged, refill pending`. A caller that may read the whole TVIEW table (`SELECT`,
+  its schema's `USAGE`, no row security applying) is now checked without the owner's
+  privileges, and a trusted UNLOGGED TVIEW is checked like a logged one.
+
 ## [0.1.0-beta.38] - 2026-11-07
 
 ### Removed
