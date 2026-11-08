@@ -144,7 +144,9 @@ pub(crate) fn reconcile_locked(
 
 /// Bring the rows of a TVIEW's table to those of its backing view with three
 /// statements that touch only rows that change, journaling each change. Rows
-/// that leave go first, so a unique index holds throughout. Returns the
+/// that leave go first, so a unique index holds throughout. The statements join
+/// the whole table with the whole view under [`crate::owner::WholeTableJoins`]:
+/// their cost does not depend on the table's statistics. Returns the
 /// `pk_<entity>` of every row deleted, updated or inserted.
 pub(crate) fn reconcile(
     frame: &OwnerFrame,
@@ -189,6 +191,7 @@ pub(crate) fn reconcile(
     let pk = ident::quoted(meta.key_column());
 
     let returned = meta.returned("t", false);
+    let _joins = crate::owner::WholeTableJoins::pin();
     let mut changed = crate::refresh::run_journaled(
         frame,
         meta,

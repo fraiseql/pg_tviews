@@ -44,6 +44,13 @@ one. It prints ms per write.
 a 5,000-row table read by `READERS` (default `10 40 80`) TVIEWs. It prints ms per
 statement and per TVIEW.
 
+`full_refresh_stale.sh` measures a full refresh with fresh and with stale TVIEW-table
+statistics ([#301](https://github.com/fraiseql/pg_tviews/issues/301)): `SHAPES`
+(`plain`, `aggregate`) TVIEWs of `SIZES` (default `20000 200000`) rows under the
+`full_refresh` policy, emptied, analyzed and refilled for the stale run. It prints each
+step's ms (or `timeout`, `TIMEOUT` default `120s`) and the time and join of each
+statement writing the TVIEW.
+
 `compare.sh head=28971 base=28972 -- [rounds] [seconds] [clients ...] [-- write ...]`
 compares builds: one cluster per build, the writes interleaved build by build (the
 order alternating each round), each run started only when the 1-minute load average is

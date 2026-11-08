@@ -580,6 +580,42 @@ impl Drop for RenderPin {
     }
 }
 
+/// While alive, the planner joins by hash or merge wherever it can
+/// (`enable_nestloop = off`); dropping it restores the setting (an error's
+/// (sub)transaction abort restores it instead).
+///
+/// For statements that join a whole TVIEW table with its whole view (a full
+/// refresh). The table's statistics may say it is empty when it is not (emptied,
+/// analyzed, refilled since): a nested loop chosen on that estimate evaluates the
+/// view once per row. A key join always has a hash or merge form, and a nested
+/// loop stays where nothing else can run (a lateral call).
+pub struct WholeTableJoins {
+    guc_level: i32,
+}
+
+impl WholeTableJoins {
+    #[must_use]
+    pub fn pin() -> Self {
+        // SAFETY: the GUC nest level opened here is closed by Drop or by the abort.
+        let guc_level = unsafe {
+            let level = pg_sys::NewGUCNestLevel();
+            set_local(c"enable_nestloop", c"off");
+            level
+        };
+        Self { guc_level }
+    }
+}
+
+impl Drop for WholeTableJoins {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        // SAFETY: closes the nest level `pin` opened.
+        unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
+    }
+}
+
 /// While alive, `search_path` is `pg_catalog, pg_temp`; dropping it restores the
 /// session's (an error's (sub)transaction abort restores it instead).
 ///

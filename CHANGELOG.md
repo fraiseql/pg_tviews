@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as PostgreSQL's walkers do. The shared-memory setup checks that the lock it takes
   is `AddinShmemInitLock` on the running server before taking it.
 
+- **A full refresh's time no longer depends on the TVIEW table's statistics** (#301).
+  After a TVIEW was emptied, analyzed and refilled, its statistics said it held no
+  row, and the statements bringing it to its view could evaluate the view once per
+  row: seconds at a few thousand rows of an aggregate TVIEW, quadratic beyond. They
+  now join the table and the view by hash or merge.
+
 ### Changed
 
 - Every function that runs SQL derived from a TVIEW takes the token of its owner's
