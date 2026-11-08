@@ -8,8 +8,11 @@
 //! TVIEW's table or backing view, `pg_tview_meta`, a base table a mapping query
 //! reads) invalidates its relcache entry in every backend; the relcache callback
 //! bumps this backend's generation, and the next lookup in any memo sees the bump
-//! and clears it. The callback only touches a `Cell`: it can run in the middle of
-//! a catalog access, so it must neither take a lock nor call SPI.
+//! and clears it. A schema created, renamed or dropped bumps it too (a syscache
+//! callback on `NAMESPACEOID`): the memos hold SQL that names relations by their
+//! schema, and a schema rename sends no relcache invalidation for the relations
+//! in it. The callbacks only touch a `Cell`: they can run in the middle of a
+//! catalog access, so they must neither take a lock nor call SPI.
 
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
@@ -238,15 +241,34 @@ unsafe extern "C-unwind" fn relcache_callback(_arg: pg_sys::Datum, relid: Oid) {
     let relevant = relid == pg_sys::InvalidOid
         || WATCHED.with(|w| w.try_borrow().map_or(true, |w| w.contains(&relid)));
     if relevant {
-        GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+        bump_generation();
     }
 }
 
-/// Register the relcache callback. Called once from `_PG_init`.
+/// A schema was created, renamed or dropped: SQL rendered with its old name
+/// must not run again. Schemas change rarely, so every memo is cleared.
+#[pg_guard]
+unsafe extern "C-unwind" fn namespace_callback(_arg: pg_sys::Datum, _cache: i32, _hash: u32) {
+    CHANGED_IN_XACT.with(|c| c.set(true));
+    bump_generation();
+}
+
+/// Make the next lookup in any memo clear it. Only touches a `Cell`: callers run
+/// in invalidation callbacks.
+fn bump_generation() {
+    GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+}
+
+/// Register the relcache and schema callbacks. Called once from `_PG_init`.
 pub fn register_relcache_callback() {
-    // SAFETY: registers a static callback with no argument; valid in `_PG_init`.
+    // SAFETY: registers static callbacks with no argument; valid in `_PG_init`.
     unsafe {
         pg_sys::CacheRegisterRelcacheCallback(Some(relcache_callback), pg_sys::Datum::from(0));
+        pg_sys::CacheRegisterSyscacheCallback(
+            pg_sys::SysCacheIdentifier::NAMESPACEOID.cast_signed(),
+            Some(namespace_callback),
+            pg_sys::Datum::from(0),
+        );
     }
 }
 

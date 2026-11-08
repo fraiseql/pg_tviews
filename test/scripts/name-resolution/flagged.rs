@@ -30,4 +30,9 @@ fn flagged() {
     let _ = "SELECT pg_catalog.has_type_privilege('public.ty', 'USAGE')";
     let _ = format!("SELECT count(*) FROM {} WHERE true", mapping.table);
     let _ = format!("SELECT 1 FROM {} s", meta.source_table);
+    let _ = format!("DELETE FROM {} WHERE k = $1", collection.parent_table);
+    let table = &mapping.table;
+    let _ = format!("SELECT count(*) FROM {table} WHERE true");
+    let _ = format!(concat!("SELECT 1 ", "FROM {} s"), mapping.table);
+    let _ = format!("{} {}", head, meta.source_table);
 }

@@ -29,6 +29,9 @@ allowed=(
   "src/catalog/queries.rs|'{}'::pg_catalog.regnamespace|the extension's own schema"
   "src/dependency/triggers.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
   "src/lineage/analyze.rs|CREATE INDEX ON {} USING {}|advice in a notice, never run"
+  "src/hooks/ctas.rs|{}.{}|DDL: the name the CREATE TABLE AS statement wrote"
+  "src/publish.rs|p.\"id\"::pg_catalog.text FROM {} p|parent_table: named from pg_class by OID at load; renames clear the memo"
+  "src/catalog/collections.rs|(SELECT p.\"id\"::pg_catalog.text FROM {} p|parent_table: named from pg_class by OID at load; renames clear the memo"
 )
 
 # The SQL is in Rust string literals: each is read whole (a `\` continuation
@@ -45,8 +48,11 @@ allowed=(
 #     regclass or another object's name (`pg_relation_size('…')`, `nextval('…')`,
 #     `has_table_privilege(…)`, `pg_partition_root('…')`, `pg_get_viewdef('…')`,
 #     `has_function_privilege(…)`);
-#   a name stored in the catalog or a plan (`mapping.table`, `meta.source_table`)
-#     passed to a format!() whose string is SQL.
+#   a name stored in the catalog or a plan (`mapping.table`, `meta.source_table`,
+#     a collection's `parent_table`) reaching a format!() whose string is SQL:
+#     as an argument, as an inline capture (`{table}`) bound to one, through a
+#     `concat!()` format string, or composed by a string of placeholders only
+#     (`format!("{} {}", head, mapping.table)`).
 bad=$(ROOT="${NAME_CHECK_ROOT:-src}" python3 - "${allowed[@]}" <<'EOF'
 import os, re, sys
 
@@ -114,9 +120,14 @@ def literals(text):
 # A name stored in the catalog or a plan (`mapping.table`, `meta.source_table`,
 # `x.relname`) names whatever holds that name now: SQL gets the relation's OID
 # (`{r:relid}`), never the stored name.
-STORED_NAME = re.compile(r'\.\s*(?:table|source_table|relname|tview_name|qualified\s*\()(?![\w])', re.I)
+STORED_NAME = re.compile(r'\.\s*(?:table|source_table|parent_table|relname|tview_name|qualified\s*\()(?![\w])', re.I)
 SQL_LIKE = re.compile(r'\b(?:SELECT|FROM|JOIN|UPDATE|INSERT|DELETE|EXPLAIN|TRUNCATE|LOCK|ALTER|CREATE|DROP)\b')
 FORMAT = re.compile(r'\b(?:format|write|writeln)!\s*\(\s*(?:[\w.&]+\s*,\s*)?$')
+# A literal inside `format!(concat!(…), …)`: the format string is the concatenation.
+CONCAT = re.compile(r'\b(?:format|write|writeln)!\s*\(\s*(?:[\w.&]+\s*,\s*)?concat!\s*\(\s*(?:"(?:\\.|[^"\\])*"\s*,\s*)*$')
+# An inline capture, `{name}` or `{name:?}`, and where it is bound.
+CAPTURE = re.compile(r'(?<!\{)\{([a-z_][a-z0-9_]*)(?::[^{}]*)?\}', re.I)
+WORD = re.compile(r'[A-Za-z]{3,}')
 
 def format_args(text, end):
     """The arguments after a format string literal ending at `end`, to the call's ')'."""
@@ -138,12 +149,40 @@ def format_args(text, end):
         i += 1
     return text[end:]
 
+def binding(text, start, name):
+    """The right-hand side of the nearest `let name = …;` before `start`."""
+    found = None
+    for m in re.finditer(r'\blet\s+(?:mut\s+)?' + re.escape(name) + r'\s*(?::[^=;]+)?=\s*([^;]*);',
+                         text[max(start - 4000, 0):start]):
+        found = m.group(1)
+    return found
+
 def stored_names(text, start, end, sql):
-    if not SQL_LIKE.search(sql) or not FORMAT.search(text[max(start - 80, 0):start]):
+    """A stored name reaching a format!() string that is SQL: passed as an argument,
+    bound to an inline capture, through a concat!() format string, or composed
+    into SQL by a string that holds only placeholders."""
+    before = text[max(start - 400, 0):start]
+    if FORMAT.search(before[-80:]):
+        args_from = end
+    elif CONCAT.search(before):
+        # The arguments follow the concat!(): skip to its closing parenthesis.
+        rest = format_args(text, end)
+        args_from = end + len(rest) + 1
+        sql = sql + ' ' + ' '.join(m.group(1) for m in re.finditer(r'"((?:\\.|[^"\\])*)"', rest))
+    else:
         return
-    m = STORED_NAME.search(format_args(text, end))
+    composed = not WORD.search(CAPTURE.sub('', re.sub(r'\{[^{}]*\}', '', sql)))
+    if not SQL_LIKE.search(sql) and not composed:
+        return
+    m = STORED_NAME.search(format_args(text, args_from))
     if m:
         yield 'stored name ' + m.group(0).strip()
+        return
+    for c in CAPTURE.finditer(sql):
+        rhs = binding(text, start, c.group(1))
+        if rhs is not None and STORED_NAME.search(rhs):
+            yield 'stored name {' + c.group(1) + '} = ' + rhs.strip()
+            return
 
 def hits(sql):
     for m in TO_REG.finditer(sql):

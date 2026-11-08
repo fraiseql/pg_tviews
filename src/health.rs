@@ -197,17 +197,21 @@ fn seq_scan_check() -> Check {
                     continue;
                 };
                 let relid = pgrx::pg_sys::Oid::from(mapping.relid);
-                match crate::lineage::large_seq_scans(frame, relid, &mapping.table, template) {
+                // Named as it is called now: the plan's name is the one it had
+                // at registration.
+                let table = crate::utils::qualified_relname_from_oid(relid)
+                    .unwrap_or_else(|_| mapping.table.clone());
+                match crate::lineage::large_seq_scans(frame, relid, &table, template) {
                     Ok(found) => scans.extend(found.into_iter().map(|(relation, rows)| {
                         format!(
-                            "tv_{} (writes to {} scan {relation}, about {rows} rows)",
-                            meta.entity_name, mapping.table
+                            "tv_{} (writes to {table} scan {relation}, about {rows} rows)",
+                            meta.entity_name
                         )
                     })),
                     Err(e) => {
                         return Ok(Err(format!(
-                            "the mapping of {} in tv_{}: {e}",
-                            mapping.table, meta.entity_name
+                            "the mapping of {table} in tv_{}: {e}",
+                            meta.entity_name
                         )));
                     }
                 }

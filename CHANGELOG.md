@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unlogged, refill pending`. A caller that may read the whole TVIEW table (`SELECT`,
   its schema's `USAGE`, no row security applying) is now checked without the owner's
   privileges, and a trusted UNLOGGED TVIEW is checked like a logged one.
+- **Cached SQL follows schema renames** (#296). After `ALTER SCHEMA … RENAME`, a
+  backend that had already written through a TVIEW failed its next write with
+  `relation "…" does not exist` until it reconnected. Every backend now drops the SQL
+  it cached when a schema is created, renamed or dropped. `pg_tviews_check_health()`
+  names a mapping's table as it is called now, not as it was at registration.
 
 ## [0.1.0-beta.38] - 2026-11-07
 
