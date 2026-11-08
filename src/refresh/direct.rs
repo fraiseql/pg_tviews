@@ -68,6 +68,7 @@ pub fn derive_parent_chain(
 /// caller diffs these against the input to find rows that must recompute (not
 /// yet materialised).
 fn apply_direct_patch(
+    frame: &crate::owner::OwnerFrame,
     meta: &TviewMeta,
     rows: &[(i64, Vec<PatchEntry>)],
 ) -> TViewResult<Vec<(i64, bool, Patched)>> {
@@ -115,7 +116,7 @@ fn apply_direct_patch(
         args.push(crate::utils::spi::text_array(path));
     }
     Ok(
-        crate::utils::spi::kept_rows(&sql, &args, crate::utils::spi::Plan::Generic)?
+        crate::utils::spi::kept_rows(frame, &sql, &args, crate::utils::spi::Plan::Generic)?
             .into_iter()
             .filter_map(|row| match &row[..] {
                 [Some(pk), Some(changed), id, keys @ ..] => Some((
@@ -135,6 +136,7 @@ fn apply_direct_patch(
 /// holding those values are left alone. Returns the pks of the rows written,
 /// which are journaled and counted as applied.
 pub fn apply_fanout_patch(
+    frame: &crate::owner::OwnerFrame,
     meta: &TviewMeta,
     lookup_col: &str,
     rows: &[(i64, Map<String, Value>)],
@@ -155,7 +157,7 @@ pub fn apply_fanout_patch(
     }
     let mut changed = Vec::new();
     for (paths, (keys, values)) in shapes {
-        changed.extend(write_fanout(meta, lookup_col, &paths, keys, values)?);
+        changed.extend(write_fanout(frame, meta, lookup_col, &paths, keys, values)?);
     }
 
     crate::stats::record_direct_patches_applied(&meta.entity_name, changed.len() as u64);
@@ -181,7 +183,12 @@ pub fn apply_fanout_patch(
 ///
 /// # Errors
 /// Returns the query's error.
-pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TViewResult<u64> {
+pub fn count_fanout(
+    frame: &crate::owner::OwnerFrame,
+    meta: &TviewMeta,
+    lookup_col: &str,
+    keys: Vec<i64>,
+) -> TViewResult<u64> {
     let Some(lookup) = LookupKeys::of(keys) else {
         return Ok(0);
     };
@@ -190,7 +197,7 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
         crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
         lookup.predicate(&format!("t.{}", crate::utils::ident::quoted(lookup_col)), 1)
     );
-    let rows = crate::utils::spi::kept_rows(&sql, &lookup.args(), lookup.plan())?;
+    let rows = crate::utils::spi::kept_rows(frame, &sql, &lookup.args(), lookup.plan())?;
     Ok(rows
         .first()
         .and_then(|row| row.first()?.as_deref()?.parse().ok())
@@ -211,6 +218,7 @@ pub fn count_fanout(meta: &TviewMeta, lookup_col: &str, keys: Vec<i64>) -> TView
 /// the first key it equals; more are joined from the arrays, planned at each
 /// execution for their count.
 fn write_fanout(
+    frame: &crate::owner::OwnerFrame,
     meta: &TviewMeta,
     lookup_col: &str,
     paths: &[String],
@@ -274,14 +282,17 @@ fn write_fanout(
         })?;
         args.push(crate::utils::spi::text_array(path));
     }
-    Ok(crate::utils::spi::kept_rows(&sql, &args, lookup.plan())?
-        .into_iter()
-        .filter_map(|mut row| {
-            let id = row.get_mut(1).and_then(Option::take);
-            let keys = crate::catalog::collections::key_values(row.get(2..).unwrap_or_default());
-            Some((row.first()?.as_deref()?.parse().ok()?, (id, keys)))
-        })
-        .collect())
+    Ok(
+        crate::utils::spi::kept_rows(frame, &sql, &args, lookup.plan())?
+            .into_iter()
+            .filter_map(|mut row| {
+                let id = row.get_mut(1).and_then(Option::take);
+                let keys =
+                    crate::catalog::collections::key_values(row.get(2..).unwrap_or_default());
+                Some((row.first()?.as_deref()?.parse().ok()?, (id, keys)))
+            })
+            .collect(),
+    )
 }
 
 /// Apply all direct patches for one entity, one UPDATE per chain shape (chunked
@@ -289,6 +300,7 @@ fn write_fanout(
 /// applied/fallback counters. Returns the pks that fell back (row not materialised)
 /// and must be recomputed by the caller.
 pub fn apply_entity_patches(
+    frame: &crate::owner::OwnerFrame,
     meta: &TviewMeta,
     keyed_chains: Vec<(i64, Vec<PatchEntry>)>,
 ) -> TViewResult<Vec<i64>> {
@@ -308,7 +320,7 @@ pub fn apply_entity_patches(
     let mut fallback = Vec::new();
     for rows in groups.into_values() {
         for chunk in rows.chunks(batch) {
-            let materialised = apply_direct_patch(meta, chunk)?;
+            let materialised = apply_direct_patch(frame, meta, chunk)?;
             let present: HashSet<i64> = materialised.iter().map(|&(pk, ..)| pk).collect();
             let changed = materialised.iter().filter(|&&(_, c, _)| c).count() as u64;
 

@@ -307,17 +307,24 @@ fn fill_new(
     lineage: &crate::lineage::Lineage,
 ) -> TViewResult<u64> {
     if lineage.set_operation {
-        crate::refresh::refuse_duplicate_keys_in(
-            &format!(
-                "{}.{}",
-                crate::utils::ident::quoted(schema),
-                crate::utils::ident::quoted(table)
-            ),
-            &lineage.identity.name,
-            &crate::utils::qualified_relname_from_oid(view_oid)?,
-            "true",
-            &[],
-        )?;
+        // The current user, the creator or a replace's owner frame, owns the new
+        // TVIEW: its SQL runs in that role's frame.
+        // SAFETY: reads backend-global state.
+        let owner = crate::owner::Owner::of_role(unsafe { pg_sys::GetUserId() });
+        crate::owner::AsOwner::run(owner, |frame| {
+            crate::refresh::refuse_duplicate_keys_in(
+                frame,
+                &format!(
+                    "{}.{}",
+                    crate::utils::ident::quoted(schema),
+                    crate::utils::ident::quoted(table)
+                ),
+                &lineage.identity.name,
+                &crate::utils::qualified_relname_from_oid(view_oid)?,
+                "true",
+                &[],
+            )
+        })?;
     }
     populate_initial_data(table, schema, view_oid)
 }

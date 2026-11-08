@@ -344,8 +344,14 @@ fn capture_pass<'a>(
         };
         let mut locks = || -> TViewResult<()> {
             crate::concurrency::changed_rows(mapping, &mut pass, |column| {
-                with_transition_tables(trigger, entity, |client, table| {
-                    texts(client, Some(table), &changed_values(delta, column), &[])
+                with_transition_tables(trigger, entity, |frame, client, table| {
+                    texts(
+                        frame,
+                        client,
+                        Some(table),
+                        &changed_values(delta, column),
+                        &[],
+                    )
                 })
             })?;
             if !links {
@@ -389,9 +395,9 @@ fn fan_out(
         "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n) \
          FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
     );
-    let pairs = with_transition_tables(trigger, entity, |client, table| {
+    let pairs = with_transition_tables(trigger, entity, |frame, client, table| {
         let mut pairs = Vec::new();
-        for row in crate::utils::spi::kept_update_over(client, table, &sql, &[])? {
+        for row in crate::utils::spi::kept_update_over(frame, client, table, &sql, &[])? {
             match (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?) {
                 (Some(old), Some(new)) => pairs.push((old.0, new.0)),
                 _ => return Ok(None),
@@ -493,8 +499,8 @@ fn reached_through(
     let sql = format!("SELECT s.k, s.v, {} FROM ({sql}) s(k, v)", value.of("s.v"));
     let args = lookup.args();
     let plan = lookup.plan();
-    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
-        let Some(found) = locked_lookup(&sql, &args, plan, &target)? else {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
+        let Some(found) = locked_lookup(frame, &sql, &args, plan, &target)? else {
             return Ok(None);
         };
         let fields: std::collections::HashMap<i64, &serde_json::Map<String, serde_json::Value>> =
@@ -534,6 +540,7 @@ fn reached_through(
 /// # Errors
 /// Returns an error if the lookup fails.
 fn locked_lookup(
+    frame: &crate::owner::OwnerFrame,
     sql: &str,
     args: &[pgrx::datum::DatumWithOid<'_>],
     plan: crate::utils::spi::Plan,
@@ -541,7 +548,7 @@ fn locked_lookup(
 ) -> TViewResult<Option<Vec<crate::utils::spi::TextRow>>> {
     let mut locked = std::collections::HashSet::new();
     loop {
-        let found = crate::utils::spi::kept_rows(sql, args, plan)?;
+        let found = crate::utils::spi::kept_rows(frame, sql, args, plan)?;
         let new: Vec<String> = found
             .iter()
             .filter_map(|row| row.get(2).cloned().flatten())

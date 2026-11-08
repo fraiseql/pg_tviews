@@ -89,11 +89,16 @@ TVIEW's owner: its creation (the creating role, its owner-to-be),
 `pg_tviews_reregister_all`, `ALTER EXTENSION pg_tviews UPDATE`), the follow-up of a
 column rename, the health check's plans, `pg_tviews_resync`'s mappings, and every
 refresh and rebuild. One function opens frames, `AsOwner::run` in `src/owner.rs`, and
-hands its work a token nothing else can make. The analysis of a definition
-(`lineage::analyze`, its `EXPLAIN`s), the recompute and rebuild statements of
-`refresh/` and the mappings of `pg_tviews_resync` take that token and check that it
-names the owner of the TVIEW's table, failing with an internal error on a mismatch;
-the other statements of a refresh run inside the same frame without taking it. A frame
+hands its work a token nothing else can make. Every executor of SQL derived from a
+TVIEW takes that token: the kept statements of `utils::spi` (`kept_select`,
+`kept_update`, `kept_update_over`, `kept_rows`, `kept_rows_as`) and the frame variants
+of the generic runners (`run_in`, `one_in`, `run_counted_in`) check that it is the
+innermost open frame, and each entry point (an analysis, a recompute, a patch, a read
+set, a mapping, a fill) checks once that it names the owner of the TVIEW's table,
+failing with an internal error on a mismatch. Running a TVIEW's SQL outside its
+owner's frame does not compile. Catalog reads (`spi::catalog_*`) and reads made as the
+caller (`visibility::caller_rows_as`, which refuses to run inside a frame) take no
+token. A frame
 opened inside another (the extension's owner's, for a catalog write) makes the outer
 token unusable until it closes, so no TVIEW's SQL runs as the inner frame's role.
 

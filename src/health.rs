@@ -339,10 +339,12 @@ fn contents_of(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Contents>
     if crate::lifecycle::validity::needs_fill(&meta.entity_name, meta.tview_oid)? {
         return Ok(Contents::Unchecked(table, Unchecked::RefillPending));
     }
-    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |_frame| {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
+        frame.require_owner_of(meta.tview_oid)?;
         let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
         let has_rows = |relation: &str| {
-            crate::utils::spi::one::<bool>(
+            crate::utils::spi::one_in::<bool>(
+                frame,
                 &format!("SELECT EXISTS (SELECT 1 FROM {relation})"),
                 &[],
             )

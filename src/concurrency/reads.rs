@@ -60,23 +60,30 @@ pub fn rendered(
 ///
 /// # Errors
 /// Returns an error if a read-set query fails.
-pub fn lock_read_set(meta: &crate::catalog::TviewMeta, keys: &[KeyValue]) -> TViewResult<()> {
+pub fn lock_read_set(
+    frame: &crate::owner::OwnerFrame,
+    meta: &crate::catalog::TviewMeta,
+    keys: &[KeyValue],
+) -> TViewResult<()> {
     let mut pass = super::Pass::default();
-    read_set(meta, keys, &mut pass)?;
+    read_set(frame, meta, keys, &mut pass)?;
     super::take(&pass);
     Ok(())
 }
 
-/// Add to `pass` the locks [`lock_read_set`] takes for `meta`'s rows `keys`.
+/// Add to `pass` the locks [`lock_read_set`] takes for `meta`'s rows `keys`, its
+/// queries run in `frame`, the frame of the TVIEW's owner.
 ///
 /// # Errors
-/// Returns an error if a read-set query fails.
+/// Returns an error if a read-set query fails, or `frame` is not the owner's.
 pub fn read_set(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     keys: &[KeyValue],
     pass: &mut super::Pass,
 ) -> TViewResult<()> {
     use super::{LockTarget, Side};
+    frame.require_owner_of(meta.tview_oid)?;
     let Some(lookup) = crate::queue::key::key_lookup(&meta.key_type, keys)? else {
         return Ok(());
     };
@@ -134,7 +141,7 @@ pub fn read_set(
         .collect::<Vec<_>>()
         .join(" UNION ALL ");
     let mut values: Vec<Vec<String>> = vec![Vec::new(); sets.len()];
-    for row in crate::utils::spi::kept_rows(&sql, &lookup.args, lookup.plan)? {
+    for row in crate::utils::spi::kept_rows(frame, &sql, &lookup.args, lookup.plan)? {
         if let [Some(i), Some(value)] = row.as_slice()
             && let Ok(i) = i.parse::<usize>()
             && let Some(set) = values.get_mut(i)

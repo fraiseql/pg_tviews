@@ -180,7 +180,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         MappingKind::AllKeys => return Ok(()),
         _ => None,
     };
-    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
         // The owner reads the partition itself, under the partition's own privileges
         // and row security, not the root's: one it cannot read whole is refreshed in
         // full.
@@ -213,7 +213,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
         let lookup = || {
             crate::utils::spi::connect_mut(|client| {
                 let mut keys = Vec::new();
-                for row in crate::utils::spi::kept_update(client, &sql, &[])? {
+                for row in crate::utils::spi::kept_update(frame, client, &sql, &[])? {
                     keys.extend(key_of(&row, key_type)?);
                 }
                 Ok::<_, TViewError>(keys)
@@ -226,7 +226,7 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
                 mapping,
                 |column| {
                     crate::utils::spi::connect_mut(|client| {
-                        texts(client, None, &changed_values(&delta, column), &[])
+                        texts(frame, client, None, &changed_values(&delta, column), &[])
                     })
                     .map_err(|e| crate::utils::spi::error("the values the entering rows hold", &e))
                 },
@@ -299,7 +299,7 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                  SELECT DISTINCT k::{} FROM ({keys_sql}) s(k) WHERE k IS NOT NULL",
                 key_sql_type(key_type)
             );
-            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
                 // As for a statement's rows (map_statement), on the partition tree's
                 // root. Read-write: a fresh snapshot, which sees what the locks
                 // waited for.
@@ -308,14 +308,21 @@ pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewRe
                     mapping,
                     |column| {
                         crate::utils::spi::connect_mut(|client| {
-                            texts(client, None, &changed_values(&delta, column), &images)
+                            texts(
+                                frame,
+                                client,
+                                None,
+                                &changed_values(&delta, column),
+                                &images,
+                            )
                         })
                         .map_err(|e| crate::utils::spi::error("the values a row changed", &e))
                     },
                     || {
                         crate::utils::spi::connect_mut(|client| {
                             let mut keys = Vec::new();
-                            for row in crate::utils::spi::kept_update(client, &sql, &images)? {
+                            for row in crate::utils::spi::kept_update(frame, client, &sql, &images)?
+                            {
                                 keys.extend(key_of(&row, key_type)?);
                             }
                             Ok::<_, TViewError>(keys)

@@ -90,9 +90,9 @@ pub(super) fn run_with_transition_tables(
     key_type: &KeyType,
     sql: &str,
 ) -> TViewResult<Vec<KeyValue>> {
-    with_transition_tables(trigger, entity, |client, table| {
+    with_transition_tables(trigger, entity, |frame, client, table| {
         let mut keys = Vec::new();
-        for row in crate::utils::spi::kept_update_over(client, table, sql, &[])? {
+        for row in crate::utils::spi::kept_update_over(frame, client, table, sql, &[])? {
             keys.extend(key_of(&row, key_type)?);
         }
         Ok(keys)
@@ -109,16 +109,17 @@ pub(super) fn changed_values(delta: &str, value: &str) -> String {
 }
 
 /// The text in the first column of each row of `sql`, a query over the
-/// transition tables of table `over` when given.
+/// transition tables of table `over` when given, run in `frame`.
 pub(super) fn texts(
+    frame: &crate::owner::OwnerFrame,
     client: &mut spi::SpiClient<'_>,
     over: Option<Oid>,
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> TViewResult<Vec<String>> {
     let rows = match over {
-        Some(table) => crate::utils::spi::kept_update_over(client, table, sql, args)?,
-        None => crate::utils::spi::kept_update(client, sql, args)?,
+        Some(table) => crate::utils::spi::kept_update_over(frame, client, table, sql, args)?,
+        None => crate::utils::spi::kept_update(frame, client, sql, args)?,
     };
     let mut out = Vec::new();
     for row in rows {
@@ -127,22 +128,22 @@ pub(super) fn texts(
     Ok(out)
 }
 
-/// Run `f` on an SPI connection that sees the statement's transition tables, as
-/// `entity`'s owner, with the trigger's table (what the tables are of). Read-write: each query takes a fresh snapshot (READ
+/// Run `f` on an SPI connection that sees the statement's transition tables, in
+/// the frame of `entity`'s owner, with the trigger's table (what the tables are of). Read-write: each query takes a fresh snapshot (READ
 /// COMMITTED), so one run after a lock wait sees what it waited for.
 pub(super) fn with_transition_tables<T>(
     trigger: &PgTrigger<'_>,
     entity: &str,
-    f: impl FnOnce(&mut spi::SpiClient<'_>, Oid) -> crate::TViewResult<T>,
+    f: impl FnOnce(&crate::owner::OwnerFrame, &mut spi::SpiClient<'_>, Oid) -> crate::TViewResult<T>,
 ) -> TViewResult<T> {
     let table = trigger
         .relation()
         .map_err(|e| crate::utils::spi::error("the trigger's table", &e))?
         .oid();
-    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
         crate::utils::spi::connect_over_transition_tables(
             std::ptr::from_ref(trigger.trigger_data()).cast_mut(),
-            |client| f(client, table),
+            |client| f(frame, client, table),
         )
         .map_err(|e| crate::utils::spi::error("a query over the transition tables", &e))
     })

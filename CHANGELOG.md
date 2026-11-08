@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it cached when a schema is created, renamed or dropped. `pg_tviews_check_health()`
   names a mapping's table as it is called now, not as it was at registration.
 
+### Changed
+
+- Every function that runs SQL derived from a TVIEW takes the token of its owner's
+  frame (#295): running it outside the owner's frame is a compile error, no longer a
+  convention.
+
 ## [0.1.0-beta.38] - 2026-11-07
 
 ### Removed

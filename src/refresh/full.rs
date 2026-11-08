@@ -33,8 +33,8 @@ pub fn rebuild_one(entity: &str) -> TViewResult<u64> {
     }
     let inserted = AsOwner::run(Owner::of_entity(entity)?, |frame| {
         let (qi_tv, insert) = rebuild_statements(frame, entity)?;
-        crate::utils::spi::run(&format!("TRUNCATE {qi_tv}"), &[])?;
-        crate::utils::spi::run_counted(&insert)
+        crate::utils::spi::run_in(frame, &format!("TRUNCATE {qi_tv}"), &[])?;
+        crate::utils::spi::run_counted_in(frame, &insert)
     })?;
     // Rebuilt from its view: its rows can be trusted again.
     let meta = crate::catalog::TviewMeta::load_by_entity(entity)?.ok_or_else(|| {
@@ -62,8 +62,8 @@ pub fn refill(entity: &str) -> TViewResult<u64> {
     }
     let inserted = AsOwner::run(Owner::of_entity(entity)?, |frame| {
         let (qi_tv, insert) = rebuild_statements(frame, entity)?;
-        crate::utils::spi::run(&format!("DELETE FROM {qi_tv}"), &[])?;
-        crate::utils::spi::run_counted(&format!("{insert} ON CONFLICT DO NOTHING"))
+        crate::utils::spi::run_in(frame, &format!("DELETE FROM {qi_tv}"), &[])?;
+        crate::utils::spi::run_counted_in(frame, &format!("{insert} ON CONFLICT DO NOTHING"))
     })?;
     crate::queue::log::record_rebuilt(entity)?;
     Ok(inserted)
@@ -82,7 +82,7 @@ pub fn fill_empty_tview(entity: &str) -> TViewResult<()> {
     crate::concurrency::require_read_committed();
     AsOwner::run(Owner::of_entity(entity)?, |frame| {
         let (_, insert) = rebuild_statements(frame, entity)?;
-        crate::utils::spi::run(&insert, &[])
+        crate::utils::spi::run_in(frame, &insert, &[])
     })?;
     crate::queue::log::record_rebuilt(entity)
 }
@@ -111,7 +111,7 @@ fn rebuild_statements(frame: &OwnerFrame, entity: &str) -> TViewResult<(String, 
         .join(", ");
     // A key names one row: a UNION view returning several for one is refused
     // before the fill, instead of failing on the table's primary key.
-    crate::refresh::refuse_duplicate_keys(&meta, "true", &[])?;
+    crate::refresh::refuse_duplicate_keys(frame, &meta, "true", &[])?;
     let insert = format!("INSERT INTO {qi_tv} ({col_list}) SELECT {col_list} FROM {qi_view}");
     Ok((qi_tv, insert))
 }
@@ -159,7 +159,7 @@ pub(crate) fn reconcile(
     crate::concurrency::reads::lock_whole_read_set(meta)?;
 
     // A key names one row: a UNION view returning several for one is refused.
-    crate::refresh::refuse_duplicate_keys(meta, "true", &[])?;
+    crate::refresh::refuse_duplicate_keys(frame, meta, "true", &[])?;
     let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
 
@@ -190,6 +190,7 @@ pub(crate) fn reconcile(
 
     let returned = meta.returned("t", false);
     let mut changed = crate::refresh::run_journaled(
+        frame,
         meta,
         &format!(
             "DELETE FROM {qualified_tv} t \
@@ -227,6 +228,7 @@ pub(crate) fn reconcile(
             .collect::<Vec<_>>()
             .join(", ");
         changed.extend(crate::refresh::run_journaled(
+            frame,
             meta,
             &format!(
                 "UPDATE {qualified_tv} t SET {set} \
@@ -241,6 +243,7 @@ pub(crate) fn reconcile(
         )?);
     }
     changed.extend(crate::refresh::run_journaled(
+        frame,
         meta,
         &format!(
             "INSERT INTO {qualified_tv} AS t ({columns}) \

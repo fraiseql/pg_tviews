@@ -128,6 +128,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
+    // The extension's own catalog, not TVIEW SQL.
     crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
         let args = [
             crate::utils::spi::text(entity),
@@ -163,6 +164,7 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
 /// # Errors
 /// A [`TViewError::CatalogError`] when the row cannot be written.
 pub fn rename_group_key(entity: &str, relname: &str, old: &str, new: &str) -> TViewResult<()> {
+    // The extension's own catalog, not TVIEW SQL.
     crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
         crate::utils::spi::run(
             &format!(

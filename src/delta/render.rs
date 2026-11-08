@@ -72,12 +72,13 @@ pub(super) fn delta_sql(
 
 /// The select list of table `table_oid`'s rows with its virtual generated columns
 /// computed from their expressions, in column order and under the column names;
-/// `None` when it has none (always before PostgreSQL 18). The expressions are
+/// `None` when it has none. The expressions are
 /// written as `entity`'s owner sees them, so they resolve under its `search_path`.
 pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Option<String>> {
     if let Some(columns) = COMPUTED.with(|m| m.get(&table_oid)) {
         return Ok(columns);
     }
+    // A catalog read, as the owner so the expressions deparse under its path.
     crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
         let (columns, any_virtual) = crate::utils::spi::catalog_rows(
             "SELECT pg_catalog.string_agg( \

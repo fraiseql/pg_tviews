@@ -170,7 +170,7 @@ fn caller_rows(
         operation: format!("Read the rows of tv_{entity}"),
         pg_error: "its table is gone".to_string(),
     })?;
-    let rows = crate::utils::spi::kept_rows_as(&sql, &lookup.args(), lookup.plan(), |row| {
+    let rows = crate::visibility::caller_rows_as(&sql, &lookup.args(), lookup.plan(), |row| {
         Ok((row.get::<i64>(1)?, row.get::<pgrx::JsonB>(2)?))
     })?;
     Ok(rows

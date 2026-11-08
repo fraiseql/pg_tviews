@@ -449,6 +449,12 @@ impl OwnerFrame {
     }
 }
 
+impl crate::utils::spi::Frame for OwnerFrame {
+    fn require_current(&self) -> TViewResult<()> {
+        Self::require_current(self)
+    }
+}
+
 /// `Ok` when a frame owned by `frame_owner` may run the SQL of a TVIEW whose
 /// table `table` is owned by `table_owner`.
 fn check_frame_owner(frame_owner: Oid, table_owner: Oid, table: Oid) -> TViewResult<()> {

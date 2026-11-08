@@ -74,6 +74,7 @@ pub mod validity {
             "INSERT INTO {} VALUES ($1) ON CONFLICT DO NOTHING RETURNING entity",
             table()
         );
+        // The extension's own catalog, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
             // No row when it was there already (`first()` of an empty result is an error).
             let inserted = crate::utils::spi::connect_mut(|client| {
@@ -94,6 +95,7 @@ pub mod validity {
     /// Returns an error if `pg_tview_valid` cannot be written.
     pub fn forget(entity: &str) -> TViewResult<()> {
         let sql = format!("DELETE FROM {} WHERE entity = $1", table());
+        // The extension's own catalog, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
             crate::utils::spi::run(&sql, &[crate::utils::spi::text(entity)])
         })
@@ -182,7 +184,8 @@ pub mod validity {
             return Ok(());
         };
         let emptied =
-            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |_frame| {
+            crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
+                frame.require_owner_of(meta.tview_oid)?;
                 Ok(is_empty(&meta)? && {
                     let (_, view) = relations(&meta)?;
                     probe(&format!("SELECT EXISTS (SELECT 1 FROM {view})"), &[])?

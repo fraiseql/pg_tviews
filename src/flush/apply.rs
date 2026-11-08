@@ -110,7 +110,7 @@ impl Flush {
         // Writers of what these rows read meet them on its values (ADR 0207):
         // locked before the rows are locked and computed.
         let values: Vec<KeyValue> = keys.iter().map(|k| k.key.clone()).collect();
-        crate::concurrency::reads::lock_read_set(&*self.meta(entity)?, &values)?;
+        crate::concurrency::reads::lock_read_set(frame, &*self.meta(entity)?, &values)?;
 
         // Keys carrying a usable direct patch are written straight into
         // tv_<entity>; the others recompute. The setting is read again
@@ -129,13 +129,13 @@ impl Flush {
             recompute.push(key);
         }
         if !patched.is_empty() {
-            self.check_patches(entity, &values, &mut patched, &mut recompute)?;
+            self.check_patches(frame, entity, &values, &mut patched, &mut recompute)?;
         }
         let mut applied: HashSet<i64> = patched.iter().map(|(pk, _)| *pk).collect();
         if !patched.is_empty() {
             // A row not materialised yet cannot be patched: it is recomputed.
             let meta = self.meta(entity)?;
-            for pk in crate::refresh::direct::apply_entity_patches(&meta, patched)? {
+            for pk in crate::refresh::direct::apply_entity_patches(frame, &meta, patched)? {
                 applied.remove(&pk);
                 recompute.push(RefreshKey::pk(entity, pk));
             }
@@ -158,6 +158,7 @@ impl Flush {
     /// waited for its row lock: the row locked is that latest version.
     fn check_patches(
         &mut self,
+        frame: &OwnerFrame,
         entity: &str,
         values: &[KeyValue],
         patched: &mut Vec<(i64, Vec<PatchEntry>)>,
@@ -178,7 +179,7 @@ impl Flush {
         if patched.len() + recompute.len() < 2 && columns.is_empty() {
             return Ok(());
         }
-        let locked = crate::refresh::lock_in_key_order(&meta, values, &columns)?;
+        let locked = crate::refresh::lock_in_key_order(frame, &meta, values, &columns)?;
         let holds = |pk: i64| {
             guarded(pk).into_iter().flatten().all(|(child, child_pk)| {
                 let Some(row) = locked.get(&pk) else {
@@ -307,14 +308,14 @@ impl Flush {
         for ((entity, lookup_col), rows) in groups {
             let meta = self.meta(&entity)?;
             let changed =
-                crate::owner::AsOwner::run(crate::owner::Owner::of_tview(&meta)?, |_frame| {
+                crate::owner::AsOwner::run(crate::owner::Owner::of_tview(&meta)?, |frame| {
                     if self.max_rows.is_some() {
                         let keys = rows.iter().map(|(key, _)| *key).collect();
                         let children =
-                            crate::refresh::direct::count_fanout(&meta, &lookup_col, keys)?;
+                            crate::refresh::direct::count_fanout(frame, &meta, &lookup_col, keys)?;
                         self.charge(&meta, &format!("via {lookup_col}"), children)?;
                     }
-                    crate::refresh::direct::apply_fanout_patch(&meta, &lookup_col, &rows)
+                    crate::refresh::direct::apply_fanout_patch(frame, &meta, &lookup_col, &rows)
                 })?;
             self.queue_parents_to_recompute(&entity, &changed, &[])?;
         }

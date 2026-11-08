@@ -120,3 +120,19 @@ pub fn rls_active_for_caller(relid: Oid) -> TViewResult<bool> {
     let rls = unsafe { pg_sys::check_enable_rls(relid, caller.oid(), true) };
     Ok(rls == pg_sys::CheckEnableRlsResult::RLS_ENABLED.cast_signed())
 }
+
+/// The rows of `sql`, a kept statement planned as `plan` says
+/// ([`crate::utils::spi::kept_rows_as`]), read as the caller: outside every owner
+/// frame, so the caller's privileges and row security apply.
+///
+/// # Errors
+/// The query's error or `read`'s; an internal error inside an owner frame.
+pub fn caller_rows_as<R>(
+    sql: &str,
+    args: &[pgrx::datum::DatumWithOid<'_>],
+    plan: crate::utils::spi::Plan,
+    read: impl FnMut(&crate::utils::spi::KeptRow<'_>) -> TViewResult<R>,
+) -> TViewResult<Vec<R>> {
+    crate::owner::Owner::current_user()?;
+    crate::utils::spi::run_kept_rows(sql, args, plan, read)
+}
