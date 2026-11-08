@@ -28,7 +28,7 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catal
 pub(crate) fn refresh_time_dependent(
     chosen: &[std::rc::Rc<crate::catalog::TviewMeta>],
 ) -> TViewResult<Vec<String>> {
-    let order = crate::catalog::graph()?.topo_order;
+    let order = crate::catalog::graph()?.topo_order.clone();
     let mut chosen: Vec<&crate::catalog::TviewMeta> =
         chosen.iter().map(std::rc::Rc::as_ref).collect();
     chosen.sort_by_key(|meta| {
@@ -184,7 +184,7 @@ pub fn refresh_all_in_dependency_order() -> TViewResult<Vec<String>> {
         crate::refresh::full::rebuild_one(entity)?;
     }
     flush_after_rebuilds()?;
-    Ok(graph.topo_order)
+    Ok(graph.topo_order.clone())
 }
 
 /// The TVIEWs embedding `entity`'s, transitively: each with its depth and the

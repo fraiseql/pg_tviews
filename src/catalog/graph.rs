@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 ///
 /// Example: `tv_post` embeds `tv_user`, `tv_feed` embeds `tv_post`; the
 /// topological order is `["user", "post", "feed"]`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EntityDepGraph {
     /// Propagation parents: entity -> the entities embedding it, refreshed (via
     /// [`crate::propagate`]) when its rows change during a flush. A TVIEW reading

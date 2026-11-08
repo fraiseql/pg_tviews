@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The state of one flush.
 pub(super) struct Flush {
-    pub(super) graph: EntityDepGraph,
+    pub(super) graph: std::rc::Rc<EntityDepGraph>,
     /// Keys still to refresh.
     pub(super) pending: HashSet<RefreshKey>,
     /// The direct-patch chains of the pending keys.
@@ -34,7 +34,7 @@ pub(super) struct Flush {
 
 impl Flush {
     pub(super) fn new(
-        graph: EntityDepGraph,
+        graph: std::rc::Rc<EntityDepGraph>,
         pending: HashSet<RefreshKey>,
         patches: HashMap<RefreshKey, PatchState>,
     ) -> Self {
