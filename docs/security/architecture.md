@@ -124,6 +124,13 @@ A frame gives four guarantees:
   `on`, `quote_all_identifiers` `off`, `transform_null_equals` `off`,
   `standard_conforming_strings` `on`, `xmlbinary` `base64`, `xmloption` `content`,
   `gin_fuzzy_search_limit` `0`, `plan_cache_mode` `auto` and `jit` `off`.
+- **How a refresh is planned.** the planner settings (every `enable_*`, the cost constants, `effective_cache_size`,
+  `work_mem`, `hash_mem_multiplier`, the collapse limits, `geqo`, `geqo_threshold`,
+  `cursor_tuple_fraction`, `constraint_exclusion`, `max_parallel_workers_per_gather`,
+  `default_statistics_target`) at the server's values: the configuration file's, the
+  command line's or `ALTER DATABASE … SET`'s, else the built-in default. A session's
+  `SET enable_nestloop = off` or a role's `ALTER ROLE … SET` does not reach a refresh: the plans of the owner's
+  refresh are the server's, not the writer's.
   `default_text_search_config` is the TVIEW's own, its creator's. The constants a plan
   stores are rendered under the same settings, and a writer's trigger reads a row key
   that is not an integer under them too.

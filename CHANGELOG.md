@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every function that runs SQL derived from a TVIEW takes the token of its owner's
   frame (#295): running it outside the owner's frame is a compile error, no longer a
   convention.
+- **A refresh is planned under the server's planner settings** (#297). Every owner
+  frame pins the `enable_*` settings, the cost constants, `work_mem`,
+  `hash_mem_multiplier`, the collapse limits, `geqo`, `cursor_tuple_fraction`,
+  `constraint_exclusion`, `max_parallel_workers_per_gather` and
+  `default_statistics_target` to the values the configuration file, the command line
+  or `ALTER DATABASE … SET` gave, else to the built-in default. A writer's session or
+  role setting no longer steers the plans of the owner's refresh.
 
 ## [0.1.0-beta.38] - 2026-11-07
 
