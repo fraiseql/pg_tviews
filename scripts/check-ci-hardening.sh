@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # CI builds what was tested, with least privilege: the dependency tree is locked
 # and tracked, every workflow's token defaults to read-only, GH_TOKEN reaches
-# only the steps that call gh, every pinned reference is a commit, and the
-# release checkout keeps no credentials.
+# only the steps that call gh, every pinned reference is a commit, the release
+# checkout keeps no credentials, and no release job that holds a credential
+# compiles anything.
 set -u
 cd "$(dirname "$0")/.."
 bad=""
@@ -31,6 +32,27 @@ done < <(awk '/uses: actions\/checkout@/{c=1; n=NR; next}
               c && /persist-credentials: false/{c=0}
               c && /^[[:space:]]*- (name|uses|run):/{print FILENAME ":" n; c=0}
               END{if (c) print FILENAME ":" n}' .github/workflows/release.yml)
+
+while IFS= read -r uses; do
+  fail "$uses: not pinned to a commit SHA"
+done < <(grep -nE '^[[:space:]]*(- )?uses:' .github/workflows/*.yml .github/actions/*/action.yml \
+           | grep -vE 'uses: *\./|@[0-9a-f]{40}( |$)')
+
+# Release jobs that may write, sign or publish (a write or id-token permission)
+# check out nothing but the sources and compile nothing: cargo runs there only to
+# upload a crate another job verified (cargo publish --no-verify).
+while IFS= read -r at; do
+  fail "$at"
+done < <(awk '
+  function check() {
+    if (job != "" && cred && build) print FILENAME ": job " job " holds a credential and " build
+  }
+  /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { check(); job = $1; sub(":", "", job); cred = 0; build = ""; next }
+  /^[^[:space:]#]/ { check(); job = "" }
+  job != "" && /(contents|id-token|attestations|packages): *write/ { cred = 1 }
+  job != "" && /cargo / && !/cargo publish --locked --no-verify/ { build = "runs cargo (line " NR ")" }
+  job != "" && /cargo-pgrx|rustup toolchain install|uses: \.\// && !/rustup show/ { build = "builds (line " NR ")" }
+  END { check() }' .github/workflows/release.yml)
 
 if [[ -n "$bad" ]]; then
   echo "CI hardening:"

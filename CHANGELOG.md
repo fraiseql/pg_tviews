@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `default_statistics_target` to the values the configuration file, the command line
   or `ALTER DATABASE … SET` gave, else to the built-in default. A writer's session or
   role setting no longer steers the plans of the owner's refresh.
+- **Release pipeline** (#302): `release.yml` builds with read-only permissions,
+  signs and releases in a job that checks the files against the build's digests and
+  compiles nothing, and publishes to crates.io only after the owner approves the
+  `crates-io` environment, with a short-lived trusted-publishing token instead of a
+  stored one. `workflow_dispatch` runs it as a dry run (no release, no publish).
+  `actionlint` checks every workflow.
 
 ## [0.1.0-beta.38] - 2026-11-07
 

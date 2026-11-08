@@ -40,7 +40,7 @@ jobs:
         run: |
           cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
           cargo pgrx init --pg18 download
-          pgdir="$(ls -d "$HOME"/.pgrx/18.*/ | head -1)"
+          pgdir="$(find "$HOME/.pgrx" -mindepth 1 -maxdepth 1 -type d -name '18.*' | head -1)/"
           # dblink and pg_stat_statements are used by the regression suite.
           make -C "${pgdir}contrib" -j"$(nproc)" install >/dev/null
           {

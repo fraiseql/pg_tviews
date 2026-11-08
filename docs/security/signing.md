@@ -103,18 +103,23 @@ gpg --verify sbom/pg_tviews-v0.1.0.spdx.json.asc sbom/pg_tviews-v0.1.0.spdx.json
 
 ### CI/CD Signing Process
 
+`release.yml`'s `build` job builds the tarball and SBOMs with read-only permissions
+and records their SHA-256 digests. `sign-and-release`, the only job that may sign,
+checks out nothing and runs no cargo: it checks every file against those digests,
+then signs it:
+
 ```yaml
-# .github/workflows/release.yml
+# .github/workflows/release.yml, job sign-and-release
+- name: Verify every file is one build made, unchanged
+  run: sha256sum --strict -c "$RUNNER_TEMP/expected.sha256"
+
 - name: Sign with Sigstore (keyless)
-  run: |
-    cosign sign-blob \
-      --bundle pg_tviews-${{ github.ref_name }}.tar.gz.sigstore \
-      pg_tviews-${{ github.ref_name }}.tar.gz
+  run: cosign sign-blob --yes --bundle "pg_tviews-${RELEASE}.tar.gz.sigstore" "pg_tviews-${RELEASE}.tar.gz"
 
 - name: Generate provenance
-  uses: actions/attest-build-provenance@v1
+  uses: actions/attest-build-provenance@<sha> # v4.2.2
   with:
-    subject-path: pg_tviews-${{ github.ref_name }}.tar.gz
+    subject-path: release/pg_tviews-${{ needs.build.outputs.release }}.tar.gz
 ```
 
 ### Manual Signing Process

@@ -205,7 +205,11 @@ require for the same effect.
   it; otherwise nothing is set up, and value locks and `tviews.stats` refuse at first
   use as without `shared_preload_libraries`.
 - `.github/workflows/release.yml` signs the tarball and SBOMs with Sigstore (keyless)
-  and attests the tarball's provenance with `actions/attest-build-provenance`. See
+  and attests the tarball's provenance with `actions/attest-build-provenance`. The
+  job that builds holds no credential; the job that signs and releases checks the
+  files against the build's digests and compiles nothing; crates.io publishing waits
+  for the owner's approval of the `crates-io` environment and uses a short-lived
+  trusted-publishing token, never a stored one. See
   [signing.md](signing.md), [provenance.md](provenance.md),
   [verify-release.md](verify-release.md) and
   [../development/reproducible-builds.md](../development/reproducible-builds.md).
