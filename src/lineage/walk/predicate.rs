@@ -222,6 +222,7 @@ impl Walker<'_> {
     ///
     /// SAFETY: `expr` is a valid expression of the innermost level.
     pub(super) unsafe fn sites(&self, expr: *mut pg_sys::Node, sites: &mut Vec<Site>) -> bool {
+        crate::utils::guard_depth();
         let mut vars = Vec::new();
         // SAFETY: a read-only walk of a valid expression.
         unsafe {
@@ -257,6 +258,7 @@ impl Walker<'_> {
         origin: Origin<'_>,
         outer_to_inner: bool,
     ) {
+        crate::utils::guard_depth();
         if sites.is_empty() {
             return;
         }

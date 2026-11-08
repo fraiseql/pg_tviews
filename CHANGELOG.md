@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `relation "…" does not exist` until it reconnected. Every backend now drops the SQL
   it cached when a schema is created, renamed or dropped. `pg_tviews_check_health()`
   names a mapping's table as it is called now, not as it was at registration.
+- **A deeply nested definition fails with `stack depth limit exceeded`** (#303).
+  pg_tviews' own recursive walks over a definition's tree check `max_stack_depth`,
+  as PostgreSQL's walkers do. The shared-memory setup checks that the lock it takes
+  is `AddinShmemInitLock` on the running server before taking it.
 
 ### Changed
 

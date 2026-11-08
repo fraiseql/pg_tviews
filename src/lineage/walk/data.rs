@@ -94,6 +94,7 @@ impl Walker<'_> {
         shape: &mut DataShape,
         fields: &mut Vec<(Vec<String>, *mut pg_sys::Var)>,
     ) {
+        crate::utils::guard_depth();
         // SAFETY: checked by tag before each cast.
         unsafe {
             let node = strip_relabel(node);

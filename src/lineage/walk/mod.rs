@@ -312,6 +312,7 @@ unsafe fn tag(node: *const pg_sys::Node) -> Option<pg_sys::NodeTag> {
 ///
 /// SAFETY: `node` is null or a valid expression.
 unsafe fn conjuncts(node: *mut pg_sys::Node) -> Vec<*mut pg_sys::Node> {
+    crate::utils::guard_depth();
     // SAFETY: each pointer is checked by `tag` before it is cast.
     unsafe {
         match tag(node) {

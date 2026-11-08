@@ -105,6 +105,7 @@ impl Walker<'_> {
     ///
     /// SAFETY: `expr` is null or a valid expression of the innermost level.
     pub(super) unsafe fn computed(&mut self, expr: *mut pg_sys::Node, element: bool) -> Resolved {
+        crate::utils::guard_depth();
         // SAFETY: read-only checks and a walk of a valid expression.
         unsafe {
             if expr.is_null()
@@ -197,6 +198,7 @@ impl Walker<'_> {
     ///
     /// SAFETY: `node` is null or a valid expression of the innermost level.
     pub(super) unsafe fn resolve_expr(&self, node: *mut pg_sys::Node) -> Resolved {
+        crate::utils::guard_depth();
         // SAFETY: checked by tag before each cast.
         unsafe {
             let node = strip_relabel(node);

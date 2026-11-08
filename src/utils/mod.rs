@@ -37,6 +37,18 @@ pub(crate) use log_debug;
 /// - Reusable across different modules
 use pgrx::pg_sys::Oid;
 
+/// Raise `54001 stack depth limit exceeded` when the stack is past
+/// `max_stack_depth`: called at the entry of every function that recurses over a
+/// parse or plan tree without going through PostgreSQL's walkers, which check it
+/// themselves. A deep definition then fails cleanly instead of overflowing the
+/// stack.
+#[inline]
+pub fn guard_depth() {
+    // SAFETY: reads the stack pointer and `max_stack_depth`; raises an ERROR,
+    // which pgrx turns into a Rust panic unwound to the nearest guard.
+    unsafe { pg_sys::check_stack_depth() }
+}
+
 /// The schema-qualified, quoted name of relation `oid` (`quote_ident` on each
 /// part), read from the syscache, so it is current after a rename or a move made
 /// in any backend.

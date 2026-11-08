@@ -185,6 +185,7 @@ require for the same effect.
 | Locking a whole relation in place of its values (escalation) | `INSERT` or `UPDATE` on that relation, for the caller; otherwise one lock per value, at most 16 times `pg_tviews.lock_escalation_threshold` (`54000`) |
 | Holding the registration lock of an entity | for an existing TVIEW, the right to change it, checked before the lock is taken and again under it; the lock is pg_tviews' own (`objsubid` 21624), which `pg_advisory_lock()` can neither take nor block |
 | Queuing refresh work | `pg_tviews.max_queue_size` holds on every path, keys queued together and `pg_tviews_resync` included (`54000`) |
+| Analyzing a deeply nested definition | `max_stack_depth` holds in pg_tviews' own recursive walks over the definition's tree, as in PostgreSQL's (`54001`) |
 
 ## Supply chain and releases
 
@@ -192,6 +193,10 @@ require for the same effect.
 - The toolchain is pinned (`rust-toolchain.toml`, Rust 1.98) and pgrx is `=0.17.0`.
 - Release builds link with RELRO, `BIND_NOW` and a non-executable stack
   (`.cargo/config.toml`).
+- Shared memory is set up under `AddinShmemInitLock` only after checking, on the
+  running server, that the main lock array holds it at the index PostgreSQL 18 gives
+  it; otherwise nothing is set up, and value locks and `tviews.stats` refuse at first
+  use as without `shared_preload_libraries`.
 - `.github/workflows/release.yml` signs the tarball and SBOMs with Sigstore (keyless)
   and attests the tarball's provenance with `actions/attest-build-provenance`. See
   [signing.md](signing.md), [provenance.md](provenance.md),
