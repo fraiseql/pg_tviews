@@ -51,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored one. `workflow_dispatch` runs it as a dry run (no release, no publish).
   `actionlint` checks every workflow.
 
+### Performance
+
+- **A write costs the same however many TVIEWs the database holds** (#299): the
+  dependency graph is shared instead of copied per writing statement. One-row write
+  with 1,003 TVIEWs: 0.375 → 0.339 ms, as with 3.
+- **A write read by many TVIEWs picks the next one to refresh in log time** (#298):
+  pending keys are held by topological rank. An `UPDATE` of 5,000 rows read by 80
+  TVIEWs: 13.2 → 6.1 s.
+
 ## [0.1.0-beta.38] - 2026-11-07
 
 ### Removed
