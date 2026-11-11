@@ -48,6 +48,6 @@ pub(super) fn add_read_set(
     }
     crate::owner::AsOwner::run(
         crate::owner::Owner::of_entity(&meta.entity_name)?,
-        |_frame| crate::concurrency::reads::read_set(meta, keys, pass),
+        |frame| crate::concurrency::reads::read_set(frame, meta, keys, pass),
     )
 }

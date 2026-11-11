@@ -396,6 +396,37 @@ pub fn run_counted(sql: &str) -> TViewResult<u64> {
         .map_err(|e| error(sql, &e))
 }
 
+/// [`run`] for SQL derived from a TVIEW, in `frame`, the open frame of its owner.
+///
+/// # Errors
+/// As [`run`]; an internal error when `frame` is not the innermost one.
+pub fn run_in(frame: &impl Frame, sql: &str, args: &[DatumWithOid<'_>]) -> TViewResult<()> {
+    frame.require_current()?;
+    run(sql, args)
+}
+
+/// [`one`] for SQL derived from a TVIEW, in `frame` ([`run_in`]).
+///
+/// # Errors
+/// As [`one`]; an internal error when `frame` is not the innermost one.
+pub fn one_in<T: FromDatum + IntoDatum>(
+    frame: &impl Frame,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+) -> TViewResult<Option<T>> {
+    frame.require_current()?;
+    one(sql, args)
+}
+
+/// [`run_counted`] for SQL derived from a TVIEW, in `frame` ([`run_in`]).
+///
+/// # Errors
+/// As [`run_counted`]; an internal error when `frame` is not the innermost one.
+pub fn run_counted_in(frame: &impl Frame, sql: &str) -> TViewResult<u64> {
+    frame.require_current()?;
+    run_counted(sql)
+}
+
 /// Each row of `sql`, read by `read`.
 ///
 /// # Errors
@@ -539,45 +570,76 @@ fn statement(
     Ok(kept)
 }
 
-/// Run the read-only query `sql` from its kept plan ([`statement`]).
+/// Run the read-only query `sql`, derived from a TVIEW, from its kept plan
+/// ([`statement`]), in `frame`, the open frame of the TVIEW's owner.
+///
+/// A call without a frame does not compile: the frame is the proof the SQL
+/// runs as the TVIEW's owner.
 ///
 /// # Errors
-/// The query's error.
+/// The query's error, or a frame that is not the innermost one.
 pub fn kept_select<'conn>(
+    frame: &impl Frame,
     client: &SpiClient<'conn>,
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    in_frame(frame);
     let kept = statement(client, sql, args, false, None)?;
     client.select(&*kept, None, args)
 }
 
-/// Run `sql`, which may change data, from its kept plan ([`statement`]).
+/// Run `sql`, derived from a TVIEW and which may change data, from its kept
+/// plan ([`statement`]), in `frame` ([`kept_select`]).
 ///
 /// # Errors
-/// The statement's error.
+/// The statement's error, or a frame that is not the innermost one.
 pub fn kept_update<'conn>(
+    frame: &impl Frame,
     client: &mut SpiClient<'conn>,
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    in_frame(frame);
     let kept = statement(client, sql, args, true, None)?;
     client.update(&*kept, None, args)
 }
 
 /// Run `sql`, a statement over the transition tables of `table`'s trigger, from
-/// its kept plan ([`statement`]).
+/// its kept plan ([`statement`]), in `frame` ([`kept_select`]).
 ///
 /// # Errors
-/// The statement's error.
+/// The statement's error, or a frame that is not the innermost one.
 pub fn kept_update_over<'conn>(
+    frame: &impl Frame,
     client: &mut SpiClient<'conn>,
     table: Oid,
     sql: &str,
     args: &[DatumWithOid<'_>],
 ) -> pgrx::spi::Result<SpiTupleTable<'conn>> {
+    in_frame(frame);
     let kept = statement(client, sql, args, true, Some(table))?;
     client.update(&*kept, None, args)
+}
+
+/// An open frame of a TVIEW's owner (`crate::owner::OwnerFrame`): what every
+/// executor of SQL derived from a TVIEW takes, so running it outside its owner's
+/// frame does not compile.
+pub trait Frame {
+    /// Fail unless this is the innermost open frame and the current user is its
+    /// owner.
+    ///
+    /// # Errors
+    /// An internal error otherwise.
+    fn require_current(&self) -> TViewResult<()>;
+}
+
+/// Raise unless `frame` is the innermost open frame: a TVIEW's SQL runs only as
+/// its owner. An internal error, never expected.
+fn in_frame(frame: &impl Frame) {
+    if let Err(e) = frame.require_current() {
+        pgrx::error!("{e}");
+    }
 }
 
 /// A row of a query, its columns as text (`None` for NULL).
@@ -647,9 +709,15 @@ impl Drop for KeptPlan {
 /// cheaper.
 ///
 /// # Errors
-/// Returns an error if the query can't be prepared or doesn't return rows.
-pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>], plan: Plan) -> TViewResult<Vec<TextRow>> {
-    kept_rows_as(sql, args, plan, |row| Ok(row.texts()))
+/// Returns an error if the query can't be prepared or doesn't return rows, or
+/// `frame` is not the innermost one.
+pub fn kept_rows(
+    frame: &impl Frame,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: Plan,
+) -> TViewResult<Vec<TextRow>> {
+    kept_rows_as(frame, sql, args, plan, |row| Ok(row.texts()))
 }
 
 /// The rows of `sql`, run as [`kept_rows`] runs it, each read by `read` with
@@ -657,8 +725,26 @@ pub fn kept_rows(sql: &str, args: &[DatumWithOid<'_>], plan: Plan) -> TViewResul
 ///
 /// # Errors
 /// Returns an error if the query can't be prepared or doesn't return rows, or
-/// what `read` returns.
+/// `frame` is not the innermost one, or what `read` returns.
 pub fn kept_rows_as<R>(
+    frame: &impl Frame,
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    plan: Plan,
+    read: impl FnMut(&KeptRow<'_>) -> TViewResult<R>,
+) -> TViewResult<Vec<R>> {
+    frame.require_current()?;
+    run_kept_rows(sql, args, plan, read)
+}
+
+/// [`kept_rows_as`] without a frame: for the catalog reads ([`catalog_rows`]) and
+/// the reads made as the caller, outside every frame
+/// (`crate::visibility::caller_rows_as`). SQL derived from a TVIEW and run as its
+/// owner goes through [`kept_rows_as`].
+///
+/// # Errors
+/// As [`kept_rows_as`].
+pub(crate) fn run_kept_rows<R>(
     sql: &str,
     args: &[DatumWithOid<'_>],
     plan: Plan,
@@ -699,7 +785,7 @@ pub fn catalog_rows<R>(
     read: impl FnMut(&KeptRow<'_>) -> TViewResult<R>,
 ) -> TViewResult<Vec<R>> {
     crate::metrics::metrics_api::record_catalog_lookup();
-    kept_rows_as(sql, args, Plan::Generic, read)
+    run_kept_rows(sql, args, Plan::Generic, read)
 }
 
 /// The rows of the catalog query `sql` as text ([`catalog_rows`]).

@@ -161,9 +161,11 @@ SELECT must(status = 'WARNING' AND message LIKE '%app.tv_note%' AND message NOT 
 FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
 SELECT must(count(*) = 1, 'one contents row') FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
 -- What a definition yields is its owner's to know: a role that is not a member of
--- the owner is not told about tv_note.
+-- the owner and may not read tv_note is told only that it was not checked.
 SET ROLE regress_bvp_reader;
-SELECT must(status = 'OK', 'a non-owner learned of an emptied TVIEW: ' || message)
+SELECT must(status = 'WARNING' AND message NOT LIKE '%empty while%'
+            AND message LIKE '%not checked: app.tv_note (owner''s privileges required)%',
+            'a non-owner learned of an emptied TVIEW: ' || message)
 FROM tviews.pg_tviews_check_health() WHERE component = 'contents';
 RESET ROLE;
 

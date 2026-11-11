@@ -197,17 +197,21 @@ fn seq_scan_check() -> Check {
                     continue;
                 };
                 let relid = pgrx::pg_sys::Oid::from(mapping.relid);
-                match crate::lineage::large_seq_scans(frame, relid, &mapping.table, template) {
+                // Named as it is called now: the plan's name is the one it had
+                // at registration.
+                let table = crate::utils::qualified_relname_from_oid(relid)
+                    .unwrap_or_else(|_| mapping.table.clone());
+                match crate::lineage::large_seq_scans(frame, relid, &table, template) {
                     Ok(found) => scans.extend(found.into_iter().map(|(relation, rows)| {
                         format!(
-                            "tv_{} (writes to {} scan {relation}, about {rows} rows)",
-                            meta.entity_name, mapping.table
+                            "tv_{} (writes to {table} scan {relation}, about {rows} rows)",
+                            meta.entity_name
                         )
                     })),
                     Err(e) => {
                         return Ok(Err(format!(
-                            "the mapping of {} in tv_{}: {e}",
-                            mapping.table, meta.entity_name
+                            "the mapping of {table} in tv_{}: {e}",
+                            meta.entity_name
                         )));
                     }
                 }
@@ -249,9 +253,12 @@ fn seq_scan_check() -> Check {
 /// TVIEWs whose table is empty while their definition yields rows (a restore
 /// that left the data out, a table emptied by hand). Each is read as its owner,
 /// who alone may read its backing view; a populated table is not read further.
-/// Only the TVIEWs of owners the caller has the privileges of are read: what the
-/// definition yields is the owner's to know. An UNLOGGED TVIEW, empty after a
-/// crash by design, is left out, and nothing is read on a standby in recovery.
+///
+/// `OK` means every registered TVIEW was checked and holds rows: a TVIEW the
+/// caller may not be told about, or an UNLOGGED one whose refill is pending, is
+/// listed as not checked, with the reason, under `WARNING`. A caller is told
+/// about a TVIEW when it has the owner's privileges or may read the whole TVIEW
+/// table ([`may_be_told`]). Nothing is read on a standby in recovery.
 fn contents_check() -> Check {
     // SAFETY: reads shared memory state.
     if unsafe { pgrx::pg_sys::RecoveryInProgress() } {
@@ -262,10 +269,12 @@ fn contents_check() -> Check {
         Err(e) => return error("contents", format!("could not be checked: {e}")),
     };
     let mut empty = Vec::new();
+    let mut unchecked = Vec::new();
     for meta in &metas {
-        match empty_with_rows(meta) {
-            Ok(Some(name)) => empty.push(name),
-            Ok(None) => {}
+        match contents_of(meta) {
+            Ok(Contents::Filled) => {}
+            Ok(Contents::Empty(name)) => empty.push(name),
+            Ok(Contents::Unchecked(name, why)) => unchecked.push(format!("{name} ({why})")),
             Err(e) => {
                 return error(
                     "contents",
@@ -274,21 +283,89 @@ fn contents_check() -> Check {
             }
         }
     }
-    if empty.is_empty() {
+    let mut parts = Vec::new();
+    if !empty.is_empty() {
+        parts.push(format!(
+            "empty while their definition yields rows: {}; refill each with \
+             SELECT tviews.pg_tviews_refresh(tview)",
+            sample(&empty)
+        ));
+    }
+    if !unchecked.is_empty() {
+        parts.push(format!("not checked: {}", sample(&unchecked)));
+    }
+    if parts.is_empty() {
         ok(
             "contents",
-            "Every TVIEW checked holds the rows its definition yields",
+            "Every TVIEW holds the rows its definition yields",
         )
     } else {
-        warning(
-            "contents",
-            format!(
-                "empty while their definition yields rows: {}; refill each with \
-                 SELECT tviews.pg_tviews_refresh(tview)",
-                sample(&empty)
-            ),
-        )
+        warning("contents", parts.join("; "))
     }
+}
+
+/// What [`contents_check`] found of one TVIEW, by its qualified name.
+enum Contents {
+    Filled,
+    Empty(String),
+    Unchecked(String, Unchecked),
+}
+
+/// Why [`contents_check`] did not check a TVIEW.
+#[derive(Clone, Copy)]
+enum Unchecked {
+    /// The caller has neither the owner's privileges nor a read of the whole table.
+    OwnerPrivileges,
+    /// An UNLOGGED TVIEW reset by PostgreSQL: its next write refills it.
+    RefillPending,
+}
+
+impl std::fmt::Display for Unchecked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OwnerPrivileges => "owner's privileges required",
+            Self::RefillPending => "unlogged, refill pending",
+        })
+    }
+}
+
+/// Whether `meta`'s TVIEW is filled, empty while its view yields rows, or not
+/// checked. The view is read as the owner.
+fn contents_of(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Contents> {
+    let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+    if !may_be_told(meta)? {
+        return Ok(Contents::Unchecked(table, Unchecked::OwnerPrivileges));
+    }
+    if crate::lifecycle::validity::needs_fill(&meta.entity_name, meta.tview_oid)? {
+        return Ok(Contents::Unchecked(table, Unchecked::RefillPending));
+    }
+    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
+        frame.require_owner_of(meta.tview_oid)?;
+        let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+        let has_rows = |relation: &str| {
+            crate::utils::spi::one_in::<bool>(
+                frame,
+                &format!("SELECT EXISTS (SELECT 1 FROM {relation})"),
+                &[],
+            )
+            .map(|exists| exists.unwrap_or(false))
+        };
+        Ok(if !has_rows(&table)? && has_rows(&view)? {
+            Contents::Empty(table.clone())
+        } else {
+            Contents::Filled
+        })
+    })
+}
+
+/// Whether the caller may learn whether `meta`'s TVIEW is empty while its view
+/// yields rows: it has the owner's privileges, or may read the whole TVIEW table
+/// (`SELECT`, its schema's `USAGE`, no row security applying to it), and so would
+/// see the rows a correct table holds anyway.
+fn may_be_told(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> {
+    Ok(acts_for_owner(meta)?
+        || (crate::visibility::may_read_relation(meta.tview_oid)
+            && !crate::visibility::rls_active_for_caller(meta.tview_oid)?))
 }
 
 /// TVIEWs whose refresh runs a function whose `search_path` does not end in
@@ -381,32 +458,6 @@ fn acts_for_owner(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> 
         &[crate::utils::spi::oid(meta.tview_oid)],
     )?;
     Ok(member == Some(true))
-}
-
-/// The TVIEW's qualified name when its table is empty and its backing view is
-/// not, read as its owner; `None` too for a TVIEW not checked ([`contents_check`]).
-fn empty_with_rows(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<Option<String>> {
-    // SAFETY: a syscache lookup by OID.
-    if unsafe { pgrx::pg_sys::get_rel_persistence(meta.tview_oid) }
-        == pgrx::pg_sys::RELPERSISTENCE_UNLOGGED.cast_signed()
-    {
-        return Ok(None);
-    }
-    if !acts_for_owner(meta)? {
-        return Ok(None);
-    }
-    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |_frame| {
-        let table = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-        let view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-        let has_rows = |relation: &str| {
-            crate::utils::spi::one::<bool>(
-                &format!("SELECT EXISTS (SELECT 1 FROM {relation})"),
-                &[],
-            )
-            .map(|exists| exists.unwrap_or(false))
-        };
-        Ok((!has_rows(&table)? && has_rows(&view)?).then_some(table))
-    })
 }
 
 /// TVIEWs registered before a release that changed what registration derives.

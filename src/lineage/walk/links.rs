@@ -201,6 +201,7 @@ unsafe fn link_nodes(query: *mut pg_sys::Query) -> Vec<*mut pg_sys::Node> {
 ///
 /// SAFETY: `node` is null or a valid jointree node.
 unsafe fn jointree_quals(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Node>) {
+    crate::utils::guard_depth();
     // SAFETY: checked by tag before each cast.
     unsafe {
         match tag(node) {

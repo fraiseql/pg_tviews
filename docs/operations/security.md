@@ -143,6 +143,12 @@ MATERIALIZED VIEW` does (`src/owner.rs`):
   the session that wrote last nor on the settings its role carries;
 - with `plan_cache_mode = auto` and `jit = off`: a refresh reads a few rows by key or
   rebuilds a TVIEW once, which JIT compilation slows down (#283);
+- with the planner settings (every `enable_*`, the cost constants, `effective_cache_size`,
+  `work_mem`, `hash_mem_multiplier`, the collapse limits, `geqo`, `geqo_threshold`,
+  `cursor_tuple_fraction`, `constraint_exclusion`, `max_parallel_workers_per_gather`,
+  `default_statistics_target`) at the server's values: the configuration file's, the
+  command line's or `ALTER DATABASE … SET`'s, else the built-in default. A session's
+  `SET enable_nestloop = off` or a role's `ALTER ROLE … SET` does not reach a refresh;
 - with its errors redacted for a writer without the owner's privileges: the writer
   gets the SQLSTATE and the condition, not the values the error quotes; the server
   log has the whole error.

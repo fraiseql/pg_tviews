@@ -151,6 +151,7 @@ impl Walker<'_> {
         flags: &Flags,
         link: Link,
     ) -> TViewResult<Vec<Resolved>> {
+        crate::utils::guard_depth();
         let wanted = self.wanted.take();
         if self.levels.len() >= MAX_DEPTH {
             return Err(TViewError::DefinitionRefused {
@@ -196,6 +197,7 @@ impl Walker<'_> {
         opaque: bool,
         wanted: Option<&HashSet<i16>>,
     ) -> TViewResult<Vec<Resolved>> {
+        crate::utils::guard_depth();
         // Taken before the levels below are walked.
         let identity_level = std::mem::take(&mut self.identity_level);
         // SAFETY: fields of a valid Query; RTEs and expressions belong to it.

@@ -523,6 +523,7 @@ fn sync_table(member: &Member, wanted: &[&TriggerSpec], keep: bool) -> TViewResu
         if member.relid == member.root {
             create()?;
         } else {
+            // Trigger DDL as the table's owner, not TVIEW SQL.
             crate::owner::AsOwner::run(crate::owner::Owner::of_table(member.relid)?, |_frame| {
                 create()
             })?;
@@ -592,6 +593,7 @@ fn tables_with_triggers() -> TViewResult<Vec<pg_sys::Oid>> {
 /// only the `TRIGGER` privilege, and these are `pg_tviews`' own triggers, removed
 /// for a TVIEW the caller may drop.
 fn drop_trigger(table_oid: pg_sys::Oid, table: &str, trigger: &str) -> TViewResult<()> {
+    // Trigger DDL as the table's owner, not TVIEW SQL.
     crate::owner::AsOwner::run(crate::owner::Owner::of_table(table_oid)?, |_frame| {
         let drop_sql = format!(
             "DROP TRIGGER IF EXISTS {} ON {table}",

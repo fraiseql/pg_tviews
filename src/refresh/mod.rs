@@ -96,6 +96,7 @@ pub(crate) struct Written {
 /// [`TViewError::DuplicateKey`](crate::TViewError::DuplicateKey) for the first
 /// such key, or the error of the query.
 pub(crate) fn refuse_duplicate_keys(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     filter: &str,
     args: &[DatumWithOid],
@@ -104,6 +105,7 @@ pub(crate) fn refuse_duplicate_keys(
         return Ok(());
     }
     refuse_duplicate_keys_in(
+        frame,
         &crate::utils::qualified_relname_from_oid(meta.tview_oid)?,
         &meta.identity.column,
         &crate::utils::qualified_relname_from_oid(meta.view_oid)?,
@@ -118,6 +120,7 @@ pub(crate) fn refuse_duplicate_keys(
 /// # Errors
 /// As [`refuse_duplicate_keys`].
 pub(crate) fn refuse_duplicate_keys_in(
+    frame: &crate::owner::OwnerFrame,
     qualified_tv: &str,
     key_column: &str,
     qualified_view: &str,
@@ -130,7 +133,7 @@ pub(crate) fn refuse_duplicate_keys_in(
                  GROUP BY {qi_key} HAVING pg_catalog.count(*) > 1 LIMIT 1)"
     );
     let duplicate = crate::utils::spi::connect(|client| {
-        crate::utils::spi::kept_select(client, &sql, args)?
+        crate::utils::spi::kept_select(frame, client, &sql, args)?
             .first()
             .get::<String>(1)
     })
@@ -218,6 +221,15 @@ pub(crate) struct Produced {
     pub written: Written,
 }
 
+/// Where [`run_counted_upsert`] writes: the TVIEW's table, its column list,
+/// and the statement's `ON CONFLICT` clause.
+#[derive(Clone, Copy)]
+pub(crate) struct UpsertInto<'a> {
+    pub table: &'a str,
+    pub columns: &'a str,
+    pub conflict: &'a str,
+}
+
 /// Run `INSERT INTO qi_tv (col_list) <source_sql> ON CONFLICT (<conflict_key>) <action>`,
 /// record the rows its no-op guard skipped and journal the
 /// rows it inserted or updated.
@@ -228,15 +240,19 @@ pub(crate) struct Produced {
 /// added to `refresh_noop_skipped`. `old` holds the reference keys of the rows
 /// [`lock_rows`] read; without it the statement reads them itself (a pre-image).
 pub(crate) fn run_counted_upsert(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
-    qi_tv: &str,
-    col_list: &str,
+    into: &UpsertInto<'_>,
     source_sql: &str,
-    conflict: &str,
     args: &[DatumWithOid],
     old: Option<&crate::catalog::collections::OldKeys>,
 ) -> crate::TViewResult<Produced> {
     use crate::queue::log::{Change, Recorded, record};
+    let UpsertInto {
+        table: qi_tv,
+        columns: col_list,
+        conflict,
+    } = *into;
     let entity = &meta.entity_name;
     let qi_pk = ident::quoted(meta.key_column());
     let qi_key = ident::quoted(&meta.identity.column);
@@ -277,7 +293,7 @@ pub(crate) fn run_counted_upsert(
     );
     let upsert = || {
         crate::utils::spi::connect_mut(|client| {
-            let row = crate::utils::spi::kept_update(client, &sql, args)?.first();
+            let row = crate::utils::spi::kept_update(frame, client, &sql, args)?.first();
             Ok::<_, spi::Error>((
                 row.get::<Vec<String>>(1)?,
                 row.get::<pgrx::JsonB>(2)?,
@@ -371,6 +387,7 @@ fn refuse_unlocked_creations(
 /// it committed; without the lock it waited inside its own upsert and wrote a
 /// document computed before that commit (ADR 0207).
 pub(crate) fn lock_rows(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     qi_tv: &str,
     keys: &[KeyValue],
@@ -391,7 +408,7 @@ pub(crate) fn lock_rows(
         key_cast(key_type, "$1", true)
     );
     let args = [key_array(key_type, keys)?];
-    let (mut pks, held, mut old) = locked_rows(&sql, &args, references)?;
+    let (mut pks, held, mut old) = locked_rows(frame, &sql, &args, references)?;
     // As the identity's type writes them, as the rows found are compared:
     // the same uuid can be queued in another spelling.
     let keys: Vec<String> = match &key_type {
@@ -414,7 +431,7 @@ pub(crate) fn lock_rows(
     if !missing.is_empty() {
         let created: Vec<KeyValue> = missing.into_iter().map(KeyValue::Text).collect();
         let args = [key_array(key_type, &created)?];
-        let (more, _, more_old) = locked_rows(&sql, &args, references)?;
+        let (more, _, more_old) = locked_rows(frame, &sql, &args, references)?;
         pks.extend(more);
         old.extend(more_old);
     }
@@ -427,6 +444,7 @@ pub(crate) fn lock_rows(
 /// The rows `sql` (from [`lock_rows`]) returns: their `pk_<entity>`, their keys
 /// as text, and, for `references`, the reference keys they hold.
 fn locked_rows(
+    frame: &crate::owner::OwnerFrame,
     sql: &str,
     args: &[pgrx::datum::DatumWithOid<'_>],
     references: bool,
@@ -440,7 +458,7 @@ fn locked_rows(
         let mut pks = Vec::new();
         let mut held = std::collections::HashSet::new();
         let mut old = crate::catalog::collections::OldKeys::new();
-        for row in crate::utils::spi::kept_update(client, sql, args)? {
+        for row in crate::utils::spi::kept_update(frame, client, sql, args)? {
             if let Some(pk) = row.get::<i64>(1)? {
                 if references {
                     old.insert(pk, row.get::<Vec<Option<String>>>(3)?.unwrap_or_default());
@@ -465,6 +483,7 @@ fn locked_rows(
 /// # Errors
 /// Returns an error if the rows cannot be locked.
 pub(crate) fn lock_in_key_order(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     keys: &[KeyValue],
     columns: &[String],
@@ -486,7 +505,7 @@ pub(crate) fn lock_in_key_order(
     // Read-write: a read-only SPI call refuses FOR UPDATE.
     let rows = crate::utils::spi::connect_mut(|client| {
         let mut rows = std::collections::HashMap::new();
-        for row in crate::utils::spi::kept_update(client, &sql, &args)? {
+        for row in crate::utils::spi::kept_update(frame, client, &sql, &args)? {
             let Some(pk) = row.get::<i64>(1)? else {
                 continue;
             };
@@ -516,6 +535,7 @@ pub(crate) struct Locked {
 /// [`crate::catalog::TviewMeta::returned`] lists, journal each row it returns as
 /// `change`, and return their `pk_<entity>`.
 pub(crate) fn run_journaled(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
@@ -523,7 +543,7 @@ pub(crate) fn run_journaled(
 ) -> crate::TViewResult<Vec<i64>> {
     let written = crate::utils::spi::connect_mut(|client| {
         let mut out = Vec::new();
-        for row in crate::utils::spi::kept_update(client, sql, args)? {
+        for row in crate::utils::spi::kept_update(frame, client, sql, args)? {
             let pk: Option<i64> = row.get(1)?;
             let id: Option<String> = row.get(2)?;
             let references: Option<Vec<Option<String>>> = row.get(3)?;
@@ -551,11 +571,12 @@ pub(crate) fn run_journaled(
 
 /// [`run_journaled`] for a DELETE: the `pk_<entity>` of the rows it removed.
 pub(crate) fn run_journaled_delete(
+    frame: &crate::owner::OwnerFrame,
     meta: &crate::catalog::TviewMeta,
     sql: &str,
     args: &[DatumWithOid],
 ) -> crate::TViewResult<Vec<i64>> {
-    run_journaled(meta, sql, args, crate::queue::log::Change::Deleted)
+    run_journaled(frame, meta, sql, args, crate::queue::log::Change::Deleted)
 }
 
 #[cfg(test)]

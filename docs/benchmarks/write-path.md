@@ -40,6 +40,61 @@ Per write, a `bio` UPDATE cost ~1.26 ms more than the plain one before and ~0.15
 after. `bio_bulk100` rewrites 1,100 TVIEW rows for 100 base rows: what remains is
 that work; at 16 clients every write of it waits on the same rows, plain ones too.
 
+## 0.1.0-beta.39 against 0.1.0-beta.38 (2026-11-08)
+
+A dedicated Hetzner CCX33 (8 vCPU, nothing else running), stock PostgreSQL 18 (PGDG),
+jsonb_delta 0.3.2, release builds of 0.1.0-beta.38, of the branch before the planner
+settings were pinned (f1bd7b6a), and of the release (e23c6312), one cluster each, built
+and measured in one session. `compare.sh`: 5 rounds of 15 s, interleaved, paired ratio of
+ms per write with its 95 % interval.
+
+Statements and plans per write are the same in every build.
+
+**Planner settings pinned in every owner frame** (fraiseql/pg_tviews#297), release
+against f1bd7b6a, 1 / 16 clients:
+
+| write | ratio, 1 client | ratio, 16 clients |
+|---|---:|---:|
+| `bio` | 1.017 | 1.020 |
+| `username` | 1.009 | 1.004 |
+| `title` | 1.007 | 1.021 |
+| `comment_insert` | 0.998 | 1.020 |
+| `bio_bulk100` | 1.008 | 0.996 |
+| `untracked_insert` | 1.015 | 1.022 |
+
+**Many TVIEWs in one database** (`graph_size.sh`, fraiseql/pg_tviews#299), ms per
+one-row write:
+
+| TVIEWs | 0.1.0-beta.38 | 0.1.0-beta.39 |
+|---:|---:|---:|
+| 3 | 0.335 | 0.339 |
+| 303 | 0.358 | 0.338 |
+| 1,003 | 0.377 | 0.339 |
+
+**One table read by many TVIEWs** (`readers.sh`, fraiseql/pg_tviews#298), ms per
+`UPDATE` of 5,000 rows:
+
+| reading TVIEWs | 0.1.0-beta.38 | 0.1.0-beta.39 | per TVIEW, beta.39 |
+|---:|---:|---:|---:|
+| 10 | 706 | 692 | 69 |
+| 40 | 4,500 | 3,052 | 76 |
+| 80 | 13,351 | 6,120 | 77 |
+
+**Full refresh with stale statistics** (`full_refresh_stale.sh`,
+fraiseql/pg_tviews#301): a TVIEW under the `full_refresh` policy, emptied, analyzed and
+refilled, so its statistics say it holds no row. ms for updating every row / deleting
+half / inserting them again, with an aggregate in the definition:
+
+| rows | statistics | 0.1.0-beta.38 | 0.1.0-beta.39 |
+|---:|---|---:|---:|
+| 20,000 | fresh | 241 / 120 / 172 | 239 / 118 / 171 |
+| 20,000 | stale | 57,094 / 24,620 / 32,024 | 248 / 117 / 168 |
+| 200,000 | fresh | 3,154 / 1,520 / 2,404 | 3,487 / 1,484 / 2,330 |
+| 200,000 | stale | over 120 s / over 120 s / — | 3,315 / 1,638 / 2,237 |
+
+Without the aggregate the view is probed by key and stale statistics cost at most
+1.5× (200,000 rows: 1,987 / 648 / 1,322 against 1,774 / 464 / 1,106).
+
 ## 0.1.0-beta.35 against 0.1.0-beta.34's write path (2026-11-02)
 
 Stock PostgreSQL 18.6, release builds of main at 169e0e32 (the write path of 0.1.0-beta.34

@@ -17,6 +17,10 @@ fn allowed() {
     let _ = format!("{} has no rows", mapping.table);
     let _ = format!("SELECT 1 FROM {r:relid} s");
     let _ = crate::utils::spi::regclass(oid);
+    let current = crate::utils::qualified_relname_from_oid(oid);
+    let _ = format!("SELECT 1 FROM {current}");
+    let _ = format!("{} {}", head, tail);
+    let _ = format!("{} has no parent", collection.parent_table);
     // SELECT $1::regclass in a comment does not count.
     let _ = "the regclass of a table, in prose";
 }

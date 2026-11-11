@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pg_tviews_check_health()`'s `contents` is `OK` only when it checked every TVIEW**
+  (#304). It said `OK` while skipping UNLOGGED TVIEWs and the TVIEWs of owners whose
+  privileges the caller lacks. Each TVIEW it does not check is now listed under
+  `WARNING`, after any empty ones, with the reason: `owner's privileges required` or
+  `unlogged, refill pending`. A caller that may read the whole TVIEW table (`SELECT`,
+  its schema's `USAGE`, no row security applying) is now checked without the owner's
+  privileges, and a trusted UNLOGGED TVIEW is checked like a logged one.
+- **Cached SQL follows schema renames** (#296). After `ALTER SCHEMA … RENAME`, a
+  backend that had already written through a TVIEW failed its next write with
+  `relation "…" does not exist` until it reconnected. Every backend now drops the SQL
+  it cached when a schema is created, renamed or dropped. `pg_tviews_check_health()`
+  names a mapping's table as it is called now, not as it was at registration.
+- **A deeply nested definition fails with `stack depth limit exceeded`** (#303).
+  pg_tviews' own recursive walks over a definition's tree check `max_stack_depth`,
+  as PostgreSQL's walkers do. The shared-memory setup checks that the lock it takes
+  is `AddinShmemInitLock` on the running server before taking it.
+
+- **A full refresh's time no longer depends on the TVIEW table's statistics** (#301).
+  After a TVIEW was emptied, analyzed and refilled, its statistics said it held no
+  row, and the statements bringing it to its view could evaluate the view once per
+  row: seconds at a few thousand rows of an aggregate TVIEW, quadratic beyond. They
+  now join the table and the view by hash or merge.
+
+### Changed
+
+- Every function that runs SQL derived from a TVIEW takes the token of its owner's
+  frame (#295): running it outside the owner's frame is a compile error, no longer a
+  convention.
+- **A refresh is planned under the server's planner settings** (#297). Every owner
+  frame pins the `enable_*` settings, the cost constants, `work_mem`,
+  `hash_mem_multiplier`, the collapse limits, `geqo`, `cursor_tuple_fraction`,
+  `constraint_exclusion`, `max_parallel_workers_per_gather` and
+  `default_statistics_target` to the values the configuration file, the command line
+  or `ALTER DATABASE … SET` gave, else to the built-in default. A writer's session or
+  role setting no longer steers the plans of the owner's refresh.
+- **Release pipeline** (#302): `release.yml` builds with read-only permissions,
+  signs and releases in a job that checks the files against the build's digests and
+  compiles nothing, and publishes to crates.io only after the owner approves the
+  `crates-io` environment, with a short-lived trusted-publishing token instead of a
+  stored one. `workflow_dispatch` runs it as a dry run (no release, no publish).
+  `actionlint` checks every workflow.
+
+### Performance
+
+- **A write costs the same however many TVIEWs the database holds** (#299): the
+  dependency graph is shared instead of copied per writing statement. One-row write
+  with 1,003 TVIEWs: 0.375 → 0.339 ms, as with 3.
+- **A write read by many TVIEWs picks the next one to refresh in log time** (#298):
+  pending keys are held by topological rank. An `UPDATE` of 5,000 rows read by 80
+  TVIEWs: 13.2 → 6.1 s.
+
 ## [0.1.0-beta.38] - 2026-11-07
 
 ### Removed

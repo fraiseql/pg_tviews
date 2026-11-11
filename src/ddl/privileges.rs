@@ -38,6 +38,7 @@ fn revoke_grants(table: Option<pg_sys::Oid>) -> TViewResult<()> {
         let (Some(view), Some(statement)) = (view, statement) else {
             continue;
         };
+        // Grants on the backing view as its owner, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
             crate::utils::spi::run_ddl(&statement)
         })?;

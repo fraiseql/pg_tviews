@@ -103,26 +103,16 @@ impl Flush {
     }
 
     /// The keys of the first pending entity in dependency order not refreshed in
-    /// this flush yet; the other entities' keys stay pending.
+    /// this flush yet; the other entities' keys stay pending. The parents a
+    /// refresh discovers come later in this order, so every key is refreshed
+    /// after everything it reads, and once unless something it reads is written
+    /// again during the flush.
     fn next_entity(&mut self) -> Option<(String, Vec<RefreshKey>)> {
-        if self.pending.is_empty() {
-            return None;
-        }
-        // The parents a refresh discovers come later in this order, so every key
-        // is refreshed after everything it reads, and once unless something it
-        // reads is written again during the flush.
-        let sorted = self
-            .graph
-            .in_order(self.pending.drain().collect(), |k| &k.entity);
-        let entity = sorted[0].entity.clone();
-        let mut keys = Vec::new();
-        for key in sorted {
-            if key.entity != entity {
-                self.pending.insert(key);
-            } else if self.processed.insert(key.clone()) {
-                keys.push(key);
-            }
-        }
+        let (entity, keys) = self.pending.pop_first()?;
+        let keys = keys
+            .into_iter()
+            .filter(|key| self.processed.insert(key.clone()))
+            .collect();
         Some((entity, keys))
     }
 }

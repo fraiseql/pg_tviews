@@ -91,6 +91,7 @@ pub(super) unsafe fn in_clause(sortref: pg_sys::Index, clause: *mut pg_sys::List
 ///
 /// SAFETY: `node` is a valid `SetOperationStmt` or `RangeTblRef`.
 pub(super) unsafe fn setop_leaves(node: *mut pg_sys::Node, leaves: &mut Vec<usize>) {
+    crate::utils::guard_depth();
     // SAFETY: checked by tag before each cast.
     unsafe {
         match tag(node) {

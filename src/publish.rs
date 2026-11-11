@@ -361,15 +361,17 @@ fn parent_ids(lookups: &[Lookup]) -> crate::TViewResult<HashMap<(String, String)
     }
     let mut found = HashMap::new();
     for (owner, at) in by_owner {
-        crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |_frame| {
-            parent_ids_of(lookups, &at, &mut found)
+        crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |frame| {
+            parent_ids_of(frame, lookups, &at, &mut found)
         })?;
     }
     Ok(found)
 }
 
-/// [`parent_ids`] of the lookups at `at`, into `found`.
+/// [`parent_ids`] of the lookups at `at`, into `found`, read in `frame`, the frame
+/// of their tables' owner.
 fn parent_ids_of(
+    frame: &crate::owner::OwnerFrame,
     lookups: &[Lookup],
     at: &[usize],
     found: &mut HashMap<(String, String), String>,
@@ -408,7 +410,11 @@ fn parent_ids_of(
             }
         })
         .collect();
+    for (c, _) in at.iter().filter_map(|&i| lookups.get(i)) {
+        frame.require_owner_of(c.parent_table_oid)?;
+    }
     for row in crate::utils::spi::kept_rows(
+        frame,
         &branches.join(" UNION ALL "),
         &args,
         crate::utils::spi::Plan::Generic,

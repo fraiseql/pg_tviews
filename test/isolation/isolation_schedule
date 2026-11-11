@@ -28,6 +28,7 @@ test: rr-crossed-value-writes
 test: embed-patch-vs-repoint
 test: serializable-vs-read-committed
 test: partition-truncate-vs-write
+test: schema-rename-cached-sql
 test: two-hop-patch-vs-repoint
 test: two-hop-rename-vs-move-in
 test: two-hop-hidden-repoint

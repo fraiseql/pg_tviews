@@ -10,6 +10,7 @@
 
 mod apply;
 mod drain;
+mod pending;
 mod savepoint;
 mod xact;
 

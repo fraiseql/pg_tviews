@@ -89,11 +89,16 @@ TVIEW's owner: its creation (the creating role, its owner-to-be),
 `pg_tviews_reregister_all`, `ALTER EXTENSION pg_tviews UPDATE`), the follow-up of a
 column rename, the health check's plans, `pg_tviews_resync`'s mappings, and every
 refresh and rebuild. One function opens frames, `AsOwner::run` in `src/owner.rs`, and
-hands its work a token nothing else can make. The analysis of a definition
-(`lineage::analyze`, its `EXPLAIN`s), the recompute and rebuild statements of
-`refresh/` and the mappings of `pg_tviews_resync` take that token and check that it
-names the owner of the TVIEW's table, failing with an internal error on a mismatch;
-the other statements of a refresh run inside the same frame without taking it. A frame
+hands its work a token nothing else can make. Every executor of SQL derived from a
+TVIEW takes that token: the kept statements of `utils::spi` (`kept_select`,
+`kept_update`, `kept_update_over`, `kept_rows`, `kept_rows_as`) and the frame variants
+of the generic runners (`run_in`, `one_in`, `run_counted_in`) check that it is the
+innermost open frame, and each entry point (an analysis, a recompute, a patch, a read
+set, a mapping, a fill) checks once that it names the owner of the TVIEW's table,
+failing with an internal error on a mismatch. Running a TVIEW's SQL outside its
+owner's frame does not compile. Catalog reads (`spi::catalog_*`) and reads made as the
+caller (`visibility::caller_rows_as`, which refuses to run inside a frame) take no
+token. A frame
 opened inside another (the extension's owner's, for a catalog write) makes the outer
 token unusable until it closes, so no TVIEW's SQL runs as the inner frame's role.
 
@@ -119,6 +124,13 @@ A frame gives four guarantees:
   `on`, `quote_all_identifiers` `off`, `transform_null_equals` `off`,
   `standard_conforming_strings` `on`, `xmlbinary` `base64`, `xmloption` `content`,
   `gin_fuzzy_search_limit` `0`, `plan_cache_mode` `auto` and `jit` `off`.
+- **How a refresh is planned.** the planner settings (every `enable_*`, the cost constants, `effective_cache_size`,
+  `work_mem`, `hash_mem_multiplier`, the collapse limits, `geqo`, `geqo_threshold`,
+  `cursor_tuple_fraction`, `constraint_exclusion`, `max_parallel_workers_per_gather`,
+  `default_statistics_target`) at the server's values: the configuration file's, the
+  command line's or `ALTER DATABASE … SET`'s, else the built-in default. A session's
+  `SET enable_nestloop = off` or a role's `ALTER ROLE … SET` does not reach a refresh: the plans of the owner's
+  refresh are the server's, not the writer's.
   `default_text_search_config` is the TVIEW's own, its creator's. The constants a plan
   stores are rendered under the same settings, and a writer's trigger reads a row key
   that is not an integer under them too.
@@ -161,8 +173,12 @@ owner frame, by one module, `src/visibility.rs`:
 | `pg_tviews_resync(source, keys)` | reads `source`'s rows as the caller, once: `SELECT` and `UPDATE` on it, and no row security for the caller (`42501`); each TVIEW's owner maps the rows it was handed, and never reads `source`; a TVIEW's count of changed rows is NULL unless the caller reads it without row security |
 | Change feed (`pg_tviews.publish_changes`, a superuser setting) | listeners on `tviews_changes` receive the ids of changed rows of every TVIEW, readable by them or not ([ADR 0231](../adr/0231-publish-changes.md) §7): a channel is not a relation, and the setting is off by default |
 
-The health check plans or reads a TVIEW as its owner (`seq_scans`, `contents`) only for
-a caller with the owner's privileges; the other TVIEWs are counted in the message.
+The health check plans a TVIEW as its owner (`seq_scans`) only for a caller with the
+owner's privileges; the other TVIEWs are counted in the message. `contents` reads a TVIEW
+as its owner for a caller with the owner's privileges or that may read the whole TVIEW
+table (`SELECT`, its schema's `USAGE`, no row security applying): whether an empty table's
+definition yields rows tells such a caller only what a correct table would show it. The
+other TVIEWs are listed as not checked.
 
 ## Effects on other roles
 
@@ -176,6 +192,7 @@ require for the same effect.
 | Locking a whole relation in place of its values (escalation) | `INSERT` or `UPDATE` on that relation, for the caller; otherwise one lock per value, at most 16 times `pg_tviews.lock_escalation_threshold` (`54000`) |
 | Holding the registration lock of an entity | for an existing TVIEW, the right to change it, checked before the lock is taken and again under it; the lock is pg_tviews' own (`objsubid` 21624), which `pg_advisory_lock()` can neither take nor block |
 | Queuing refresh work | `pg_tviews.max_queue_size` holds on every path, keys queued together and `pg_tviews_resync` included (`54000`) |
+| Analyzing a deeply nested definition | `max_stack_depth` holds in pg_tviews' own recursive walks over the definition's tree, as in PostgreSQL's (`54001`) |
 
 ## Supply chain and releases
 
@@ -183,8 +200,16 @@ require for the same effect.
 - The toolchain is pinned (`rust-toolchain.toml`, Rust 1.98) and pgrx is `=0.17.0`.
 - Release builds link with RELRO, `BIND_NOW` and a non-executable stack
   (`.cargo/config.toml`).
+- Shared memory is set up under `AddinShmemInitLock` only after checking, on the
+  running server, that the main lock array holds it at the index PostgreSQL 18 gives
+  it; otherwise nothing is set up, and value locks and `tviews.stats` refuse at first
+  use as without `shared_preload_libraries`.
 - `.github/workflows/release.yml` signs the tarball and SBOMs with Sigstore (keyless)
-  and attests the tarball's provenance with `actions/attest-build-provenance`. See
+  and attests the tarball's provenance with `actions/attest-build-provenance`. The
+  job that builds holds no credential; the job that signs and releases checks the
+  files against the build's digests and compiles nothing; crates.io publishing waits
+  for the owner's approval of the `crates-io` environment and uses a short-lived
+  trusted-publishing token, never a stored one. See
   [signing.md](signing.md), [provenance.md](provenance.md),
   [verify-release.md](verify-release.md) and
   [../development/reproducible-builds.md](../development/reproducible-builds.md).

@@ -87,6 +87,7 @@ pub(crate) fn follow_table_move(table: pg_sys::Oid) -> TViewResult<()> {
     // owner is granted for the statement, as when it created the view.
     let owner = crate::owner::relation_owner(view)?;
     in_extension_schema_for(owner, || {
+        // DDL as the owner, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_role(owner), |_frame| {
             crate::utils::spi::run_ddl(&sql)
         })
@@ -148,6 +149,7 @@ pub(crate) fn in_extension_schema_for<T>(
         } else {
             format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}")
         };
+        // DDL as the owner, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_extension()?, |_frame| {
             crate::utils::spi::run_ddl(&sql)
         })
@@ -191,6 +193,7 @@ pub(crate) fn lock_entity(entity: &str) {
 /// `LOCK TABLE` in `mode`, as the table's owner.
 pub(crate) fn lock_as_owner(table: pg_sys::Oid, mode: &str) -> TViewResult<()> {
     let qualified = crate::utils::qualified_relname_from_oid(table)?;
+    // DDL as the owner, not TVIEW SQL.
     crate::owner::AsOwner::run(crate::owner::Owner::of_table(table)?, |_frame| {
         crate::utils::spi::run_ddl(&format!("LOCK TABLE {qualified} IN {mode} MODE"))
     })

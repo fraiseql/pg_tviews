@@ -32,7 +32,8 @@ ORDER BY CASE severity WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, com
 Expected: every row has severity `info`. The components covered include the
 extension version, catalog revision, metadata, plans, re-registration, triggers, and
 mapping queries that scan a large table (`seq_scans`), and TVIEWs left empty while
-their definition yields rows (`contents`).
+their definition yields rows (`contents`, which is `OK` only when it checked every
+TVIEW).
 
 ## Comprehensive Health Check (10 minutes)
 

@@ -747,6 +747,7 @@ TVIEW's rows (creation, refreshes on writes, `pg_tviews_refresh()`, the time ref
 | `gin_fuzzy_search_limit` | `0` |
 | `plan_cache_mode` | `auto` |
 | `jit` | `off` |
+| the planner settings (`enable_*`, cost constants, `work_mem`, …) | the server's value: the configuration file's, the command line's or `ALTER DATABASE … SET`'s, else the built-in default |
 | `default_text_search_config` | the creating session's, kept with the TVIEW |
 
 so a TVIEW's rows don't depend on who wrote last, nor on settings a role carries

@@ -37,6 +37,10 @@ both. The refresh runs as the TVIEW's owner with `search_path = pg_catalog, pg_t
 whoever the writer is, and renders values under fixed settings (see
 [Rendering](reference/ddl.md#rendering)).
 
+A TVIEW whose definition reads a table through a view another role owns recomputes
+the rows a write to that table changes, instead of copying the written values into
+them (a patch): the same rows, at the cost of reading them from the backing view.
+
 Nothing is queued across transactions. A transaction that would commit with refresh
 work still queued (a flush trigger dropped or disabled) fails instead, with SQLSTATE
 `55000`, naming the TVIEWs; `pg_tviews_check_health()` reports the missing trigger.

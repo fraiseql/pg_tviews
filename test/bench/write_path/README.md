@@ -34,6 +34,23 @@ a large TVIEW embedding the documents of the rows it allocates), each written pe
 statement and once per row, called as one outer `SELECT`: ms per mutation and the TVIEW
 rows it refreshes (`tviews.stats`).
 
+`graph_size.sh [seconds] [clients]` measures what the number of TVIEWs in a database
+costs a write to one of them ([#299](https://github.com/fraiseql/pg_tviews/issues/299)):
+`SIZES` (default `3 303 1003`) independent single-table TVIEWs, one-row updates of
+one. It prints ms per write.
+
+`readers.sh [seconds]` measures what one statement costs per TVIEW reading its table
+([#298](https://github.com/fraiseql/pg_tviews/issues/298)): an `UPDATE` of every row of
+a 5,000-row table read by `READERS` (default `10 40 80`) TVIEWs. It prints ms per
+statement and per TVIEW.
+
+`full_refresh_stale.sh` measures a full refresh with fresh and with stale TVIEW-table
+statistics ([#301](https://github.com/fraiseql/pg_tviews/issues/301)): `SHAPES`
+(`plain`, `aggregate`) TVIEWs of `SIZES` (default `20000 200000`) rows under the
+`full_refresh` policy, emptied, analyzed and refilled for the stale run. It prints each
+step's ms (or `timeout`, `TIMEOUT` default `120s`) and the time and join of each
+statement writing the TVIEW.
+
 `compare.sh head=28971 base=28972 -- [rounds] [seconds] [clients ...] [-- write ...]`
 compares builds: one cluster per build, the writes interleaved build by build (the
 order alternating each round), each run started only when the 1-minute load average is

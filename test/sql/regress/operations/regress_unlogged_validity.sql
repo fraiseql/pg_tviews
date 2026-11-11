@@ -83,6 +83,20 @@ SELECT must((SELECT count(*) FROM tv_post) = 0, 'rebuild_all() refilled the trus
 SELECT assert_fresh('tv_user', 'pk_user', 'tv_user after rebuild_all');
 SELECT pg_tviews_refresh('post');
 
+-- 4b. The health check's `contents` probes a trusted UNLOGGED TVIEW like a
+--     LOGGED one, and lists a reset one as not checked: its refill is pending.
+TRUNCATE tv_post;
+SELECT must(status = 'WARNING' AND message LIKE 'empty while their definition yields rows: public.tv_post%',
+            'contents on an emptied trusted UNLOGGED TVIEW: ' || status || ' ' || message)
+FROM pg_tviews_check_health() WHERE component = 'contents';
+DELETE FROM tviews.pg_tview_valid WHERE entity = 'post';
+SELECT must(status = 'WARNING' AND message LIKE 'not checked: public.tv_post (unlogged, refill pending)%',
+            'contents on a reset UNLOGGED TVIEW: ' || status || ' ' || message)
+FROM pg_tviews_check_health() WHERE component = 'contents';
+SELECT pg_tviews_refresh('post');
+SELECT must(status = 'OK', 'contents after the refill: ' || message)
+FROM pg_tviews_check_health() WHERE component = 'contents';
+
 -- 5. A LOGGED TVIEW has no row and is never refilled; switching persistence
 --    keeps the rows right, and switching a reset TVIEW to LOGGED fills it first.
 ALTER TABLE tv_user SET LOGGED;

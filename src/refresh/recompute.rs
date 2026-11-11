@@ -89,7 +89,7 @@ pub fn recompute(
     let mut touched = super::Touched::default();
     for chunk in keys.chunks(crate::refresh::BATCH_KEYS) {
         // Wait for concurrent writers of these rows before reading the view.
-        let locked = super::lock_rows(meta, &qi_tv, chunk)?;
+        let locked = super::lock_rows(frame, meta, &qi_tv, chunk)?;
         // The keys take their shape (`key_lookup`): the upsert is planned by
         // PostgreSQL's own rule, which settles on its generic plan, and a
         // generic plan of an array parameter reads the view for ten keys.
@@ -100,12 +100,16 @@ pub fn recompute(
             "SELECT {col_list} FROM {qi_view} WHERE {qi_key} = {}",
             lookup.rhs
         );
+        let into = super::UpsertInto {
+            table: &qi_tv,
+            columns: &col_list,
+            conflict: &conflict,
+        };
         let produced = super::run_counted_upsert(
+            frame,
             meta,
-            &qi_tv,
-            &col_list,
+            &into,
             &source_sql,
-            &conflict,
             &lookup.args,
             locked.old.as_ref(),
         )?;
@@ -115,6 +119,7 @@ pub fn recompute(
             Vec::new()
         } else {
             super::run_journaled_delete(
+                frame,
                 meta,
                 &delete_sql,
                 &[

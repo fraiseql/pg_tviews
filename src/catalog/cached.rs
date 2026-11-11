@@ -12,7 +12,7 @@ thread_local! {
     /// Every TVIEW's entity and plan (one entry, keyed by `()`).
     static PLANS_BY_ENTITY: Memo<(), std::rc::Rc<[PlanEntry]>> = Memo::new();
     /// The entity dependency graph (one entry, keyed by `()`).
-    static GRAPH: Memo<(), EntityDepGraph> = Memo::new();
+    static GRAPH: Memo<(), std::rc::Rc<EntityDepGraph>> = Memo::new();
     /// Table → the local paths starting at it.
     static CASCADE_PATHS: Memo<Oid, std::rc::Rc<[LocalPath]>> = Memo::new();
     /// Table → the TVIEWs reading it, with the triggers each needs there.
@@ -43,21 +43,22 @@ pub fn tview_tables() -> crate::TViewResult<std::rc::Rc<std::collections::HashSe
     })
 }
 
-/// The entity dependency graph (cached per backend).
+/// The entity dependency graph (cached per backend), shared: a write borrows
+/// it instead of copying it.
 ///
 /// # Errors
 /// Returns an error if the catalog cannot be read.
-pub fn graph() -> crate::TViewResult<EntityDepGraph> {
+pub fn graph() -> crate::TViewResult<std::rc::Rc<EntityDepGraph>> {
     if !crate::config::graph_cache_enabled() {
-        return EntityDepGraph::load();
+        return EntityDepGraph::load().map(std::rc::Rc::new);
     }
     if let Some(graph) = GRAPH.with(|m| m.get(&())) {
         crate::metrics::metrics_api::record_graph_cache_hit();
         return Ok(graph);
     }
     crate::metrics::metrics_api::record_graph_cache_miss();
-    let graph = EntityDepGraph::from_plans(&plans()?)?;
-    GRAPH.with(|m| m.insert((), graph.clone()));
+    let graph = std::rc::Rc::new(EntityDepGraph::from_plans(&plans()?)?);
+    GRAPH.with(|m| m.insert((), std::rc::Rc::clone(&graph)));
     Ok(graph)
 }
 

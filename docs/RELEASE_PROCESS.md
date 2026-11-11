@@ -34,17 +34,37 @@ pull request that changes it must do, is in
    ```
 
 Pushing the tag `v<version>` starts the one `Release` workflow (watch it with
-`gh run watch <id> --exit-status`). `release.yml`:
+`gh run watch <id> --exit-status`). `release.yml` runs the gates, then three jobs,
+and no job that compiles code holds a credential:
 
-1. runs the CI, the lints and confiture's TVIEW suites on the tagged commit;
-2. checks that the tag matches `Cargo.toml` and that `CHANGELOG.md` has the stamped
-   heading;
-3. builds `pg_tviews-v<version>.tar.gz` (`lib/`, `extension/`), its SBOMs, signs them
-   with Sigstore, attests the tarball's build provenance, and creates the GitHub
-   release;
-4. publishes the crate to crates.io.
+1. the gates: the CI, the lints, the upgrade matrix and confiture's TVIEW suites on
+   the tagged commit;
+2. `build` (read-only): checks that the tag matches `Cargo.toml` and that
+   `CHANGELOG.md` has the stamped heading, builds `pg_tviews-v<version>.tar.gz`
+   (`lib/`, `extension/`) and its SBOMs, checks the crate builds from its package,
+   and records the digest of every file;
+3. `sign-and-release` (no checkout, no cargo): checks the files against `build`'s
+   digests, signs them with Sigstore, attests the tarball's build provenance, and
+   creates the GitHub release;
+4. `publish` waits for approval of the `crates-io` environment. **Approve** it in the
+   run's page (or `gh run view <id>` → Review deployments) once the release's assets
+   look right; it then publishes the crate with a short-lived token from crates.io's
+   trusted publishing, without compiling it again. Cancelling the run before
+   approving leaves crates.io untouched.
 
 Nothing is built or published when a step before it fails.
+
+The environment `crates-io` (with the owner as required reviewer) and the crate's
+trusted publisher on crates.io (repository `fraiseql/pg_tviews`, workflow
+`release.yml`, environment `crates-io`) are set up once, in the repository's settings
+and on crates.io; no crates.io token is stored in the repository.
+
+### Dry run
+
+`gh workflow run release.yml --ref <branch>` runs the gates, `build` and
+`sign-and-release` on the branch, and keeps the signed files as the run's
+`release-dry-run` artifact: no release is created and `publish` is skipped. Run it
+once after changing `release.yml`, before tagging.
 
 ## After the release
 

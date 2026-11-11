@@ -1,0 +1,17 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_warm b_rename a_write a_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_book created
+(1 row)
+
+step a_warm: UPDATE s1.tb_author SET name = 'b' WHERE pk_author = 1;
+step b_rename: ALTER SCHEMA s1 RENAME TO s2;
+step a_write: UPDATE s2.tb_author SET name = 'c' WHERE pk_author = 1;
+step a_check: SELECT pk_book, data FROM public.tv_book ORDER BY 1;
+pk_book|data                         
+-------+-----------------------------
+      1|{"title": "t", "author": "c"}
+(1 row)
+

@@ -19,6 +19,7 @@ impl Walker<'_> {
         term_of: &dyn Fn(*mut pg_sys::Node) -> Option<Resolved>,
         next_var: &mut dyn FnMut(),
     ) -> Option<Sql> {
+        crate::utils::guard_depth();
         // SAFETY: each node is checked by tag before it is cast.
         unsafe {
             match tag(expr)? {

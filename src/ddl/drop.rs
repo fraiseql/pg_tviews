@@ -137,6 +137,7 @@ pub fn handle_dropped(entity: &str) -> TViewResult<()> {
 /// that dropped the TVIEW's table need not own it.
 fn drop_backing_view(entity: &str) -> TViewResult<()> {
     if let Some(view) = crate::catalog::queries::backing_view(entity)? {
+        // DDL on the backing view as its owner, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
             drop_by_oid(view, "VIEW", true)
         })?;
@@ -159,6 +160,7 @@ pub fn drop_left_backing_views(views: &[pg_sys::Oid]) -> TViewResult<()> {
             &args,
         )?;
         if present == Some(true) {
+            // DDL on the backing view as its owner, not TVIEW SQL.
             crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
                 drop_by_oid(view, "VIEW", true)
             })?;
@@ -180,6 +182,7 @@ pub fn reclaim_leftover_view(schema: &str, name: &str) -> TViewResult<bool> {
         return Ok(false);
     };
     {
+        // DDL on the backing view as its owner, not TVIEW SQL.
         crate::owner::AsOwner::run(crate::owner::Owner::of_table(view)?, |_frame| {
             drop_by_oid(view, "VIEW", false)
         })?;

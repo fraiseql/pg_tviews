@@ -449,6 +449,12 @@ impl OwnerFrame {
     }
 }
 
+impl crate::utils::spi::Frame for OwnerFrame {
+    fn require_current(&self) -> TViewResult<()> {
+        Self::require_current(self)
+    }
+}
+
 /// `Ok` when a frame owned by `frame_owner` may run the SQL of a TVIEW whose
 /// table `table` is owned by `table_owner`.
 fn check_frame_owner(frame_owner: Oid, table_owner: Oid, table: Oid) -> TViewResult<()> {
@@ -570,6 +576,42 @@ impl Drop for RenderPin {
             return;
         }
         // SAFETY: closes the nest level `new` opened.
+        unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
+    }
+}
+
+/// While alive, the planner joins by hash or merge wherever it can
+/// (`enable_nestloop = off`); dropping it restores the setting (an error's
+/// (sub)transaction abort restores it instead).
+///
+/// For statements that join a whole TVIEW table with its whole view (a full
+/// refresh). The table's statistics may say it is empty when it is not (emptied,
+/// analyzed, refilled since): a nested loop chosen on that estimate evaluates the
+/// view once per row. A key join always has a hash or merge form, and a nested
+/// loop stays where nothing else can run (a lateral call).
+pub struct WholeTableJoins {
+    guc_level: i32,
+}
+
+impl WholeTableJoins {
+    #[must_use]
+    pub fn pin() -> Self {
+        // SAFETY: the GUC nest level opened here is closed by Drop or by the abort.
+        let guc_level = unsafe {
+            let level = pg_sys::NewGUCNestLevel();
+            set_local(c"enable_nestloop", c"off");
+            level
+        };
+        Self { guc_level }
+    }
+}
+
+impl Drop for WholeTableJoins {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        // SAFETY: closes the nest level `pin` opened.
         unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
     }
 }
@@ -715,6 +757,320 @@ unsafe fn pin_settings() {
     for (name, value) in RENDER_SETTINGS.into_iter().chain(PLAN_SETTINGS) {
         // SAFETY: the caller opened the nest level.
         unsafe { pin(name, value) };
+    }
+    // SAFETY: the caller opened the nest level.
+    unsafe { planner::pin_all() };
+}
+
+/// The planner settings a refresh is planned under: the server's values, so a
+/// writer's session (`SET enable_nestloop = off`) or role (`ALTER ROLE … SET`)
+/// does not steer the plans of the owner's refresh, while a DBA's tuning stays in
+/// force.
+///
+/// A setting's value is its reset value when that comes from the configuration
+/// file, the command line, `ALTER SYSTEM`, `ALTER ROLE ALL … SET` or `ALTER
+/// DATABASE … SET`. When a role's setting masked those (PostgreSQL loads only the
+/// highest-priority stored setting), it is the database's value, then the one of
+/// `ALTER ROLE ALL`, read from `pg_db_role_setting`; else the built-in default.
+///
+/// Each frame compares typed values read from the settings' records, found once
+/// per backend: the reset value (a configuration reload changes it, and the pin
+/// is derived again) and the current one, set only when it differs. A frame
+/// whose settings already hold their pins costs a few loads per setting.
+mod planner {
+    use pgrx::pg_sys;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ffi::{CStr, CString};
+
+    const SETTINGS: [&CStr; 40] = [
+        c"enable_async_append",
+        c"enable_bitmapscan",
+        c"enable_distinct_reordering",
+        c"enable_gathermerge",
+        c"enable_group_by_reordering",
+        c"enable_hashagg",
+        c"enable_hashjoin",
+        c"enable_incremental_sort",
+        c"enable_indexonlyscan",
+        c"enable_indexscan",
+        c"enable_material",
+        c"enable_memoize",
+        c"enable_mergejoin",
+        c"enable_nestloop",
+        c"enable_parallel_append",
+        c"enable_parallel_hash",
+        c"enable_partition_pruning",
+        c"enable_partitionwise_aggregate",
+        c"enable_partitionwise_join",
+        c"enable_presorted_aggregate",
+        c"enable_self_join_elimination",
+        c"enable_seqscan",
+        c"enable_sort",
+        c"enable_tidscan",
+        c"random_page_cost",
+        c"seq_page_cost",
+        c"cpu_tuple_cost",
+        c"cpu_index_tuple_cost",
+        c"cpu_operator_cost",
+        c"effective_cache_size",
+        c"work_mem",
+        c"hash_mem_multiplier",
+        c"join_collapse_limit",
+        c"from_collapse_limit",
+        c"geqo",
+        c"geqo_threshold",
+        c"cursor_tuple_fraction",
+        c"constraint_exclusion",
+        c"max_parallel_workers_per_gather",
+        c"default_statistics_target",
+    ];
+
+    /// A setting's value as its record holds it.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Value {
+        Bool(bool),
+        Int(i32),
+        Real(f64),
+        Enum(i32),
+    }
+
+    struct Pin {
+        name: &'static CStr,
+        record: *mut pg_sys::config_generic,
+        /// The reset source and value the pin was derived from.
+        derived_from: (pg_sys::GucSource::Type, Value),
+        value: Value,
+        text: CString,
+    }
+
+    #[derive(Default)]
+    struct Pins {
+        found: bool,
+        pins: Vec<Pin>,
+        stored: Option<HashMap<String, String>>,
+    }
+
+    thread_local! {
+        static PINS: RefCell<Pins> = RefCell::new(Pins::default());
+    }
+
+    /// Set every planner setting whose value differs from its pin.
+    ///
+    /// SAFETY: the caller opened the GUC nest level the settings are restored at.
+    pub(super) unsafe fn pin_all() {
+        PINS.with(|pins| {
+            // A frame opened while the pins are derived (their catalog read) keeps
+            // what is in force.
+            let Ok(mut pins) = pins.try_borrow_mut() else {
+                return;
+            };
+            if !pins.found {
+                // SAFETY: built-in settings, looked up by name.
+                pins.pins = SETTINGS
+                    .into_iter()
+                    .filter_map(|name| unsafe { record(name) }.map(|record| (name, record)))
+                    .map(|(name, record)| Pin {
+                        name,
+                        record,
+                        derived_from: (pg_sys::GucSource::PGC_S_DEFAULT, Value::Int(i32::MIN)),
+                        value: Value::Int(i32::MIN),
+                        text: CString::default(),
+                    })
+                    .collect();
+                pins.found = true;
+            }
+            let Pins { pins, stored, .. } = &mut *pins;
+            for pin in pins.iter_mut() {
+                // SAFETY: a built-in record, which lives as long as the backend.
+                let reset = unsafe { reset_of(pin.record) };
+                if reset != pin.derived_from {
+                    // SAFETY: as above.
+                    unsafe { derive(pin, reset, stored) };
+                }
+                // SAFETY: as above.
+                if unsafe { current_of(pin.record) } != pin.value {
+                    // SAFETY: the caller opened the nest level.
+                    unsafe { super::set_local(pin.name, &pin.text) };
+                }
+            }
+        });
+    }
+
+    /// Derive `pin` from its record's reset source and value.
+    ///
+    /// SAFETY: `pin.record` is a live record.
+    unsafe fn derive(
+        pin: &mut Pin,
+        reset: (pg_sys::GucSource::Type, Value),
+        stored: &mut Option<HashMap<String, String>>,
+    ) {
+        pin.derived_from = reset;
+        let from_text = |text: &str| {
+            let text = CString::new(text).ok()?;
+            // SAFETY: forwarded.
+            unsafe { parse(pin.record, &text) }.map(|value| (value, text))
+        };
+        let derived = if reset.0 <= pg_sys::GucSource::PGC_S_DATABASE {
+            // SAFETY: a setting that exists; the string is copied.
+            let text = unsafe {
+                let reset = pg_sys::GetConfigOptionResetString(pin.name.as_ptr());
+                (!reset.is_null()).then(|| CStr::from_ptr(reset).to_owned())
+            };
+            text.map(|text| (reset.1, text))
+        } else {
+            let stored = stored.get_or_insert_with(stored_settings);
+            stored
+                .get(pin.name.to_str().unwrap_or_default())
+                .and_then(|text| from_text(text))
+        };
+        // SAFETY: forwarded.
+        let (value, text) = derived.unwrap_or_else(|| unsafe { boot_of(pin.record) });
+        pin.value = value;
+        pin.text = text;
+    }
+
+    /// SAFETY: a NUL-terminated name.
+    unsafe fn record(name: &CStr) -> Option<*mut pg_sys::config_generic> {
+        // SAFETY: forwarded; missing_ok, so a setting this server lacks is None.
+        let record = unsafe {
+            pg_sys::find_option(name.as_ptr(), false, true, pg_sys::DEBUG1.cast_signed())
+        };
+        (!record.is_null()).then_some(record)
+    }
+
+    /// SAFETY: a live record of a bool, int, real or enum setting.
+    unsafe fn reset_of(record: *mut pg_sys::config_generic) -> (pg_sys::GucSource::Type, Value) {
+        // SAFETY: the record's vartype says which struct it is.
+        unsafe {
+            let value = match (*record).vartype {
+                pg_sys::config_type::PGC_BOOL => {
+                    Value::Bool((*record.cast::<pg_sys::config_bool>()).reset_val)
+                }
+                pg_sys::config_type::PGC_INT => {
+                    Value::Int((*record.cast::<pg_sys::config_int>()).reset_val)
+                }
+                pg_sys::config_type::PGC_REAL => {
+                    Value::Real((*record.cast::<pg_sys::config_real>()).reset_val)
+                }
+                _ => Value::Enum((*record.cast::<pg_sys::config_enum>()).reset_val),
+            };
+            ((*record).reset_source, value)
+        }
+    }
+
+    /// SAFETY: as [`reset_of`].
+    unsafe fn current_of(record: *mut pg_sys::config_generic) -> Value {
+        // SAFETY: as above; each record's variable is the setting's C variable.
+        unsafe {
+            match (*record).vartype {
+                pg_sys::config_type::PGC_BOOL => {
+                    Value::Bool(*(*record.cast::<pg_sys::config_bool>()).variable)
+                }
+                pg_sys::config_type::PGC_INT => {
+                    Value::Int(*(*record.cast::<pg_sys::config_int>()).variable)
+                }
+                pg_sys::config_type::PGC_REAL => {
+                    Value::Real(*(*record.cast::<pg_sys::config_real>()).variable)
+                }
+                _ => Value::Enum(*(*record.cast::<pg_sys::config_enum>()).variable),
+            }
+        }
+    }
+
+    /// The value `text` sets the setting to, as `SET` would read it; None when
+    /// it does not parse.
+    ///
+    /// SAFETY: as [`reset_of`].
+    unsafe fn parse(record: *mut pg_sys::config_generic, text: &CStr) -> Option<Value> {
+        // SAFETY: as above; the parsers only read `text` and write the result.
+        unsafe {
+            let flags = (*record).flags;
+            match (*record).vartype {
+                pg_sys::config_type::PGC_BOOL => {
+                    let mut on = false;
+                    pg_sys::parse_bool(text.as_ptr(), &raw mut on).then_some(Value::Bool(on))
+                }
+                pg_sys::config_type::PGC_INT => {
+                    let mut n = 0;
+                    pg_sys::parse_int(text.as_ptr(), &raw mut n, flags, std::ptr::null_mut())
+                        .then_some(Value::Int(n))
+                }
+                pg_sys::config_type::PGC_REAL => {
+                    let mut x = 0.0;
+                    pg_sys::parse_real(text.as_ptr(), &raw mut x, flags, std::ptr::null_mut())
+                        .then_some(Value::Real(x))
+                }
+                _ => {
+                    let mut n = 0;
+                    pg_sys::config_enum_lookup_by_name(
+                        record.cast::<pg_sys::config_enum>(),
+                        text.as_ptr(),
+                        &raw mut n,
+                    )
+                    .then_some(Value::Enum(n))
+                }
+            }
+        }
+    }
+
+    /// The built-in default, as a value and as the text that sets it.
+    ///
+    /// SAFETY: as [`reset_of`].
+    unsafe fn boot_of(record: *mut pg_sys::config_generic) -> (Value, CString) {
+        // SAFETY: as above.
+        let (value, text) = unsafe {
+            match (*record).vartype {
+                pg_sys::config_type::PGC_BOOL => {
+                    let on = (*record.cast::<pg_sys::config_bool>()).boot_val;
+                    (Value::Bool(on), (if on { "on" } else { "off" }).to_string())
+                }
+                pg_sys::config_type::PGC_INT => {
+                    let n = (*record.cast::<pg_sys::config_int>()).boot_val;
+                    (Value::Int(n), n.to_string())
+                }
+                pg_sys::config_type::PGC_REAL => {
+                    let x = (*record.cast::<pg_sys::config_real>()).boot_val;
+                    (Value::Real(x), x.to_string())
+                }
+                _ => {
+                    let record = record.cast::<pg_sys::config_enum>();
+                    let n = (*record).boot_val;
+                    let name = pg_sys::config_enum_lookup_by_value(record, n);
+                    let text = if name.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(name).to_string_lossy().into_owned()
+                    };
+                    (Value::Enum(n), text)
+                }
+            }
+        };
+        (value, CString::new(text).unwrap_or_default())
+    }
+
+    /// The values `ALTER DATABASE … SET` gave this database, over those `ALTER
+    /// ROLE ALL … SET` gave every database: `name=value` entries of
+    /// `pg_db_role_setting`. Empty when the catalog cannot be read.
+    fn stored_settings() -> HashMap<String, String> {
+        let rows = crate::utils::spi::catalog_rows(
+            "SELECT s.setdatabase <> 0, c.entry \
+               FROM pg_catalog.pg_db_role_setting s, pg_catalog.unnest(s.setconfig) AS c(entry) \
+              WHERE s.setrole = 0 AND s.setdatabase IN (0, $1) \
+              ORDER BY 1",
+            // SAFETY: reads backend-global state.
+            &[crate::utils::spi::oid(unsafe { pg_sys::MyDatabaseId })],
+            |row| row.get::<String>(2),
+        )
+        .unwrap_or_default();
+        // The database's entries come last and override the global ones.
+        rows.into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let (name, value) = entry.split_once('=')?;
+                Some((name.to_string(), value.to_string()))
+            })
+            .collect()
     }
 }
 
