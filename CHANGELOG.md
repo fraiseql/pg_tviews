@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.39] - 2026-11-11
+
 ### Fixed
 
 - **`pg_tviews_check_health()`'s `contents` is `OK` only when it checked every TVIEW**
@@ -2883,7 +2885,8 @@ First beta: a feature-complete transactional materialized JSONB view system.
 
 - Initial project structure on pgrx.
 
-[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.38...HEAD
+[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.39...HEAD
+[0.1.0-beta.39]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.38...v0.1.0-beta.39
 [0.1.0-beta.38]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.37...v0.1.0-beta.38
 [0.1.0-beta.37]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.36...v0.1.0-beta.37
 [0.1.0-beta.36]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.35...v0.1.0-beta.36
