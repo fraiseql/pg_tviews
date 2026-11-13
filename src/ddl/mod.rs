@@ -39,6 +39,22 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
     )
 }
 
+/// After a statement that may make row security apply to a role a TVIEW reads a
+/// table as: refuse it when it does, for any TVIEW
+/// ([`crate::catalog::stopgap::check_row_security`]).
+///
+/// # Errors
+/// That refusal, or a failed catalog read.
+pub(crate) fn check_every_row_security() -> TViewResult<()> {
+    // SAFETY: makes the changes of the statement just run visible to the checks.
+    unsafe { pg_sys::CommandCounterIncrement() };
+    crate::cache::invalidate_all();
+    for entry in crate::catalog::plans()?.iter() {
+        create::check_row_security(&entry.entity)?;
+    }
+    Ok(())
+}
+
 /// After `ALTER TABLE … RENAME` or `SET SCHEMA` of relation `table`: if it is a
 /// TVIEW's table, give its backing view the name the table now derives.
 ///

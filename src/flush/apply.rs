@@ -354,6 +354,10 @@ impl Flush {
             return Ok(meta.clone());
         }
         let meta = TviewMeta::load_by_entity(entity)?;
+        // A refresh reads every row of the tables the TVIEW reads.
+        if let Some(meta) = &meta {
+            crate::catalog::stopgap::refuse_row_security(meta)?;
+        }
         self.metas.insert(entity.to_string(), meta.clone());
         Ok(meta)
     }

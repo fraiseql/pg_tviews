@@ -116,6 +116,8 @@ fn route(
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<Route> {
+    // A refresh reads every row of the tables the TVIEW reads.
+    crate::catalog::stopgap::refuse_row_security(meta)?;
     let entity = meta.entity_name.as_str();
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     let computed = computed_columns(entity, table_oid)?;
@@ -366,15 +368,6 @@ fn capture_pass<'a>(
         let Some(mapping) = meta.key_mapping(table_oid, None) else {
             continue;
         };
-        // Under row security that applies to the TVIEW's owner, its refreshes
-        // lock the table whole ([`crate::concurrency::reads::read_set`]): the
-        // write takes its intent lock, with the refresh's lock its own
-        // refreshes take, at once, so two such writes cannot each hold the
-        // intent and wait for the other's.
-        if crate::catalog::stopgap::owner_rls_tables(meta).contains(&mapping.relid) {
-            pass.intent(mapping.relid, crate::concurrency::Side::Writer);
-            pass.relation(mapping.relid, crate::concurrency::Side::Refresh);
-        }
         let mut locks = || -> TViewResult<()> {
             crate::concurrency::changed_rows(mapping, &mut pass, |column| {
                 with_transition_tables(trigger, entity, |frame, client, table| {

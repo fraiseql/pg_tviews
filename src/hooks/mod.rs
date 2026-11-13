@@ -26,7 +26,8 @@ use statements::{
     ColumnChange, ColumnRename, PartitionDdl, PrivilegesChange, ValueRewrite, column_change_of,
     column_rename_of, drops_pg_tviews, extension_installed, extension_statement_names,
     leaving_partitions_of, matview_refresh_of, partition_ddl_of, persistence_change_of,
-    privileges_change_of, resolve_relation_oid, table_move_of, value_rewrite_of,
+    privileges_change_of, resolve_relation_oid, row_security_scope_of, table_move_of,
+    value_rewrite_of,
 };
 use tables::handle_drop_table;
 
@@ -523,6 +524,9 @@ struct FollowUps {
     /// Values rewritten without a trigger (a generation expression, an enum
     /// label): the TVIEWs reading them are refreshed.
     value_rewrite: Option<ValueRewrite>,
+    /// A statement that may make row security apply to a role a TVIEW reads a
+    /// table as: refused when it does.
+    row_security_scope: bool,
 }
 
 impl FollowUps {
@@ -540,6 +544,7 @@ impl FollowUps {
                 index_follow_up: None,
                 persistence_change: None,
                 value_rewrite: None,
+                row_security_scope: false,
             };
         }
         // SAFETY: as above.
@@ -565,6 +570,7 @@ impl FollowUps {
                         .map(|entity| (entity, table, logged))
                 }),
                 value_rewrite: value_rewrite_of(pstmt),
+                row_security_scope: row_security_scope_of(pstmt),
             }
         }
     }
@@ -653,6 +659,11 @@ impl FollowUps {
             if let Err(e) = readers.and_then(|r| crate::ddl::uncascaded::refresh_entities(&r)) {
                 e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
             }
+        }
+        if self.row_security_scope
+            && let Err(e) = crate::ddl::check_every_row_security()
+        {
+            e.raise();
         }
     }
 }

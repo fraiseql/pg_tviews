@@ -61,6 +61,14 @@ pub enum TViewError {
     /// `pg_tviews` cannot maintain a TVIEW with this definition.
     DefinitionRefused { reason: String },
 
+    /// Row security applies on a table a TVIEW reads to a role it reads the
+    /// table as: a refresh reads every row of every table its TVIEW reads.
+    RowSecurity {
+        tview: String,
+        table: String,
+        role: String,
+    },
+
     /// One of `pg_tviews`' trigger functions was attached the wrong way (by
     /// hand, or left by an older release).
     TriggerMisused { reason: String },
@@ -143,6 +151,7 @@ impl TViewError {
             Self::TypenameTaken { .. } => PgSqlErrorCode::ERRCODE_DUPLICATE_OBJECT,
             Self::InvalidInput { .. } => PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
             Self::DefinitionRefused { .. } => PgSqlErrorCode::ERRCODE_FEATURE_NOT_SUPPORTED,
+            Self::RowSecurity { .. } => PgSqlErrorCode::ERRCODE_INVALID_TABLE_DEFINITION,
             Self::TriggerMisused { .. } => {
                 PgSqlErrorCode::ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED
             }
@@ -205,6 +214,12 @@ impl TViewError {
             ),
             Self::KeyTypeRefused { .. } => Some(
                 "Key the rows on an integer column, and keep a uuid key in the id column.".into(),
+            ),
+            Self::RowSecurity { .. } => Some(
+                "The roles a TVIEW reads its tables as must be exempt from row security on them: \
+                 make the TVIEW's owner the owner of those tables, and do not set them to FORCE \
+                 ROW LEVEL SECURITY."
+                    .into(),
             ),
             Self::ColumnDdlRefused { .. } => Some(
                 "Change the definition with tviews.pg_tviews_create_or_replace(): the table \
@@ -378,6 +393,10 @@ impl fmt::Display for TViewError {
             Self::InvalidInput { parameter, reason } => {
                 write!(f, "Invalid input for parameter '{parameter}': {reason}")
             }
+            Self::RowSecurity { tview, table, role } => write!(
+                f,
+                "row security applies to role {role} on table {table}, which {tview} reads"
+            ),
             Self::DefinitionRefused { reason }
             | Self::TriggerMisused { reason }
             | Self::PermissionDenied { reason }
@@ -522,6 +541,11 @@ mod tests {
                 reason: s(),
             },
             TViewError::DefinitionRefused { reason: s() },
+            TViewError::RowSecurity {
+                tview: s(),
+                table: s(),
+                role: s(),
+            },
             TViewError::TriggerMisused { reason: s() },
             TViewError::KeyTypeRefused {
                 column: s(),
@@ -585,6 +609,7 @@ mod tests {
                 | TViewError::TypenameTaken { .. }
                 | TViewError::InvalidInput { .. }
                 | TViewError::DefinitionRefused { .. }
+                | TViewError::RowSecurity { .. }
                 | TViewError::TriggerMisused { .. }
                 | TViewError::KeyTypeRefused { .. }
                 | TViewError::ColumnDdlRefused { .. }

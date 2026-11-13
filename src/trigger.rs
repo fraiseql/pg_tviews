@@ -185,6 +185,15 @@ fn note_row_write(
     table: pg_sys::Oid,
     changed: Option<&[String]>,
 ) {
+    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
+        .ok()
+        .flatten();
+    // A refresh reads every row of the tables the TVIEW reads.
+    if let Some(meta) = meta.as_deref()
+        && let Err(e) = crate::catalog::stopgap::refuse_row_security(meta)
+    {
+        e.raise();
+    }
     if crate::concurrency::links_changed() {
         return;
     }
@@ -193,9 +202,6 @@ fn note_row_write(
         Ok(PgTriggerOperation::Update) => crate::queue::Event::Update,
         _ => crate::queue::Event::Delete,
     };
-    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
-        .ok()
-        .flatten();
     // Columns the plan does not list may link its rows: every write changes a
     // link.
     if meta
@@ -263,7 +269,7 @@ fn enqueue_local_keys(
     // changes) — those always cascade. A path with an empty `source_columns`
     // also always cascades, and so does one whose columns the plan does not know
     // ([`crate::catalog::stopgap`]: read whole, through a system column or a
-    // declared function, under row security).
+    // declared function, or by a plan from an earlier release).
     for path in paths {
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.

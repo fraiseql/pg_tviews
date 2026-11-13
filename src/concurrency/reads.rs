@@ -88,12 +88,6 @@ pub fn read_set(
         return Ok(());
     };
     pass.intent(meta.tview_oid.to_u32(), Side::Refresh);
-    // While row security applies to the owner on a table, the table is locked
-    // whole, as a writer of it takes the intent lock (`delta/mapping.rs`),
-    // whatever column it changed.
-    for &relid in crate::catalog::stopgap::owner_rls_tables(meta).iter() {
-        pass.relation(relid, Side::Refresh);
-    }
     // A transaction that changed no link computes rows from links every
     // transaction sees committed: a writer of a value they read finds them, and
     // the row locks order the two refreshes. Locking the values too would only

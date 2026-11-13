@@ -253,7 +253,7 @@ fn raise_without_values(error: &CaughtError, role: &str) -> ! {
 }
 
 /// The name of `role`, for messages; its OID when it has none.
-fn role_name(role: Oid) -> String {
+pub(crate) fn role_name(role: Oid) -> String {
     // SAFETY: a syscache lookup by OID; null when the role is gone.
     let name = unsafe { pg_sys::GetUserNameFromId(role, true) };
     if name.is_null() {

@@ -22,6 +22,7 @@ const fn variant_name(e: &TViewError) -> &'static str {
         TViewError::TypenameTaken { .. } => "TypenameTaken",
         TViewError::InvalidInput { .. } => "InvalidInput",
         TViewError::DefinitionRefused { .. } => "DefinitionRefused",
+        TViewError::RowSecurity { .. } => "RowSecurity",
         TViewError::TriggerMisused { .. } => "TriggerMisused",
         TViewError::KeyTypeRefused { .. } => "KeyTypeRefused",
         TViewError::ColumnDdlRefused { .. } => "ColumnDdlRefused",
@@ -58,6 +59,11 @@ fn examples() -> Vec<TViewError> {
         },
         TViewError::DefinitionRefused {
             reason: p("reason"),
+        },
+        TViewError::RowSecurity {
+            tview: "tv_<entity>".into(),
+            table: p("table"),
+            role: p("role"),
         },
         TViewError::TriggerMisused {
             reason: p("reason"),
@@ -289,7 +295,7 @@ fn every_variant_has_one_example() {
         unique.len(),
         "an example listed twice: {names:?}"
     );
-    assert_eq!(names.len(), 22, "a variant has no example: {names:?}");
+    assert_eq!(names.len(), 23, "a variant has no example: {names:?}");
 }
 
 /// Every SQLSTATE raised in place outside `src/error/` is in [`RAISED_ELSEWHERE`].
