@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ALTER EXTENSION pg_tviews UPDATE` completes whatever state a TVIEW is in.** The
+  update re-derives every TVIEW as its owner; one that could not be re-derived (a
+  privilege its owner lost, row security that now refuses it, a view or function it
+  reads changed) failed the whole update. It is now left with `needs_reregister`, and
+  the update completes and names it in a WARNING with the first line of its error.
+  Until it is fixed and re-registered its refreshes skip and patch nothing, and fail
+  where its definition no longer holds; `pg_tviews_check_health()`'s `reregister`
+  component names each TVIEW left, with why when it knows. The upgrade page gives a
+  pre-check to run before the update, which lists the TVIEWs it will leave. See
+  `docs/operations/upgrade.md`.
 - **A TVIEW reading a table whole, through a system column or through a declared
   function is refreshed on every write to that table.** Its plan lists the columns the
   definition names, and a write changing none of them was skipped or patched in place:

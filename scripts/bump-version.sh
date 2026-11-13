@@ -36,10 +36,32 @@ done
 -- statements above the re-derivation (docs/development/extension-versioning.md).
 -- Released scripts are never edited.
 
--- Every TVIEW is re-derived inside the update, as its owner: an update leaves none
--- on an older plan.
+-- Every TVIEW is re-derived inside the update, as its owner. The update does not
+-- depend on what a TVIEW's owner chose: a TVIEW that cannot be re-derived keeps
+-- needs_reregister (its refreshes skip and patch nothing) and is named in a
+-- WARNING; the health check lists it (docs/operations/upgrade.md).
 UPDATE @extschema@.pg_tview_meta SET needs_reregister = true;
-SELECT pg_catalog.count(*) FROM @extschema@.pg_tviews_reregister_all(strict => true);
+DO \$reregister\$
+DECLARE
+    left_behind TEXT[];
+BEGIN
+    SELECT pg_catalog.array_agg(pg_catalog.format('%s: %s', m.table_oid::pg_catalog.regclass,
+                                                  pg_catalog.split_part(r.status, E'\\n', 1))
+                                ORDER BY r.entity)
+      INTO left_behind
+      FROM @extschema@.pg_tviews_reregister_all(strict => false) r
+      JOIN @extschema@.pg_tview_meta m ON m.entity = r.entity
+     WHERE r.status <> 'reregistered';
+    IF left_behind IS NOT NULL THEN
+        RAISE WARNING 'pg_tviews: % TVIEW(s) could not be re-derived and need re-registration: %',
+            pg_catalog.cardinality(left_behind), pg_catalog.array_to_string(left_behind, '; ')
+            USING HINT = 'Fix each and run SELECT @extschema@.pg_tviews_reregister(''<TVIEW>''); '
+                         'until then its refreshes skip and patch nothing, and fail where its '
+                         'definition no longer holds. @extschema@.pg_tviews_check_health() '
+                         'lists them (component reregister).';
+    END IF;
+END
+\$reregister\$;
 EOF
 
 # The badge escapes '-' as '--' (shields.io).

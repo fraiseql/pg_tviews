@@ -15,7 +15,7 @@ SELECT pg_catalog.current_setting('server_version') AS postgresql,
 SELECT status, message FROM tviews.pg_tviews_check_health() WHERE component = 'catalog';
 
 \echo ''
-\echo '2. TVIEWs marked needs_reregister (expect none: the update re-derives every TVIEW)'
+\echo '2. TVIEWs the update could not re-derive (fix and re-register each: docs/operations/upgrade.md)'
 SELECT schema, name FROM tviews.registry WHERE needs_reregister ORDER BY schema, name;
 
 \echo ''

@@ -460,24 +460,54 @@ fn acts_for_owner(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> 
     Ok(member == Some(true))
 }
 
-/// TVIEWs registered before a release that changed what registration derives.
+/// TVIEWs whose plan an earlier release derived (`needs_reregister`): an update
+/// that could not derive them again leaves them so. Each is named, with why it
+/// cannot be re-derived when a check of this release knows (row security, a
+/// privilege revoked); their refreshes skip and patch nothing until then.
 fn reregister_check() -> Check {
-    let stale = match registered("reregister") {
-        Ok((_, stale, _)) => stale,
-        Err(check) => return check,
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("reregister", format!("could not be checked: {e}")),
     };
-    if stale == 0 {
+    let found: Vec<String> = metas
+        .iter()
+        .filter(|meta| meta.plan_release == crate::catalog::PlanRelease::Earlier)
+        .map(|meta| match reregister_reason(meta) {
+            Some(why) => format!("tv_{}: {why}", meta.entity_name),
+            None => format!("tv_{}", meta.entity_name),
+        })
+        .collect();
+    if found.is_empty() {
         ok("reregister", "No TVIEW needs re-registration")
     } else {
         warning(
             "reregister",
             format!(
-                "{stale} TVIEW{} registered by an older release: run \
+                "{} left to re-register: {}; fix each and run \
+                 SELECT tviews.pg_tviews_reregister('<TVIEW>'), or \
                  SELECT * FROM tviews.pg_tviews_reregister_all()",
-                if stale == 1 { "" } else { "s" }
+                count(found.len(), "TVIEW"),
+                found.join("; ")
             ),
         )
     }
+}
+
+/// Why `meta`'s TVIEW cannot be re-derived, when a check of this release says:
+/// row security on a table it reads, or a privilege a role reading for it lacks.
+fn reregister_reason(meta: &crate::catalog::TviewMeta) -> Option<String> {
+    if let Err(e) = crate::catalog::stopgap::check_row_security(meta) {
+        return Some(first_line(&e.to_string()));
+    }
+    match crate::catalog::owner_reads::lacking(meta) {
+        Ok(lacking) if !lacking.is_empty() => Some(lacking.join("; ")),
+        _ => None,
+    }
+}
+
+/// The first line of `message`.
+fn first_line(message: &str) -> String {
+    message.lines().next().unwrap_or_default().to_string()
 }
 
 /// `pg_tviews`' triggers against the plans: a missing or disabled one leaves a
