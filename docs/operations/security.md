@@ -178,10 +178,12 @@ replaced: the backing view stores the objects it found, not their names.
 ### Row security on the tables a TVIEW reads
 
 A refresh reads every row of every table its TVIEW reads. The roles it reads them as
-must therefore be exempt from row security on those tables: the TVIEW's owner, and
-the owner of each view its definition reads a table through (a view that is not
-`security_invoker` reads as its owner). Policies written for other roles do not
-matter. pg_tviews refuses a TVIEW while row security applies to one of those roles on
+must therefore be exempt from row security on those tables: the TVIEW's owner, the
+owner of each view its definition reads a table through (a view that is not
+`security_invoker` reads as its owner), and the owner of each `SECURITY DEFINER`
+function declared in `function_reads`. The tables are those its plan reads, every
+table the views of its definition name as they are now, and those `function_reads`
+declares. Policies written for other roles do not matter. pg_tviews refuses a TVIEW while row security applies to one of those roles on
 one of those tables (`42P16`, `row security applies to role … on table …, which
 tv_… reads`):
 
@@ -193,6 +195,11 @@ tv_… reads`):
 - otherwise (a role changed from another database), at the next write to a table the
   TVIEW reads and at every refresh: they fail until the roles are exempt again, and
   the TVIEW's rows are those of its last refresh until then.
+
+A statement is refused only for a TVIEW it makes refused: one refused already does not
+block unrelated statements. Tables read by a function that is not declared (allowed
+with `uncascaded_policy` `warn` or `full_refresh`) are not known to pg_tviews, and are not
+checked.
 
 The way to be exempt: **the TVIEW's owner owns the tables it reads**, and those
 tables are not set to `FORCE ROW LEVEL SECURITY`. Row security can stay enabled on

@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A TVIEW is refused while row security applies to a role it reads a table as.** A
-  refresh reads every row of every table its TVIEW reads, as the TVIEW's owner and as
-  the owner of each view its definition reads through. `CREATE`, replace and
+  refresh reads every row of every table its TVIEW reads, as the TVIEW's owner, as
+  the owner of each view its definition reads through, and as the owner of each
+  declared `SECURITY DEFINER` function. `CREATE`, replace and
   re-register refuse a TVIEW when row security applies to one of those roles on one of
   those tables (`42P16`, naming the table and the role), and so do the statements that
   would make it apply afterwards (`ENABLE` / `FORCE ROW LEVEL SECURITY`, owner changes,
