@@ -19,6 +19,7 @@ fn pg_tviews_create_with_options(
 ) -> Result<String, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_create")?;
     let options = replace::parse_options(&options.0)?;
     match replace::create_only(tview, query, options, false) {
         Ok(replace::Created::Rows(_) | replace::Created::Skipped) => {
@@ -44,6 +45,7 @@ fn pg_tviews_create_or_replace(
 ) -> Result<String, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_create_or_replace")?;
     replace::create_or_replace(tview, query, &options.0)
         .map(str::to_string)
         .map_err(|e| e.report_in(&format!("Failed to create or replace TVIEW {tview}")))
@@ -60,6 +62,7 @@ fn pg_tviews_drop(
 ) -> Result<String, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_drop")?;
     let relation = crate::catalog::resolve::find(tview)
         .ok()
         .map(|found| super::table_name(found.table, &found.entity));
@@ -80,6 +83,7 @@ fn pg_tviews_drop(
 fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_reregister")?;
     let found = super::owned(tview)?;
     crate::ddl::create::reregister_tview(&found.entity)
         .map(|()| "reregistered".to_string())
@@ -92,6 +96,7 @@ fn pg_tviews_reregister(tview: &str) -> Result<String, ErrorReport> {
 fn pg_tviews_refresh(tview: &str) -> Result<(), ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_refresh")?;
     crate::concurrency::require_read_committed();
     let found = super::owned(tview)?;
     crate::admin::rebuild_with_dependents(&[found.entity])?;
@@ -115,6 +120,7 @@ fn pg_tviews_resync(
 > {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_resync")?;
     crate::concurrency::require_read_committed();
     let resynced = crate::delta::resync::resync(source.oid(), &keys)?;
     let mut rows = Vec::with_capacity(resynced.len());
@@ -138,6 +144,7 @@ fn pg_tviews_refresh_time_dependent(
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_refresh_time_dependent")?;
     crate::concurrency::require_read_committed();
     let chosen = match tview {
         Some(name) => {
@@ -170,6 +177,7 @@ fn pg_tviews_ensure_propagation_indexes(
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_ensure_propagation_indexes")?;
     let metas = vec![super::owned_meta(tview)?];
     Ok(SetOfIterator::new(
         crate::admin::ensure_propagation_indexes(&metas, dry_run)?,

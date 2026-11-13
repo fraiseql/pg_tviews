@@ -107,7 +107,10 @@ A frame gives four guarantees:
 - **Who.** The current user is the owner, inside a security-restricted operation, as
   in `REFRESH MATERIALIZED VIEW`. Privileges are decided for the caller, the current
   user when the outermost frame opened (`owner::caller()`), never for the current user
-  inside a frame.
+  inside a frame. A function that changes a TVIEW (its definition, triggers,
+  registration, rows or indexes) refuses to run inside a frame (`55000`,
+  `owner::refuse_in_frame`), so code a TVIEW's definition or a trigger calls cannot
+  reach one.
 - **Where names resolve.** `search_path` is `pg_catalog, pg_temp`. The session's
   temporary schema is the writer's, so a temporary relation or type of the writer
   never stands in for a name the owner's code resolves: before a frame opens for a

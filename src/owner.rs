@@ -118,6 +118,26 @@ impl Owner {
     }
 }
 
+/// Refuse `function`, which changes a TVIEW (its definition, triggers,
+/// registration, rows or indexes), inside an owner frame: code a refresh or a
+/// fill runs as a TVIEW's owner, where the role that called into `pg_tviews` is
+/// not the current user, and the function decides its privileges for one role.
+///
+/// # Errors
+/// [`TViewError::WrongState`] inside an owner frame.
+pub fn refuse_in_frame(function: &str) -> TViewResult<()> {
+    if OPEN_FRAMES.with(std::cell::Cell::get) > 0 {
+        return Err(TViewError::WrongState {
+            reason: format!(
+                "{function}() cannot run inside pg_tviews' work as a TVIEW's owner \
+                 (a refresh or a fill): call it outside the TVIEW's definition and its \
+                 triggers"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// The role that called into `pg_tviews`, which privileges are decided for:
 /// the current user outside every owner frame, and the current user when the
 /// outermost frame opened inside one (where the current user is an owner).

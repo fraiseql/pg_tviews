@@ -12,6 +12,7 @@ use crate::error::TViewError;
 fn pg_tviews_refresh_all() -> Result<pgrx::datum::JsonB, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_refresh_all")?;
     crate::concurrency::require_read_committed();
     if crate::suspend::is_suspended() {
         return Err(TViewError::WrongState {
@@ -42,6 +43,7 @@ fn pg_tviews_rebuild_all(
 {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_rebuild_all")?;
     crate::concurrency::require_read_committed();
     Ok(TableIterator::new(crate::replication::rebuild_all(
         only_empty,
@@ -70,6 +72,7 @@ fn pg_tviews_ensure_propagation_indexes_all(
 ) -> Result<SetOfIterator<'static, String>, ErrorReport> {
     let _path = crate::owner::CatalogPath::pin();
     crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_ensure_propagation_indexes_all")?;
     let metas: Vec<_> = crate::catalog::TviewMeta::load_all()?
         .into_iter()
         .map(std::rc::Rc::new)
