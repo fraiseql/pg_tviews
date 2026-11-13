@@ -877,6 +877,7 @@ impl OwnedColumn for pgrx::JsonB {}
 impl OwnedColumn for Vec<Oid> {}
 impl OwnedColumn for Vec<Option<Oid>> {}
 impl OwnedColumn for Vec<String> {}
+impl OwnedColumn for Vec<i16> {}
 
 mod sealed {
     pub trait Sealed {}
@@ -890,6 +891,7 @@ mod sealed {
     impl Sealed for Vec<super::Oid> {}
     impl Sealed for Vec<Option<super::Oid>> {}
     impl Sealed for Vec<String> {}
+    impl Sealed for Vec<i16> {}
 }
 
 impl KeptRow<'_> {

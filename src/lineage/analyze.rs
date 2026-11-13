@@ -572,8 +572,10 @@ pub fn large_seq_scans(
     template: &str,
 ) -> crate::TViewResult<Vec<(String, f64)>> {
     frame.require_current()?;
+    // The changed rows have the table's row type, and planning reads none: no
+    // privilege on the table's columns beyond those the definition reads.
     let sql = render_template(&format!(
-        "WITH {DELTA} AS (SELECT * FROM {{r:{}}} LIMIT 0) {template}",
+        "WITH {DELTA} AS (SELECT (NULL::{{r:{}}}).* LIMIT 0) {template}",
         relid.to_u32()
     ))
     .map_err(|e| crate::TViewError::CatalogError {

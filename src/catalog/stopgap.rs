@@ -46,6 +46,14 @@ pub fn columns_known(meta: &super::TviewMeta, relid: u32) -> bool {
         && matches!(whole_read(meta.view_oid, relid), Ok(None))
 }
 
+/// Whether backing view `view`'s chain reads table `relid` beyond the columns
+/// its views name: whole or through a system column. True when the chain
+/// cannot be walked.
+#[must_use]
+pub fn read_beyond_columns(view: Oid, relid: Oid) -> bool {
+    !matches!(whole_read(view, relid.to_u32()), Ok(None))
+}
+
 /// Whether a write may skip or patch `meta`'s TVIEW on what its plan says it
 /// reads at all: the plan is this release's.
 #[must_use]

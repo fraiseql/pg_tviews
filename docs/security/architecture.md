@@ -143,14 +143,17 @@ A frame gives four guarantees:
 
 What a TVIEW holds is what its owner's read returns, after the create too. A write
 copied into a TVIEW without that read (a direct, derived or fan-out patch) is taken
-only while the owner may read every relation its plan reads (`SELECT`, and `USAGE` on
-the schema); otherwise the row is recomputed as the owner, so a privilege revoked since
+only while the owner may read every column its plan reads of every relation it reads
+(`SELECT` on the relation or on each of those columns, on every column where the plan
+does not know them column by column, and `USAGE` on the schema); otherwise the row is
+recomputed as the owner, so a privilege revoked since, a single column's included,
 fails the write (`42501`). A TVIEW is refused while row security applies on a table it
 reads to a role it reads that table as (its owner, a view owner of its chain, the owner
 of a `SECURITY DEFINER` function it declares): every refresh reads every row (see
 `docs/operations/security.md`). Re-deriving a TVIEW refuses it when a
-role reading for it may no longer read what it reads, and the health check's
-`owner_reads` component names it.
+role reading for it may no longer read what it reads, column by column, and the health
+check's `owner_reads` component names it; both decide with the predicate the write path
+uses.
 
 Stored plans name relations by OID; the names they also hold are for messages. SQL is
 rendered from those OIDs inside the frame, right before it runs, so a renamed relation
