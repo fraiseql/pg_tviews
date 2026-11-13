@@ -280,7 +280,7 @@ impl Flush {
                     // and is all the parent reads of the child's row.
                     Some(chain) => self.cached_meta(&parent.entity)?.and_then(|m| {
                         (crate::catalog::owner_reads::patch_stands_for_read(&m)
-                            && crate::catalog::stopgap::columns_known(&m, child_table))
+                            && crate::stats::patch_columns_known(&m, child_table))
                         .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
                         .flatten()
                     }),

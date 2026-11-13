@@ -293,7 +293,7 @@ fn apply(
             // read returns the same.
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
-                && crate::catalog::stopgap::columns_known(meta, mapping.relid)
+                && crate::stats::patch_columns_known(meta, mapping.relid)
                 && crate::catalog::owner_reads::patch_stands_for_read(meta)
                 && fan_out(trigger, entity, table_oid, mapping)?
             {

@@ -378,7 +378,7 @@ fn try_capture_direct_patch(
         return None;
     }
     // A copy alone of what the plan knows the TVIEW reads.
-    if !crate::catalog::stopgap::columns_known(&meta, path.source_oid.to_u32()) {
+    if !crate::stats::patch_columns_known(&meta, path.source_oid.to_u32()) {
         return None;
     }
     // The copy stands for the owner's read: recomputed where that read differs.
