@@ -18,11 +18,20 @@ fresh=pg_tviews_fresh
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Catalogs the update refuses (fixtures_refused.sql), and what its error names.
 current="$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../../Cargo.toml" | head -1)"
-refused=(typename_clash lost_privilege)
+refused=(typename_clash)
 declare -A refusal=(
     [typename_clash]="these are shared: Post (tv_post, tv_post_)"
-    [lost_privilege]="tv_lost (upgrade_lost_owner lacks SELECT on "
 )
+# A catalog the update completes on, leaving three TVIEWs it cannot re-derive
+# (fixtures_left_behind.sql), and the operator's pre-check, as the upgrade page
+# gives it.
+left_db="${upgraded}_left_behind"
+left_behind=(tv_forced tv_lost tv_rls)
+precheck() {
+    sed -n '/<!-- upgrade-precheck:begin -->/,/<!-- upgrade-precheck:end -->/p' \
+        "$here/../../docs/operations/upgrade.md" | sed '/^```/d; /^<!--/d' \
+        | psql -X -At -q -d "$1" -v ON_ERROR_STOP=1 -f -
+}
 
 case "${1:-}" in
 before)
@@ -44,6 +53,18 @@ before)
             psql -X -d "${upgraded}_$case" -q -v case="$case" -f "$here/fixtures_refused.sql"
         done
         echo "security fixtures and refused catalogs created"
+        psql -X -d postgres -qc "DROP DATABASE IF EXISTS $left_db" >/dev/null
+        psql -X -d postgres -qc "CREATE DATABASE $left_db" >/dev/null
+        psql -X -d "$left_db" -q -f "$here/fixtures_left_behind.sql"
+        # The pre-check names what the update will leave, and nothing in a catalog
+        # it re-derives whole.
+        out="$(precheck "$left_db")" || fail "the pre-check: $out"
+        for tview in "${left_behind[@]}"; do
+            grep -q "${tview#tv_}|\|$tview|" <<<"$out" || fail "the pre-check does not name $tview: $out"
+        done
+        out="$(precheck "$upgraded")" || fail "the pre-check: $out"
+        [[ -z "$out" ]] || fail "the pre-check names TVIEWs the update re-derives: $out"
+        echo "the pre-check names the TVIEWs the update will leave to re-register: ${left_behind[*]}"
     fi
     ;;
 after)
@@ -154,6 +175,9 @@ SQL
         echo "dropped and recreated: the TVIEWs follow their base tables"
         ;;
     update)
+        # An update never depends on a TVIEW: none is re-derived strictly.
+        ! grep -q "strict => true" "$here/../../sql/pg_tviews--"*"--${current}.sql" \
+            || fail "the update script re-derives with strict => true"
         start=$(date +%s%N)
         out="$(psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
             || fail "ALTER EXTENSION pg_tviews UPDATE: $out"
@@ -196,6 +220,30 @@ SQL
                 checked+=("$case")
             done
             echo "the update refused the catalogs it must: ${checked[*]:-none}"
+
+            # The update completes whatever a TVIEW's owner chose: rehearsed in a
+            # transaction rolled back, then run.
+            out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "BEGIN" \
+                    -c "ALTER EXTENSION pg_tviews UPDATE" -c "ROLLBACK" 2>&1)" \
+                || fail "the rehearsal of the update: $out"
+            [[ "$(psql -X -At -d "$left_db" -c \
+                "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")" != "$current" ]] \
+                || fail "the rehearsal changed the extension's version"
+            for tview in "${left_behind[@]}"; do
+                grep -q "$tview: " <<<"$out" || fail "the rehearsal does not name $tview: $out"
+            done
+            out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
+                || fail "the update did not complete on a catalog with TVIEWs it cannot re-derive: $out"
+            echo "$out"
+            grep -q "WARNING:  pg_tviews: 3 TVIEW(s) could not be re-derived" <<<"$out" \
+                || fail "the update did not warn: $out"
+            grep -q "tv_lost: .*upgrade_lost_owner lacks SELECT" <<<"$out" || fail "the WARNING for tv_lost: $out"
+            grep -q "tv_rls: .*row security applies to role upgrade_rls_owner" <<<"$out" \
+                || fail "the WARNING for tv_rls: $out"
+            grep -q "tv_forced: .*exactly one SELECT" <<<"$out" || fail "the WARNING for tv_forced: $out"
+            psql -X -d "$left_db" -q -f "$here/verify_left_behind.sql"
+            psql -X -d postgres -qc "DROP DATABASE $left_db" >/dev/null
+            echo "the update completed, left ${left_behind[*]} to re-register, named them; health names them"
         fi
         ;;
     *) fail "usage: $0 after update|recreate" ;;
