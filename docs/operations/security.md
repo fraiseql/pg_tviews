@@ -175,6 +175,39 @@ pg_temp`. Names the caller wrote (a definition's text, an unqualified TVIEW) are
 resolved under the caller's own `search_path`, when the TVIEW is created or
 replaced: the backing view stores the objects it found, not their names.
 
+### Row security on the tables a TVIEW reads
+
+A refresh reads every row of every table its TVIEW reads. The roles it reads them as
+must therefore be exempt from row security on those tables: the TVIEW's owner, and
+the owner of each view its definition reads a table through (a view that is not
+`security_invoker` reads as its owner). Policies written for other roles do not
+matter. pg_tviews refuses a TVIEW while row security applies to one of those roles on
+one of those tables (`42P16`, `row security applies to role … on table …, which
+tv_… reads`):
+
+- at create, replace and re-register;
+- at the statement that would make it apply: `ALTER TABLE … ENABLE` or `FORCE ROW
+  LEVEL SECURITY`, `ALTER TABLE` or `ALTER VIEW … OWNER TO`, `REASSIGN OWNED`,
+  `CREATE OR REPLACE VIEW`, and the role statements (`ALTER ROLE … NOBYPASSRLS`,
+  `REVOKE` of a role, `DROP ROLE`) run in the TVIEW's database;
+- otherwise (a role changed from another database), at the next write to a table the
+  TVIEW reads and at every refresh: they fail until the roles are exempt again, and
+  the TVIEW's rows are those of its last refresh until then.
+
+The way to be exempt: **the TVIEW's owner owns the tables it reads**, and those
+tables are not set to `FORCE ROW LEVEL SECURITY`. Row security can stay enabled on
+them, with policies for the roles that read or write them directly.
+
+Do not give the owner `BYPASSRLS` for this: it exempts the role on every table of the
+cluster, far more than a TVIEW needs.
+
+What follows for isolation: a `tv_*` table holds every row its definition returns.
+Who reads which of those rows is decided on the read side: the grants on the `tv_*`
+table, and what the application or the engine serving it reads. The refreshing role
+reads everything by rule, so it should own nothing besides the tables its TVIEWs read
+and the TVIEWs themselves, and should not be a login role: administer its TVIEWs
+from a login role that is a member of it.
+
 ### Functions a definition calls
 
 A function body is resolved when it runs, during the refresh, under the pinned path.
@@ -300,6 +333,8 @@ DELETE FROM tviews.pg_tview_audit_log WHERE performed_at < now() - interval '90 
       superuser.
 - [ ] Each TVIEW is owned by an application role, not a superuser: its refreshes run
       with that role's privileges.
+- [ ] That role owns the tables its TVIEWs read, none of them is set to `FORCE ROW
+      LEVEL SECURITY`, it does not hold `BYPASSRLS`, and it is not a login role.
 - [ ] Readers have `SELECT` on the `tv_*` tables they need, and nothing else.
 - [ ] TVIEWs leave secrets out of `data`.
 - [ ] Functions called by definitions schema-qualify what they read or set their
