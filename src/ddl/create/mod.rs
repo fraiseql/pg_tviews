@@ -257,7 +257,10 @@ fn create_tview_inner(
         entity_name,
         relation_oid(&schema_name, &tv_table_name)?,
         view_oid,
-        &plan.iter().map(|&(table, _)| table.to_u32()).collect::<Vec<_>>(),
+        &plan
+            .iter()
+            .map(|&(table, _)| table.to_u32())
+            .collect::<Vec<_>>(),
         &declarations.function_reads,
     )?;
 

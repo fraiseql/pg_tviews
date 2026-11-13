@@ -299,7 +299,10 @@ mod tests {
     #[test]
     fn a_function_name_is_read_from_its_signature() {
         assert_eq!(function_name("public.extra_label(integer)"), "extra_label");
-        assert_eq!(function_name(r#""my.schema"."f(""x"")"(text, integer)"#), r#"f("x")"#);
+        assert_eq!(
+            function_name(r#""my.schema"."f(""x"")"(text, integer)"#),
+            r#"f("x")"#
+        );
         assert_eq!(function_name("s.g()"), "g");
     }
 }

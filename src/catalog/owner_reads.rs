@@ -159,9 +159,8 @@ impl Lack {
         match self {
             Self::Schema => {
                 // SAFETY: syscache lookups by OID; null when gone.
-                let schema = unsafe {
-                    quoted(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid)))
-                };
+                let schema =
+                    unsafe { quoted(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid))) };
                 format!("USAGE on schema {}", schema.unwrap_or_default())
             }
             Self::Columns(attnums) => {
@@ -217,8 +216,13 @@ pub fn lacks(role: Oid, relid: Oid, columns: Columns<'_>) -> Option<Lack> {
                     .copied()
                     .filter(|&attnum| {
                         let mut gone = false;
-                        pg_sys::pg_attribute_aclcheck_ext(relid, attnum, role, select, &raw mut gone)
-                            != pg_sys::AclResult::ACLCHECK_OK
+                        pg_sys::pg_attribute_aclcheck_ext(
+                            relid,
+                            attnum,
+                            role,
+                            select,
+                            &raw mut gone,
+                        ) != pg_sys::AclResult::ACLCHECK_OK
                             || gone
                     })
                     .collect();

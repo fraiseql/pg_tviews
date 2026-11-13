@@ -62,9 +62,11 @@ pub(crate) struct Issuing {
 /// statement `pg_tviews` issues, when a scope is open; `None` outside one, where
 /// the hook handles `pg_tviews`' statements as any other.
 pub(crate) fn issuing(sql: *const c_char) -> Option<Issuing> {
-    SCOPES.with_borrow(|scopes| !scopes.is_empty()).then(|| Issuing {
-        previous: ISSUING.replace(sql),
-    })
+    SCOPES
+        .with_borrow(|scopes| !scopes.is_empty())
+        .then(|| Issuing {
+            previous: ISSUING.replace(sql),
+        })
 }
 
 impl Drop for Issuing {
