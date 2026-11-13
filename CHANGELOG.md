@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **E1-03.**
+
+### Fixed
+
+- **A TVIEW reading a table whole, through a system column or through a declared
+  function is refreshed on every write to that table.** Its plan lists the columns the
+  definition names, and a write changing none of them was skipped or patched in place:
+  a definition reading `to_jsonb(t)`, `f(t)`, `jsonb_agg(t)`, `t::text`, a join alias,
+  `xmin` or `ctid`, or a function declared with the TVIEW reading the table, kept the
+  old document. No write to such a table is now skipped or patched for that TVIEW, nor
+  any write at all for a TVIEW whose plan is from an earlier release
+  (`needs_reregister`) until it is registered again.
+
 ## [0.1.0-beta.39] - 2026-11-11
 
 ### Fixed
