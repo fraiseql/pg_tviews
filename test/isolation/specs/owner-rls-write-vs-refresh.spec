@@ -1,10 +1,7 @@
 # No column skip while row security applies to the TVIEW's owner, also under
-# concurrency. A refresh of a folder reads its documents as the TVIEW's owner,
-# through a policy that applies to the owner; a concurrent write changes only a
-# column the policy reads. The refresh locks the documents table whole and the
-# write takes the writer's intent lock on it, so the two are ordered whatever
-# column changed: once both have committed, the folder's document is what its
-# owner reads.
+# concurrency: a write to the documents table and a refresh of a folder run at
+# once, and are ordered whatever column changed. Once both have committed, the
+# folder's document is what its owner reads.
 
 setup
 {

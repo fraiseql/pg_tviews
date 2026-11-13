@@ -88,10 +88,9 @@ pub fn read_set(
         return Ok(());
     };
     pass.intent(meta.tview_oid.to_u32(), Side::Refresh);
-    // A policy that applies to the owner decides which rows of the table the
-    // refresh reads, by columns no plan lists: the table is locked whole, as a
-    // writer of it takes the intent lock (`delta/mapping.rs`), whatever column
-    // it changed.
+    // While row security applies to the owner on a table, the table is locked
+    // whole, as a writer of it takes the intent lock (`delta/mapping.rs`),
+    // whatever column it changed.
     for &relid in crate::catalog::stopgap::owner_rls_tables(meta).iter() {
         pass.relation(relid, Side::Refresh);
     }

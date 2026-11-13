@@ -8,8 +8,8 @@
 //! - what it reads of the table through a whole row (`to_jsonb(t)`, `f(t)`,
 //!   `t::text`, a join alias) or a system column (`xmin`, `ctid`);
 //! - what a declared function reads of it;
-//! - what a policy that applies to the TVIEW's owner reads, nor which rows of it
-//!   the owner reads (row security is checked at the time of the write);
+//! - anything, while row security applies to the TVIEW's owner on a table it
+//!   reads (checked at the time of the write);
 //! - anything, when the plan is from an earlier release (`needs_reregister`).
 //!
 //! No write to such a table is skipped or patched for that TVIEW: its columns are

@@ -1,10 +1,8 @@
 -- No column skip while row security applies to the TVIEW's owner (a policy created after the create).
 --
--- A refresh reads as the TVIEW's owner, so a policy that applies to the owner
--- reads columns the definition does not name. While row security applies to the
--- owner on a table the TVIEW reads, a write to that table refreshes the rows it
--- reaches whatever columns it changed, on the row path and on the statement
--- path; here a policy is added after the TVIEW was created, on tables whose row security was already enabled.
+-- While row security applies to the TVIEW's owner on a table it reads, a write
+-- to that table refreshes the rows it reaches whatever columns it changed, on
+-- the row path and on the statement path; here a policy is added after the TVIEW was created, on tables whose row security was already enabled.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_owner_rls_policy_after_create.sql
 -- expect-output: owner row security, a policy created after the create: PASS
@@ -77,13 +75,13 @@ RESET ROLE;
 SELECT owner_fresh('public.tv_rec', 'pk_rec', 'the setup');
 SELECT owner_fresh('public.tv_recn', 'pk_recn', 'the setup');
 
--- Writes that change only the column the policy reads, both ways.
+-- A write, then its reverse.
 SET ROLE regress_orp_owner_b;
 UPDATE public.tb_rec SET active = false WHERE pk_rec = 1;
 UPDATE public.tb_note SET active = false WHERE pk_note = 2;
 RESET ROLE;
-SELECT owner_fresh('public.tv_rec', 'pk_rec', 'an UPDATE of a column only a policy reads (tb_rec)');
-SELECT owner_fresh('public.tv_recn', 'pk_recn', 'an UPDATE of a column only a policy reads (tb_note)');
+SELECT owner_fresh('public.tv_rec', 'pk_rec', 'the UPDATE (tb_rec)');
+SELECT owner_fresh('public.tv_recn', 'pk_recn', 'the UPDATE (tb_note)');
 
 SET ROLE regress_orp_owner_b;
 UPDATE public.tb_rec SET active = true WHERE pk_rec = 1;
