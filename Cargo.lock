@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "pg_tviews"
-version = "0.1.0-beta.39"
+version = "0.1.0-beta.40"
 dependencies = [
  "pgrx",
  "serde",

@@ -100,11 +100,11 @@ pub fn is_current() -> bool {
     MATCHED.get() || in_own_script() || matches!(installed(), Installed::Matches)
 }
 
-/// The revision of the one release this library updates from (0.1.0-beta.38).
+/// The revision of the one release this library updates from (0.1.0-beta.39).
 pub const PREVIOUS_REVISION: i32 = 12;
 
 /// What fixes a catalog this library has no update for.
-pub const RECREATE: &str = "this release updates only from 0.1.0-beta.38: DROP EXTENSION \
+pub const RECREATE: &str = "this release updates only from 0.1.0-beta.39: DROP EXTENSION \
      pg_tviews CASCADE, CREATE EXTENSION pg_tviews and create the TVIEWs again \
      (docs/operations/upgrade.md)";
 
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn an_older_release_is_recreated() {
         assert_eq!(remedy(PREVIOUS_REVISION - 1), RECREATE);
-        assert!(RECREATE.contains("updates only from 0.1.0-beta.38"));
+        assert!(RECREATE.contains("updates only from 0.1.0-beta.39"));
     }
 
     #[test]
