@@ -35,6 +35,9 @@ pub struct Lineage {
     /// The output columns a foreign key of the root table proves to hold another
     /// table's key.
     pub references: Vec<super::Reference>,
+    /// The tables it reads whole or through a system column, by OID: their
+    /// links are unknown, and no column of them is patched.
+    pub whole_reads: BTreeMap<u32, walk::WholeRead>,
 }
 
 /// What another TVIEW's registration says to the analysis of a new one.
@@ -134,6 +137,10 @@ impl Lineage {
         let Some(&(root, _)) = self.identity.columns.first() else {
             return Vec::new();
         };
+        // A copy of a column stands for no read of the whole row it is in.
+        if self.whole_reads.contains_key(&root) {
+            return Vec::new();
+        }
         let virtual_reads: Vec<&String> = self
             .tables
             .iter()
@@ -171,7 +178,8 @@ pub struct FunctionRead {
 impl Lineage {
     /// Add the tables functions read: no cascade reaches them, so each is
     /// `all_keys`, read inside its function. A table the view also reads keeps
-    /// mapping the reads of it that can be traced.
+    /// mapping the reads of it that can be traced; what the function reads of it
+    /// is unknown.
     pub fn add_function_reads(&mut self, reads: &[FunctionRead]) {
         for read in reads {
             let reason = format!("read inside {}", read.function);
@@ -420,10 +428,20 @@ pub fn analyze(
                     .is_some_and(|(mapped, full)| full.contains(&relid) || mapped.contains(&relid)))
     };
     let mut tables = graph.tables(&propagates);
+    // pg_depend lists the columns the definition names, not those it reads
+    // through a whole row or a system column. The list is kept: other entries
+    // of the plan number the table's columns by it.
+    let whole_reads = walk::whole_reads(view_oid)?.tables;
     for table in &mut tables {
         let virtual_columns = virtual_inputs(table.relid)?;
         table.columns =
             expand_read_columns(referenced_columns(view_oid, table.relid)?, &virtual_columns);
+        if whole_reads.contains_key(&table.relid) {
+            // Every column is read: every one may link a row, and none is a
+            // copy alone. Writes skip nothing (`catalog::stopgap`).
+            table.links = None;
+            table.fanout = None;
+        }
         table.virtual_reads = virtual_reads(&table.columns, &virtual_columns);
         // A virtual column has no value in the rows a trigger sees: its inputs are
         // links in its place.
@@ -457,6 +475,7 @@ pub fn analyze(
         keyed_otherwise,
         data: graph.data,
         references,
+        whole_reads,
     })
 }
 

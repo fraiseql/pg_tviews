@@ -1,0 +1,41 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_begin r_rename w_begin w_flip r_commit w_commit w_check
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_folder SET name = 'f1b' WHERE pk_folder = 1;
+step w_begin: BEGIN;
+step w_flip: UPDATE tb_doc SET active = false WHERE pk_doc = 1; <waiting ...>
+step r_commit: COMMIT;
+step w_flip: <... completed>
+step w_commit: COMMIT;
+step w_check: 
+  SET ROLE regress_rlsiso_owner;
+  SELECT t.data->>'name' AS name, t.data->'docs' AS docs, t.data = v.data AS fresh
+  FROM tv_folder t JOIN tviews.public__tv_folder v USING (pk_folder) ORDER BY 1;
+  RESET ROLE;
+
+name|docs  |fresh
+----+------+-----
+f1b |["d2"]|t    
+(1 row)
+
+
+starting permutation: w_begin w_flip r_begin r_rename w_commit r_commit w_check
+step w_begin: BEGIN;
+step w_flip: UPDATE tb_doc SET active = false WHERE pk_doc = 1;
+step r_begin: BEGIN;
+step r_rename: UPDATE tb_folder SET name = 'f1b' WHERE pk_folder = 1; <waiting ...>
+step w_commit: COMMIT;
+step r_rename: <... completed>
+step r_commit: COMMIT;
+step w_check: 
+  SET ROLE regress_rlsiso_owner;
+  SELECT t.data->>'name' AS name, t.data->'docs' AS docs, t.data = v.data AS fresh
+  FROM tv_folder t JOIN tviews.public__tv_folder v USING (pk_folder) ORDER BY 1;
+  RESET ROLE;
+
+name|docs  |fresh
+----+------+-----
+f1b |["d2"]|t    
+(1 row)
+

@@ -261,10 +261,13 @@ impl Flush {
 
     /// For the parents of the rows a direct patch `applied`: the child's chain
     /// under the path a parent embeds its document at, or a recompute where no
-    /// patch can be derived (an array or scalar embed, a gated parent). A parent
-    /// reached by a patched and by a recomputed child recomputes: poison sticks.
+    /// patch can be derived (an array or scalar embed, a gated parent, a parent
+    /// whose plan's reads do not hold or that reads the child's table whole). A
+    /// parent reached by a patched and by a recomputed child recomputes: poison
+    /// sticks.
     fn derive_parent_patches(&mut self, entity: &str, applied: &[i64]) -> TViewResult<()> {
         let parents = crate::propagate::find_parents_batch(entity, applied, &[], &self.graph)?;
+        let child_table = self.meta(entity)?.tview_oid.to_u32();
         for (child_pk, parent_keys) in parents {
             let child = RefreshKey::pk(entity, child_pk);
             let chain = match self.patches.get(&child) {
@@ -273,11 +276,13 @@ impl Flush {
             };
             for parent in parent_keys {
                 let derived = match &chain {
-                    // The parent's patch stands for its owner's read of the child.
+                    // The parent's patch stands for its owner's read of the child,
+                    // and is all the parent reads of the child's row.
                     Some(chain) => self.cached_meta(&parent.entity)?.and_then(|m| {
-                        crate::catalog::owner_reads::patch_stands_for_read(&m)
-                            .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
-                            .flatten()
+                        (crate::catalog::owner_reads::patch_stands_for_read(&m)
+                            && crate::catalog::stopgap::columns_known(&m, child_table))
+                        .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
+                        .flatten()
                     }),
                     None => None,
                 };

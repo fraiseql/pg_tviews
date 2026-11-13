@@ -551,6 +551,7 @@ fn a_function_read_is_all_keys_and_keeps_the_traced_reads() {
         keyed_otherwise: BTreeSet::new(),
         data: None,
         references: vec![],
+        whole_reads: std::collections::BTreeMap::new(),
     };
     let read = |relid: u32| FunctionRead {
         function: "public.f()".into(),

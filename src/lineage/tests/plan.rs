@@ -66,6 +66,7 @@ fn post_lineage(kind: IdentityKind) -> Lineage {
         keyed_otherwise: std::collections::BTreeSet::new(),
         data: None,
         references: Vec::new(),
+        whole_reads: std::collections::BTreeMap::new(),
     }
 }
 

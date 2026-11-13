@@ -11,6 +11,7 @@ pub mod readers;
 pub mod registered;
 pub mod resolve;
 pub mod row;
+pub mod stopgap;
 
 pub use cached::{cascade_paths, graph, plans, table_readers, tview_tables};
 pub use collections::Collection;
@@ -53,6 +54,8 @@ pub struct TviewMeta {
     /// The definition reads the current time: two computations of a row may
     /// differ with no write between them.
     pub time_dependent: bool,
+    /// The release that derived its plan.
+    pub plan_release: PlanRelease,
 
     /// The column that names the TVIEW's rows (ADR 0169).
     pub identity: RowIdentity,
@@ -71,6 +74,17 @@ pub struct TviewMeta {
     pub collections: Vec<Rc<Collection>>,
     /// Whether `collections` was read.
     collections_read: bool,
+}
+
+/// The release that derived a TVIEW's plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRelease {
+    /// This one.
+    This,
+    /// An earlier one (`needs_reregister`: the update could not derive it
+    /// again): what it says the TVIEW reads is not trusted, and no write to
+    /// its tables is skipped or patched.
+    Earlier,
 }
 
 /// A TVIEW's entity and plan: all a write reads of the TVIEWs it does not reach
@@ -188,7 +202,7 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent, typename, \
+         time_dependent, needs_reregister, typename, \
          EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id, \
          (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
@@ -581,6 +595,11 @@ impl TviewMeta {
             function_reads,
             time_refresh_external: row.named::<bool>("time_refresh_external")?.unwrap_or(false),
             time_dependent: row.named::<bool>("time_dependent")?.unwrap_or(false),
+            plan_release: if row.named::<bool>("needs_reregister")?.unwrap_or(false) {
+                PlanRelease::Earlier
+            } else {
+                PlanRelease::This
+            },
             identity,
             key_type: row
                 .named::<String>("key_type")?
@@ -622,6 +641,7 @@ impl Default for TviewMeta {
             function_reads: Vec::new(),
             time_refresh_external: false,
             time_dependent: false,
+            plan_release: PlanRelease::This,
             identity: RowIdentity::unknown(),
             key_type: KeyType::Int,
             view_columns: Vec::new(),
