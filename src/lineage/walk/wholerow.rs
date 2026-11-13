@@ -6,7 +6,7 @@
 
 use super::{HashSet, Oid, elements, index, pg_guard, pg_sys, tag, view_query};
 use crate::error::TViewResult;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How a definition reads a table beyond the columns it names.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -23,6 +23,7 @@ struct Walk {
     levels: Vec<*mut pg_sys::Query>,
     found: BTreeMap<u32, WholeRead>,
     views: Vec<Oid>,
+    relations: BTreeSet<u32>,
 }
 
 impl Walk {
@@ -135,11 +136,14 @@ unsafe extern "C-unwind" fn walker(node: *mut pg_sys::Node, ctx: *mut std::ffi::
             Some(pg_sys::NodeTag::T_Query) => {
                 let query = node.cast::<pg_sys::Query>();
                 for rte in elements::<pg_sys::RangeTblEntry>((*query).rtable) {
-                    if (*rte).rtekind == pg_sys::RTEKind::RTE_RELATION
-                        && pg_sys::get_rel_relkind((*rte).relid).cast_unsigned()
+                    if (*rte).rtekind == pg_sys::RTEKind::RTE_RELATION {
+                        if pg_sys::get_rel_relkind((*rte).relid).cast_unsigned()
                             == pg_sys::RELKIND_VIEW
-                    {
-                        walk.views.push((*rte).relid);
+                        {
+                            walk.views.push((*rte).relid);
+                        } else {
+                            walk.relations.insert((*rte).relid.to_u32());
+                        }
                     }
                 }
                 walk.levels.push(query);
@@ -161,6 +165,8 @@ pub struct WholeReads {
     pub tables: BTreeMap<u32, WholeRead>,
     /// The views walked: itself and every view it reads.
     pub views: Vec<Oid>,
+    /// Every other relation it or a view it reads names, by OID.
+    pub relations: BTreeSet<u32>,
 }
 
 /// The tables backing view `view_oid` reads whole or through a system column,
@@ -173,6 +179,7 @@ pub fn whole_reads(view_oid: Oid) -> TViewResult<WholeReads> {
         levels: Vec::new(),
         found: BTreeMap::new(),
         views: vec![view_oid],
+        relations: BTreeSet::new(),
     };
     let mut seen: Vec<Oid> = Vec::new();
     while let Some(view) = walk.views.pop() {
@@ -190,5 +197,6 @@ pub fn whole_reads(view_oid: Oid) -> TViewResult<WholeReads> {
     Ok(WholeReads {
         tables: walk.found,
         views: seen,
+        relations: walk.relations,
     })
 }

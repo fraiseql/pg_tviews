@@ -70,9 +70,11 @@ pub fn lacking(meta: &super::TviewMeta) -> TViewResult<Vec<String>> {
 
 /// Whether the owner of `meta`'s TVIEW reads of every relation its plan reads
 /// exactly what a write to it holds: `USAGE` on its schema, `SELECT` on a column
-/// of it, and no row security applying to the owner. Only then may a written value
-/// be copied into the TVIEW instead of read: otherwise the read as the owner fails
-/// or filters, and the row is recomputed. False for a relation that is gone.
+/// of it, and no row security applying to the owner (a TVIEW under row security
+/// is refused before it gets here: `catalog::stopgap::refuse_row_security`). Only
+/// then may a written value be copied into the TVIEW instead of read: otherwise
+/// the read as the owner fails, and the row is recomputed. False for a relation
+/// that is gone.
 /// Syscache lookups only.
 #[must_use]
 pub fn patch_stands_for_read(meta: &super::TviewMeta) -> bool {

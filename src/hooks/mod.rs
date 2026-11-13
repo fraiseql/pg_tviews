@@ -525,8 +525,9 @@ struct FollowUps {
     /// label): the TVIEWs reading them are refreshed.
     value_rewrite: Option<ValueRewrite>,
     /// A statement that may make row security apply to a role a TVIEW reads a
-    /// table as: refused when it does.
-    row_security_scope: bool,
+    /// table as: the TVIEWs refused before it; it is refused when it makes
+    /// another one so.
+    row_security_before: Option<Vec<String>>,
 }
 
 impl FollowUps {
@@ -544,7 +545,7 @@ impl FollowUps {
                 index_follow_up: None,
                 persistence_change: None,
                 value_rewrite: None,
-                row_security_scope: false,
+                row_security_before: None,
             };
         }
         // SAFETY: as above.
@@ -570,7 +571,12 @@ impl FollowUps {
                         .map(|entity| (entity, table, logged))
                 }),
                 value_rewrite: value_rewrite_of(pstmt),
-                row_security_scope: row_security_scope_of(pstmt),
+                row_security_before: row_security_scope_of(pstmt).then(|| {
+                    crate::ddl::row_security_refusals()
+                        .into_iter()
+                        .map(|(entity, _)| entity)
+                        .collect()
+                }),
             }
         }
     }
@@ -660,8 +666,8 @@ impl FollowUps {
                 e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
             }
         }
-        if self.row_security_scope
-            && let Err(e) = crate::ddl::check_every_row_security()
+        if let Some(before) = &self.row_security_before
+            && let Err(e) = crate::ddl::check_every_row_security(before)
         {
             e.raise();
         }

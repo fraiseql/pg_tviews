@@ -77,20 +77,53 @@ pub fn refuse_row_security(meta: &super::TviewMeta) -> TViewResult<()> {
     refusal.map_or(Ok(()), Err)
 }
 
-/// [`refuse_row_security`], probed now: at `CREATE TVIEW`, at a re-derive, and
-/// after a statement that may make row security apply.
+/// [`refuse_row_security`], probed now: at `CREATE TVIEW`, at a re-derive, at a
+/// refresh, and after a statement that may make row security apply.
 ///
 /// # Errors
 /// [`TViewError::RowSecurity`] naming the table and the role, or a refusal when
 /// a role it reads a table as cannot be resolved.
 pub fn check_row_security(meta: &super::TviewMeta) -> TViewResult<()> {
-    let roles = reading_roles(meta)?;
-    let mut read: Vec<u32> = meta.plan.tables.iter().map(|t| t.relid).collect();
+    let tables: Vec<u32> = meta.plan.tables.iter().map(|t| t.relid).collect();
+    check_reads(
+        &meta.entity_name,
+        meta.tview_oid,
+        meta.view_oid,
+        &tables,
+        &meta.function_reads,
+    )
+}
+
+/// The probe of [`check_row_security`], over a TVIEW's parts: before its
+/// registration (`CREATE TVIEW`, before the fill) and after it.
+///
+/// The tables are `tables` (the plan's), every relation the backing view's chain
+/// names as its views read now, and those `function_reads` declares; the roles
+/// are [`reading_roles`]'. Every role is probed on every table.
+///
+/// # Errors
+/// As [`check_row_security`].
+pub fn check_reads(
+    entity: &str,
+    tview: Oid,
+    view: Oid,
+    tables: &[u32],
+    function_reads: &[(String, Vec<Oid>)],
+) -> TViewResult<()> {
+    let unresolved = |e: TViewError| TViewError::DefinitionRefused {
+        reason: format!("the roles tv_{entity} reads its tables as cannot be resolved: {e}"),
+    };
+    let reads = chain(view).map_err(unresolved)?;
+    let roles = reading_roles(tview, &reads.views, function_reads).map_err(unresolved)?;
+    let mut read: Vec<u32> = tables.to_vec();
+    read.extend(reads.relations.iter().copied());
     read.extend(
-        meta.function_reads
+        function_reads
             .iter()
             .flat_map(|(_, relids)| relids.iter().map(|r| r.to_u32())),
     );
+    read.sort_unstable();
+    read.dedup();
     for relid in read {
         for &role in &roles {
             // SAFETY: a syscache lookup by OID; `noError` reports instead of
@@ -101,7 +134,7 @@ pub fn check_row_security(meta: &super::TviewMeta) -> TViewResult<()> {
             };
             if applies {
                 return Err(TViewError::RowSecurity {
-                    tview: format!("tv_{}", meta.entity_name),
+                    tview: format!("tv_{entity}"),
                     table: crate::utils::qualified_relname_from_oid(Oid::from(relid))?,
                     role: crate::owner::role_name(role),
                 });
@@ -111,27 +144,81 @@ pub fn check_row_security(meta: &super::TviewMeta) -> TViewResult<()> {
     Ok(())
 }
 
-/// The roles a refresh of `meta`'s TVIEW reads its tables as: its owner, and the
-/// owner of every view of its backing view's chain (a view that is not
-/// `security_invoker` reads as its owner; each is counted for every table).
+/// The roles a refresh of TVIEW `tview` reads its tables as: its owner, the
+/// owner of every view of its backing view's chain `views` (a view that is not
+/// `security_invoker` reads as its owner), and the owner of every declared
+/// function that is `SECURITY DEFINER`. Each is counted for every table.
 ///
 /// # Errors
-/// One of them cannot be resolved: the TVIEW is refused.
-fn reading_roles(meta: &super::TviewMeta) -> TViewResult<Vec<Oid>> {
-    let unresolved = |e: TViewError| TViewError::DefinitionRefused {
-        reason: format!(
-            "the roles tv_{} reads its tables as cannot be resolved: {e}",
-            meta.entity_name
-        ),
-    };
-    let mut roles = vec![crate::owner::relation_owner(meta.tview_oid).map_err(unresolved)?];
-    for &view in &chain(meta.view_oid).map_err(unresolved)?.views {
-        let owner = crate::owner::relation_owner(view).map_err(unresolved)?;
+/// One of them cannot be resolved (a declared function among them).
+fn reading_roles(
+    tview: Oid,
+    views: &[Oid],
+    function_reads: &[(String, Vec<Oid>)],
+) -> TViewResult<Vec<Oid>> {
+    let mut roles = vec![crate::owner::relation_owner(tview)?];
+    for &view in views {
+        let owner = crate::owner::relation_owner(view)?;
         if !roles.contains(&owner) {
             roles.push(owner);
         }
     }
+    for (function, _) in function_reads {
+        if let Some(owner) = definer(function)?
+            && !roles.contains(&owner)
+        {
+            roles.push(owner);
+        }
+    }
     Ok(roles)
+}
+
+/// The owner of declared function `function` (`schema.name(argument types)`)
+/// when it is `SECURITY DEFINER`.
+///
+/// # Errors
+/// No function has that signature.
+fn definer(function: &str) -> TViewResult<Option<Oid>> {
+    // `InvalidOid` for a function that is not `SECURITY DEFINER`; no row for
+    // none. Matched through `pg_proc` by name, then by the signature as stored.
+    let owner = crate::utils::spi::one::<Oid>(
+        &format!(
+            "SELECT CASE WHEN p.prosecdef THEN p.proowner ELSE 0::pg_catalog.oid END \
+             FROM pg_catalog.pg_proc p WHERE p.proname = $2 AND {} = $1 LIMIT 1",
+            crate::lineage::FUNCTION_SIGNATURE
+        ),
+        &[
+            crate::utils::spi::text(function),
+            crate::utils::spi::text(function_name(function).as_str()),
+        ],
+    )?;
+    match owner {
+        Some(owner) => Ok((owner != pg_sys::InvalidOid).then_some(owner)),
+        None => Err(TViewError::DefinitionRefused {
+            reason: format!("function {function} does not exist"),
+        }),
+    }
+}
+
+/// The name of function `signature` (`schema.name(argument types)`, each part
+/// as `quote_ident` writes it), unquoted.
+fn function_name(signature: &str) -> String {
+    let mut part = String::new();
+    let mut quoted = false;
+    let mut chars = signature.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                part.push('"');
+            }
+            '"' => quoted = !quoted,
+            '.' if !quoted => part.clear(),
+            '(' if !quoted => break,
+            c => part.push(c),
+        }
+    }
+    part
 }
 
 /// The transaction ended: forget the row-security probes run in it.
@@ -195,4 +282,16 @@ pub fn reasons(meta: &super::TviewMeta, relid: u32) -> Vec<&'static str> {
         Err(_) => reasons.push("unwalked"),
     }
     reasons
+}
+
+#[cfg(test)]
+mod tests {
+    use super::function_name;
+
+    #[test]
+    fn a_function_name_is_read_from_its_signature() {
+        assert_eq!(function_name("public.extra_label(integer)"), "extra_label");
+        assert_eq!(function_name(r#""my.schema"."f(""x"")"(text, integer)"#), r#"f("x")"#);
+        assert_eq!(function_name("s.g()"), "g");
+    }
 }

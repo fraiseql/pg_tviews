@@ -251,6 +251,16 @@ fn create_tview_inner(
         view_oid,
     )?;
 
+    // A refresh reads every row of the tables the TVIEW reads: refused before
+    // the fill reads them.
+    crate::catalog::stopgap::check_reads(
+        entity_name,
+        relation_oid(&schema_name, &tv_table_name)?,
+        view_oid,
+        &plan.iter().map(|&(table, _)| table.to_u32()).collect::<Vec<_>>(),
+        &declarations.function_reads,
+    )?;
+
     // Populate initial data, unless the caller fills the table itself as its
     // owner (a rebuild by another role).
     let rows = if rebuilt_for.is_some() {
