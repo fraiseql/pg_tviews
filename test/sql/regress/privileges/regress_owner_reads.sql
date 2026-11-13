@@ -2,10 +2,10 @@
 --
 -- A refresh reads as the TVIEW's owner. A write the trigger can copy straight into
 -- the TVIEW (a direct patch) stands for that read, so it is taken only where the
--- read would return the same: the owner may read every relation the view reads,
--- and no row security applies to the owner on them. Otherwise the row is
--- recomputed, which reads as the owner: a privilege the owner lost fails the write,
--- as an INSERT does, and a policy hides the row as it hides it from the read.
+-- read would return the same: the owner may read every relation the view reads.
+-- Otherwise the row is recomputed, which reads as the owner: a privilege the owner
+-- lost fails the write, as an INSERT does. A TVIEW whose owner row security
+-- applies to on a table it reads is refused: a refresh reads every row.
 -- Re-registering (every update runs it) refuses a TVIEW whose owner may no longer
 -- read what its view reads, and the health check names it.
 --
@@ -34,7 +34,7 @@ CREATE TABLE public.tb_pol (pk_pol int PRIMARY KEY, id uuid NOT NULL DEFAULT gen
 INSERT INTO public.tb_src (pk_src, title) VALUES (1, 's1');
 INSERT INTO public.tb_pol (pk_pol, title) VALUES (1, 'p1'), (2, 'p2');
 GRANT SELECT, TRIGGER ON public.tb_src, public.tb_pol TO regress_or_owner_a;
--- owner_a reads no row titled 'secret' of tb_pol; owner_b, its owner, is not bound.
+-- Row security applies to owner_a on tb_pol; owner_b, its owner, is not bound.
 ALTER TABLE public.tb_pol ENABLE ROW LEVEL SECURITY;
 CREATE POLICY not_secret ON public.tb_pol FOR SELECT TO regress_or_owner_a
     USING (title <> 'secret');
@@ -44,33 +44,33 @@ SET ROLE regress_or_owner_a;
 SELECT tviews.pg_tviews_create('public.tv_src', $q$
     SELECT s.pk_src, s.id, jsonb_build_object('id', s.id, 'title', s.title) AS data
     FROM public.tb_src s $q$) IS NOT NULL AS created;
-SELECT tviews.pg_tviews_create('public.tv_pol', $q$
-    SELECT p.pk_pol, p.id, jsonb_build_object('id', p.id, 'title', p.title) AS data
-    FROM public.tb_pol p $q$) IS NOT NULL AS created;
 RESET ROLE;
+DO $$
+DECLARE
+    state text;
+    message text;
+BEGIN
+    BEGIN
+        SET LOCAL ROLE regress_or_owner_a;
+        PERFORM tviews.pg_tviews_create('public.tv_pol', $q$
+            SELECT p.pk_pol, p.id, jsonb_build_object('id', p.id, 'title', p.title) AS data
+            FROM public.tb_pol p $q$);
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS state = RETURNED_SQLSTATE, message = MESSAGE_TEXT;
+    END;
+    PERFORM must(state = '42P16'
+                 AND message LIKE '%row security applies to role regress_or_owner_a on table public.tb_pol%',
+                 format('tv_pol: %s %s', state, message));
+END $$;
 
 -- 1. A copy the owner may read is patched in place.
 SET ROLE regress_or_owner_b;
 UPDATE public.tb_src SET title = 's1b' WHERE pk_src = 1;
-UPDATE public.tb_pol SET title = 'p2b' WHERE pk_pol = 2;
 RESET ROLE;
 SELECT must((SELECT data->>'title' FROM public.tv_src WHERE pk_src = 1) = 's1b',
             'tv_src follows an update its owner may read');
-SELECT must((SELECT data->>'title' FROM public.tv_pol WHERE pk_pol = 2) = 'p2b',
-            'tv_pol follows an update its owner may read');
 
--- 2. An update moving a row out of the owner's policy leaves the TVIEW as the
---    owner's read does: without the row.
-SET ROLE regress_or_owner_b;
-UPDATE public.tb_pol SET title = 'secret' WHERE pk_pol = 1;
-RESET ROLE;
-SELECT must(NOT EXISTS (SELECT 1 FROM public.tv_pol WHERE pk_pol = 1),
-            'a row the owner''s policy hides stayed in tv_pol: '
-            || (SELECT data::text FROM public.tv_pol WHERE pk_pol = 1));
-SELECT must((SELECT data->>'title' FROM public.tv_pol WHERE pk_pol = 2) = 'p2b',
-            'tv_pol keeps the row its owner reads');
-
--- 3. The owner loses SELECT on tb_src: a write it no longer may read fails, as an
+-- 2. The owner loses SELECT on tb_src: a write it no longer may read fails, as an
 --    INSERT does, and the TVIEW keeps what its owner last read.
 REVOKE SELECT ON public.tb_src FROM regress_or_owner_a;
 DO $$
@@ -88,7 +88,7 @@ END $$;
 SELECT must((SELECT data->>'title' FROM public.tv_src WHERE pk_src = 1) = 's1b',
             'tv_src changed without its owner''s read');
 
--- 4. The health check names the TVIEW, its owner and the privilege.
+-- 3. The health check names the TVIEW, its owner and the privilege.
 SELECT must(status = 'ERROR' AND message LIKE '%tv_src%'
             AND message LIKE '%regress_or_owner_a lacks SELECT on public.tb_src%',
             format('owner_reads: %s %s', status, message))
@@ -96,7 +96,7 @@ FROM tviews.pg_tviews_check_health() WHERE component = 'owner_reads';
 SELECT must(count(*) = 1, 'no owner_reads component in the health check')
 FROM tviews.pg_tviews_check_health() WHERE component = 'owner_reads';
 
--- 5. Re-registering refuses it, naming the TVIEW, its owner and the privilege;
+-- 4. Re-registering refuses it, naming the TVIEW, its owner and the privilege;
 --    so does the strict re-registration every update runs.
 DO $$
 DECLARE
@@ -120,7 +120,7 @@ BEGIN
                  format('pg_tviews_reregister_all(strict): %s %s', state, message));
 END $$;
 
--- 6. Granted again, everything holds.
+-- 5. Granted again, everything holds.
 GRANT SELECT ON public.tb_src TO regress_or_owner_a;
 SELECT must(status = 'OK', format('owner_reads after the grant: %s %s', status, message))
 FROM tviews.pg_tviews_check_health() WHERE component = 'owner_reads';
