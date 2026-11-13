@@ -5,7 +5,7 @@
 //! What to do is decided without SPI ([`decide`]); the work itself, which runs
 //! SPI and may raise PostgreSQL errors, runs after, holding an
 //! [`InternalDdl`](crate::internal_ddl::InternalDdl) so the DDL `pg_tviews` issues
-//! passes through unhandled. The previous hook is called across
+//! itself passes through unhandled. The previous hook is called across
 //! `pg_guard_ffi_boundary`.
 
 use pgrx::pg_sys;
@@ -159,8 +159,9 @@ unsafe extern "C-unwind" fn tview_process_utility_hook(
         crate::cache::mark_changed();
     }
 
-    // DDL pg_tviews itself issues: run it as it is.
-    if crate::internal_ddl::InternalDdl::active() {
+    // DDL pg_tviews itself issues: run it as it is. Any other statement, also
+    // one run while pg_tviews works for a statement, is handled below.
+    if crate::internal_ddl::InternalDdl::issued(call.query_string) {
         call.pass_through();
         return;
     }
