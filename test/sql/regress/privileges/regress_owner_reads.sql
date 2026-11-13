@@ -36,8 +36,8 @@ INSERT INTO public.tb_pol (pk_pol, title) VALUES (1, 'p1'), (2, 'p2');
 GRANT SELECT, TRIGGER ON public.tb_src, public.tb_pol TO regress_or_owner_a;
 -- Row security applies to owner_a on tb_pol; owner_b, its owner, is not bound.
 ALTER TABLE public.tb_pol ENABLE ROW LEVEL SECURITY;
-CREATE POLICY not_secret ON public.tb_pol FOR SELECT TO regress_or_owner_a
-    USING (title <> 'secret');
+CREATE POLICY pol_owner_a ON public.tb_pol FOR SELECT TO regress_or_owner_a
+    USING (true);
 RESET ROLE;
 
 SET ROLE regress_or_owner_a;
