@@ -569,7 +569,7 @@ SELECT * FROM tviews.stats;
 
 ## ⏸️ Bulk Operations
 
-For bulk INSERT/UPDATE/DELETE operations (e.g., seed data loading, ETL imports) on tables with TVIEWs, use the suspend/resume API to prevent trigger-based refresh during the operation:
+For bulk INSERT/UPDATE/DELETE operations (e.g., seed data loading, ETL imports) on tables with TVIEWs, use the suspend/resume API to prevent trigger-based refresh during the operation. The two functions are an operator's: `PUBLIC` may not execute them, so grant them to the role that loads ([operator role](docs/user-guides/operators.md#operator-role)).
 
 ### Basic Pattern
 

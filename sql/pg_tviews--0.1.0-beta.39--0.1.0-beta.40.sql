@@ -4,6 +4,18 @@
 -- statements above the re-derivation (docs/development/extension-versioning.md).
 -- Released scripts are never edited.
 
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
+RETURNS integer
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS 'SELECT 13';
+
+-- Suspending refresh is an operator's, as the maintenance acting on every TVIEW
+-- (docs/user-guides/operators.md).
+REVOKE EXECUTE ON FUNCTION
+    @extschema@.pg_tviews_suspend_triggers(),
+    @extschema@.pg_tviews_resume_triggers()
+FROM PUBLIC;
+
 -- Every TVIEW is re-derived inside the update, as its owner. The update does not
 -- depend on what a TVIEW's owner chose: a TVIEW that cannot be re-derived keeps
 -- needs_reregister (its refreshes skip and patch nothing) and is named in a

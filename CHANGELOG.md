@@ -11,9 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **E1-03.**
 - **E1-04.**
+- **E1-06.**
 
 ### Changed
 
+- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` are an
+  operator's.** `PUBLIC` may no longer execute them, as for the maintenance functions
+  that act on every TVIEW; grant them to the role that loads data in bulk
+  (`docs/user-guides/operators.md`). The update revokes them from `PUBLIC` too. The
+  catalog revision is 13: writes are refused between installing the package and
+  `ALTER EXTENSION pg_tviews UPDATE`.
 - **A TVIEW is refused while row security applies to a role it reads a table as.** A
   refresh reads every row of every table its TVIEW reads, as the TVIEW's owner, as
   the owner of each view its definition reads through, and as the owner of each

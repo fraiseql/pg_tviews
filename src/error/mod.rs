@@ -235,15 +235,15 @@ impl TViewError {
                 limit: Limit::Queue { .. },
             } => Some(
                 "Write in smaller transactions, or make a bulk change after \
-                 pg_tviews_suspend_triggers()."
+                 pg_tviews_suspend_triggers(), as a role granted it."
                     .into(),
             ),
             Self::RefreshLimit {
                 limit: Limit::Rows { tview, .. },
             } => Some(format!(
                 "Don't embed this entity in {tview}, batch the change offline, or make it \
-                 after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt \
-                 once, at resume or commit."
+                 after pg_tviews_suspend_triggers(), as a role granted it: the TVIEWs it \
+                 changed are then rebuilt once, at resume or commit."
             )),
             Self::RefreshLimit {
                 limit: Limit::Links { .. },

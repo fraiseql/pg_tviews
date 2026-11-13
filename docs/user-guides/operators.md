@@ -230,9 +230,9 @@ ALTER TABLE tv_user OWNER TO ops_doc_app;
 
 ### Operator role
 
-The functions that act on every TVIEW end in `_all` and are not executable by
-`PUBLIC`: only superusers, the extension's owner and the roles granted them may run
-them.
+The functions that act on every TVIEW end in `_all`; they, and the two that suspend
+and resume refresh, are not executable by `PUBLIC`: only superusers, the extension's
+owner and the roles granted them may run them.
 
 | Function | What it does |
 |---|---|
@@ -241,6 +241,8 @@ them.
 | `pg_tviews_reregister_all(strict)` | Re-derive every TVIEW's plan and triggers |
 | `pg_tviews_ensure_propagation_indexes_all(dry_run)` | Create every TVIEW's missing propagation indexes |
 | `pg_tviews_reset_stats_all()` | Zero every TVIEW's counters in `tviews.stats` |
+| `pg_tviews_suspend_triggers()` | Suspend refresh for the rest of the transaction (a bulk load) |
+| `pg_tviews_resume_triggers()` | Resume it: rebuild every TVIEW the transaction changed, and those that embed them |
 | `pg_tviews_invalidate_caches(relid)` | Internal: invalidate cached metadata |
 | `pg_tviews_audit_write(entry)` | Internal: write an audit log row |
 
@@ -250,6 +252,14 @@ TVIEW's owner, never as the caller, so the grant alone is enough for
 `pg_tviews_refresh_all()`.
 `pg_tviews_rebuild_all()` also reads each TVIEW as the caller, to find the empty ones
 and count the rows it filled, so the role needs `SELECT` on the `tv_*` tables too.
+
+A role that loads data in bulk with refresh suspended is granted the two:
+
+```sql
+GRANT EXECUTE ON FUNCTION
+    tviews.pg_tviews_suspend_triggers(), tviews.pg_tviews_resume_triggers()
+TO ops_doc_deploy;
+```
 
 Every function acting on or showing one TVIEW (`pg_tviews_refresh`,
 `pg_tviews_reregister`, `pg_tviews_drop`, `pg_tviews_create_or_replace`,

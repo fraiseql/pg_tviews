@@ -260,7 +260,8 @@ SELECT tviews.pg_tviews_refresh_all();
 
 ### Bulk loads, or writes while a refresh keeps failing
 
-Suspend refresh in the writing transaction and catch up at the end:
+Suspend refresh in the writing transaction and catch up at the end, as a role granted
+the two functions (an operator's, not executable by `PUBLIC`):
 
 ```sql
 BEGIN;
