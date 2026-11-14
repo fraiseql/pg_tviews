@@ -221,6 +221,42 @@ SQL
             done
             echo "the update refused the catalogs it must: ${checked[*]:-none}"
 
+            # The update waits for a lock at most 10 s, unless the session set its own
+            # lock_timeout: a TVIEW whose backing view its owner keeps locked is left to
+            # re-register and named. Rehearsed in a transaction rolled back, the session's own setting
+            # untouched after.
+            psql -X -d "$left_db" -q -c "SET application_name = 'upgrade_check_holder'" \
+                -c "BEGIN" -c "LOCK TABLE tviews.public__tv_kept IN ACCESS EXCLUSIVE MODE" \
+                -c "SELECT pg_sleep(60)" -c "ROLLBACK" >/dev/null 2>&1 &
+            holder=$!
+            for _ in $(seq 100); do
+                [[ -n "$(psql -X -At -d "$left_db" -c \
+                    "SELECT 1 FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_stat_activity a USING (pid)
+                      WHERE a.application_name = 'upgrade_check_holder' AND l.granted
+                        AND l.relation = 'tviews.public__tv_kept'::pg_catalog.regclass")" ]] && break
+                sleep 0.1
+            done
+            start=$(date +%s)
+            out="$(timeout 40 psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "SET lock_timeout = 0" \
+                    -c "BEGIN" -c "ALTER EXTENSION pg_tviews UPDATE" \
+                    -c "SELECT 'session lock_timeout: ' || current_setting('lock_timeout')" \
+                    -c "ROLLBACK" 2>&1)" || fail "the update under a held lock did not complete: $out"
+            waited=$(( $(date +%s) - start ))
+            grep -q "tv_kept: .*lock timeout" <<<"$out" || fail "the update did not leave tv_kept: $out"
+            grep -q "session lock_timeout: 0$" <<<"$out" || fail "the update changed lock_timeout: $out"
+            (( waited >= 9 && waited < 30 )) || fail "the update waited ${waited}s for the lock"
+            start=$(date +%s)
+            out="$(timeout 40 psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "SET lock_timeout = '1s'" \
+                    -c "BEGIN" -c "ALTER EXTENSION pg_tviews UPDATE" -c "ROLLBACK" 2>&1)" \
+                || fail "the update under a held lock, lock_timeout 1s: $out"
+            waited=$(( $(date +%s) - start ))
+            grep -q "tv_kept: .*lock timeout" <<<"$out" || fail "the update did not leave tv_kept: $out"
+            (( waited < 9 )) || fail "the session's lock_timeout of 1s was not kept (${waited}s)"
+            psql -X -At -d "$left_db" -c "SELECT pg_catalog.pg_terminate_backend(pid)
+                FROM pg_catalog.pg_stat_activity WHERE application_name = 'upgrade_check_holder'" >/dev/null
+            wait "$holder" || true
+            echo "the update waits 10s for a lock unless the session sets lock_timeout; tv_kept left and named"
+
             # The update completes whatever a TVIEW's owner chose: rehearsed in a
             # transaction rolled back, then run.
             out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "BEGIN" \
