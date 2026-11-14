@@ -22,7 +22,7 @@ refused=(typename_clash)
 declare -A refusal=(
     [typename_clash]="these are shared: Post (tv_post, tv_post_)"
 )
-# A catalog the update completes on, leaving three TVIEWs it cannot re-derive
+# A catalog the update completes on, leaving four TVIEWs it cannot re-derive
 # (fixtures_left_behind.sql), and the operator's pre-check, as the upgrade page
 # gives it.
 left_db="${upgraded}_left_behind"

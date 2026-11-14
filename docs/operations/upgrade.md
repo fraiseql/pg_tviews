@@ -163,7 +163,7 @@ JOIN pg_catalog.pg_depend d
  AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
  AND d.refobjsubid > 0 AND d.refobjid <> w.view
 JOIN pg_catalog.pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
-WHERE NOT pg_catalog.has_column_privilege(v.relowner, d.refobjid, d.refobjsubid, 'SELECT')
+WHERE NOT pg_catalog.has_column_privilege(v.relowner, d.refobjid, d.refobjsubid::pg_catalog.int2, 'SELECT')
 ORDER BY 1, 2, 3, 4;
 ```
 <!-- upgrade-precheck:end -->
