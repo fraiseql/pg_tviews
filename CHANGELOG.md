@@ -46,8 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Until it is fixed and re-registered its refreshes skip and patch nothing, and fail
   where its definition no longer holds; `pg_tviews_check_health()`'s `reregister`
   component names each TVIEW left, with why when it knows. The upgrade page gives a
-  pre-check to run before the update, which lists the TVIEWs it will leave. See
-  `docs/operations/upgrade.md`.
+  pre-check to run before the update, which lists the TVIEWs it will leave. A lock
+  held on a TVIEW's backing view no longer holds the update: it waits at most the
+  session's `lock_timeout`, 10 s when the session sets none, and leaves that TVIEW to
+  re-register. See `docs/operations/upgrade.md`.
 - **A TVIEW reading a table whole, through a system column or through a declared
   function is refreshed on every write to that table.** Its plan lists the columns the
   definition names, and a write changing none of them was skipped or patched in place:

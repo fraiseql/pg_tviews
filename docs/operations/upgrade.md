@@ -37,12 +37,11 @@ Do it in each database that has the extension.
    Overwriting a loaded library crashes its backends; stop first.
 4. **Update every database:**
    ```sql
-   SET lock_timeout = '10s';
    ALTER EXTENSION pg_tviews UPDATE;
    ```
-   Re-deriving a TVIEW locks its backing view and the tables it reads, so a session
-   holding one of those locks holds the update. With `lock_timeout` set, a TVIEW whose
-   locks are not granted in time is left to re-register and named like any other; a
+   Re-deriving a TVIEW locks its backing view. The update waits for that lock at most
+   the session's `lock_timeout`, 10 s when the session sets none: a TVIEW whose lock is
+   not granted in time is left to re-register and named like any other. A
    `statement_timeout` that runs out, or a cancel, aborts the whole update instead.
    It re-derives every TVIEW's plan and triggers from its definition inside the update,
    each in its owner's frame ([owner frame](../security/architecture.md#owner-frame)):
