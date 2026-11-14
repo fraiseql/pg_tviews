@@ -1,11 +1,9 @@
 -- A function that changes a TVIEW refuses to run inside pg_tviews' work as a
 -- TVIEW's owner (E1-09).
 --
--- A refresh runs its TVIEW's definition as the TVIEW's owner. Code the definition
--- calls runs there too, where the role that wrote is not the current user: a
--- function that changes a TVIEW (its definition, triggers, registration, rows or
--- indexes) decides its privileges for one role only, so it is refused there with
--- 55000, as pg_tviews_create() is. Called directly, each still runs.
+-- Each function that changes a TVIEW (its definition, triggers, registration,
+-- rows or indexes) is refused with 55000 inside an owner frame, and still runs
+-- when called directly.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/privileges/regress_owner_frame_entry_points.sql
 -- expect-output: entry points refused inside an owner frame: PASS
@@ -66,17 +64,17 @@ GRANT EXECUTE ON FUNCTION tviews.pg_tviews_refresh_all(), tviews.pg_tviews_rebui
     TO regress_ofe_owner_a;
 
 INSERT INTO public.calls (n, call) VALUES
-    (1, $c$SELECT tviews.pg_tviews_create('public.tv_c', 'SELECT b.pk_b AS pk_c, b.id, b.data FROM public.tv_b b')$c$),
-    (2, $c$SELECT tviews.pg_tviews_create_or_replace('public.tv_b', 'SELECT b.pk_b, b.id, jsonb_build_object(''label'', b.label, ''x'', 1) AS data FROM public.tb_b b')$c$),
-    (3, $c$SELECT tviews.pg_tviews_reregister('public.tv_b')$c$),
-    (4, $c$SELECT * FROM tviews.pg_tviews_reregister_all(strict => true)$c$),
-    (5, $c$SELECT tviews.pg_tviews_refresh('public.tv_b')$c$),
-    (6, $c$SELECT tviews.pg_tviews_refresh_all()$c$),
-    (7, $c$SELECT * FROM tviews.pg_tviews_rebuild_all(true)$c$),
-    (8, $c$SELECT * FROM tviews.pg_tviews_refresh_time_dependent()$c$),
-    (9, $c$SELECT * FROM tviews.pg_tviews_resync('public.tb_b', ARRAY[1::bigint])$c$),
-    (10, $c$SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('public.tv_b')$c$),
-    (11, $c$SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(false)$c$),
+    (1, $c$SELECT tviews.pg_tviews_reregister('public.tv_b')$c$),
+    (2, $c$SELECT * FROM tviews.pg_tviews_reregister_all(strict => true)$c$),
+    (3, $c$SELECT * FROM tviews.pg_tviews_rebuild_all(true)$c$),
+    (4, $c$SELECT * FROM tviews.pg_tviews_refresh_time_dependent()$c$),
+    (5, $c$SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes('public.tv_b')$c$),
+    (6, $c$SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(false)$c$),
+    (7, $c$SELECT tviews.pg_tviews_create_or_replace('public.tv_b', 'SELECT b.pk_b, b.id, jsonb_build_object(''label'', b.label, ''x'', 1) AS data FROM public.tb_b b')$c$),
+    (8, $c$SELECT tviews.pg_tviews_refresh('public.tv_b')$c$),
+    (9, $c$SELECT tviews.pg_tviews_refresh_all()$c$),
+    (10, $c$SELECT * FROM tviews.pg_tviews_resync('public.tb_b', ARRAY[1::bigint])$c$),
+    (11, $c$SELECT tviews.pg_tviews_create('public.tv_c', 'SELECT b.pk_b AS pk_c, b.id, b.data FROM public.tv_b b')$c$),
     (12, $c$SELECT tviews.pg_tviews_drop('public.tv_b')$c$);
 
 -- The writer's write refreshes tv_a as its owner: hop() makes every call there.
