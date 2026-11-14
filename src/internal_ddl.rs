@@ -1,10 +1,8 @@
 //! The guard that lets `pg_tviews` run its own DDL through the `ProcessUtility`
 //! hook unhandled.
 //!
-//! Only the statements `pg_tviews` issues itself pass: DDL any other code runs
-//! while `pg_tviews` works for a statement (a trigger or a function a refresh
-//! runs, an event trigger fired by `pg_tviews`' own DDL) is handled by the hook as
-//! any other.
+//! Only the statements `pg_tviews` issues itself pass: any other statement is
+//! handled by the hook.
 
 use pgrx::pg_sys;
 use std::cell::{Cell, RefCell};

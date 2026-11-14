@@ -119,9 +119,7 @@ impl Owner {
 }
 
 /// Refuse `function`, which changes a TVIEW (its definition, triggers,
-/// registration, rows or indexes), inside an owner frame: code a refresh or a
-/// fill runs as a TVIEW's owner, where the role that called into `pg_tviews` is
-/// not the current user, and the function decides its privileges for one role.
+/// registration, rows or indexes), inside an owner frame.
 ///
 /// # Errors
 /// [`TViewError::WrongState`] inside an owner frame.
