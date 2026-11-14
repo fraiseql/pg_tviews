@@ -9,7 +9,8 @@
 #   test/upgrade/upgrade_check.sh after recreate     # an older release: drop and recreate
 #
 # Honors PGHOST/PGPORT/PGUSER. Uses the databases pg_tviews_upgrade and
-# pg_tviews_fresh, which it drops and re-creates.
+# pg_tviews_fresh, which it drops and re-creates; once `after` passed, it drops them
+# and the upgrade_* roles its fixtures create.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -333,6 +334,19 @@ SQL
         psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"
         echo "readers read the TVIEW tables; backing views are their owners' alone"
     fi
+
+    # The check leaves no database and no role behind once it passed.
+    for db in "$upgraded" "$fresh"; do
+        psql -X -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null
+    done
+    for role in upgrade_column_reader upgrade_lost_owner upgrade_owner upgrade_rls_owner \
+                upgrade_schema_reader upgrade_table_reader; do
+        psql -X -d postgres -qc "DROP ROLE IF EXISTS $role" >/dev/null
+    done
+    left="$(psql -X -At -d postgres -c \
+        "SELECT pg_catalog.string_agg(rolname, ' ') FROM pg_catalog.pg_roles WHERE rolname LIKE 'upgrade\_%'")"
+    [[ -z "$left" ]] || fail "roles left behind: $left"
+    echo "databases and roles of the check dropped"
     ;;
 *)
     fail "usage: $0 before | after update|recreate"
