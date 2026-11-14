@@ -8,6 +8,9 @@
 -- - tv_forced: its stored definition is no longer one SELECT (the catalog
 --   written directly); its backing view still reads: writes refresh it in full.
 -- - tv_lost: upgrade_lost_owner may no longer read the table its TVIEW reads.
+-- - tv_col: upgrade_lost_owner may no longer read one column its TVIEW reads,
+--   which the previous release's re-derivation does not see (the operator's
+--   pre-check names it).
 -- - tv_rls: row security applies to upgrade_rls_owner on the table its TVIEW
 --   reads, which this release refuses.
 
@@ -36,7 +39,10 @@ CREATE TABLE tb_lost (pk_lost int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_rand
                       title text);
 CREATE TABLE tb_rls (pk_rls int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                      title text);
+CREATE TABLE tb_col (pk_col int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                     title text);
 INSERT INTO tb_kept (pk_kept, title) VALUES (1, 'k1');
+INSERT INTO tb_col (pk_col, title) VALUES (1, 'c1');
 INSERT INTO tb_forced (pk_forced, name) VALUES (1, 'f1'), (2, 'f2');
 INSERT INTO tb_lost (pk_lost, title) VALUES (1, 'l1');
 INSERT INTO tb_rls (pk_rls, title) VALUES (1, 'r1');
@@ -54,6 +60,14 @@ SELECT pg_tviews_create('tv_lost', $$
     SELECT pk_lost, id, jsonb_build_object('title', title) AS data FROM public.tb_lost $$);
 RESET ROLE;
 REVOKE SELECT ON tb_lost FROM upgrade_lost_owner;
+
+GRANT SELECT, TRIGGER ON tb_col TO upgrade_lost_owner;
+SET ROLE upgrade_lost_owner;
+SELECT pg_tviews_create('tv_col', $$
+    SELECT pk_col, id, jsonb_build_object('title', title) AS data FROM public.tb_col $$);
+RESET ROLE;
+REVOKE SELECT ON tb_col FROM upgrade_lost_owner;
+GRANT SELECT (pk_col, id) ON tb_col TO upgrade_lost_owner;
 
 GRANT SELECT, TRIGGER ON tb_rls TO upgrade_rls_owner;
 SET ROLE upgrade_rls_owner;

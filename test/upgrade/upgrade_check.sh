@@ -26,7 +26,7 @@ declare -A refusal=(
 # (fixtures_left_behind.sql), and the operator's pre-check, as the upgrade page
 # gives it.
 left_db="${upgraded}_left_behind"
-left_behind=(tv_forced tv_lost tv_rls)
+left_behind=(tv_col tv_forced tv_lost tv_rls)
 precheck() {
     sed -n '/<!-- upgrade-precheck:begin -->/,/<!-- upgrade-precheck:end -->/p' \
         "$here/../../docs/operations/upgrade.md" | sed '/^```/d; /^<!--/d' \
@@ -235,12 +235,14 @@ SQL
             out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
                 || fail "the update did not complete on a catalog with TVIEWs it cannot re-derive: $out"
             echo "$out"
-            grep -q "WARNING:  pg_tviews: 3 TVIEW(s) could not be re-derived" <<<"$out" \
+            grep -q "WARNING:  pg_tviews: 4 TVIEW(s) could not be re-derived" <<<"$out" \
                 || fail "the update did not warn: $out"
             grep -q "tv_lost: .*upgrade_lost_owner lacks SELECT" <<<"$out" || fail "the WARNING for tv_lost: $out"
             grep -q "tv_rls: .*row security applies to role upgrade_rls_owner" <<<"$out" \
                 || fail "the WARNING for tv_rls: $out"
             grep -q "tv_forced: .*exactly one SELECT" <<<"$out" || fail "the WARNING for tv_forced: $out"
+            grep -q "tv_col: .*upgrade_lost_owner lacks SELECT (title)" <<<"$out" \
+                || fail "the WARNING for tv_col: $out"
             psql -X -d "$left_db" -q -f "$here/verify_left_behind.sql"
             psql -X -d postgres -qc "DROP DATABASE $left_db" >/dev/null
             echo "the update completed, left ${left_behind[*]} to re-register, named them; health names them"

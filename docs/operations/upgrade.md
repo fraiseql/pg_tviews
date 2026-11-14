@@ -37,8 +37,13 @@ Do it in each database that has the extension.
    Overwriting a loaded library crashes its backends; stop first.
 4. **Update every database:**
    ```sql
+   SET lock_timeout = '10s';
    ALTER EXTENSION pg_tviews UPDATE;
    ```
+   Re-deriving a TVIEW locks its backing view and the tables it reads, so a session
+   holding one of those locks holds the update. With `lock_timeout` set, a TVIEW whose
+   locks are not granted in time is left to re-register and named like any other; a
+   `statement_timeout` that runs out, or a cancel, aborts the whole update instead.
    It re-derives every TVIEW's plan and triggers from its definition inside the update,
    each in its owner's frame ([owner frame](../security/architecture.md#owner-frame)):
    the role running the update runs none of a TVIEW's code. The rows are not touched.
@@ -137,10 +142,33 @@ JOIN pg_catalog.pg_roles a ON a.oid = g.role
 WHERE NOT a.rolsuper AND NOT a.rolbypassrls
   AND (t.relforcerowsecurity OR NOT pg_catalog.pg_has_role(g.role, t.relowner, 'USAGE'))
 ORDER BY 1, 2, 3;
+
+-- What 0.1.0-beta.40 also checks column by column: each view a TVIEW reads through
+-- (its backing view among them) reads, as its owner, every column it names.
+WITH viewing(entity, view) AS (
+    SELECT m.entity, m.view_oid::pg_catalog.oid FROM tviews.pg_tview_meta m
+  UNION
+    SELECT r.entity, r.relid
+    FROM tviews.reads r JOIN pg_catalog.pg_class v ON v.oid = r.relid AND v.relkind = 'v'
+)
+SELECT DISTINCT m.table_oid::pg_catalog.regclass AS tview,
+       pg_catalog.pg_get_userbyid(v.relowner) AS role,
+       d.refobjid::pg_catalog.regclass AS "table", a.attname AS "column"
+FROM viewing w
+JOIN tviews.pg_tview_meta m ON m.entity = w.entity
+JOIN pg_catalog.pg_class v ON v.oid = w.view
+JOIN pg_catalog.pg_rewrite rw ON rw.ev_class = w.view
+JOIN pg_catalog.pg_depend d
+  ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = rw.oid
+ AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+ AND d.refobjsubid > 0 AND d.refobjid <> w.view
+JOIN pg_catalog.pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+WHERE NOT pg_catalog.has_column_privilege(v.relowner, d.refobjid, d.refobjsubid, 'SELECT')
+ORDER BY 1, 2, 3, 4;
 ```
 <!-- upgrade-precheck:end -->
 
-Every row of either query is a TVIEW the update will leave to re-register; fix it
+Every row of these queries is a TVIEW the update will leave to re-register; fix it
 before the update, or after it as above. With the new package installed (writers
 paused), the update itself is the exact check: `BEGIN; ALTER EXTENSION pg_tviews
 UPDATE; ROLLBACK;` prints its WARNING and changes nothing. Run it in a session of its

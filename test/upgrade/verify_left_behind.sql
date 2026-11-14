@@ -31,13 +31,14 @@ CREATE FUNCTION pg_temp.work() RETURNS jsonb LANGUAGE sql AS $$
         'captured', (n->>'direct_patch_captured')::int - (s.q->>'direct_patch_captured')::int)
     FROM seen s, tviews.pg_tviews_show_queue() AS now(n) $$;
 
--- Left exactly the three it could not re-derive.
-SELECT pg_temp.must(string_agg(name, ',' ORDER BY name) = 'tv_forced,tv_lost,tv_rls',
+-- Left exactly the four it could not re-derive.
+SELECT pg_temp.must(string_agg(name, ',' ORDER BY name) = 'tv_col,tv_forced,tv_lost,tv_rls',
                     'left to re-register: ' || coalesce(string_agg(name, ',' ORDER BY name), 'none'))
 FROM tviews.registry WHERE needs_reregister;
 
 -- The health check names each, and why when it knows.
-SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'WARNING 3 TVIEWs left to re-register:%'
+SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'WARNING 4 TVIEWs left to re-register:%'
+                    AND pg_temp.reregister_health() LIKE '%tv_col: upgrade_lost_owner lacks SELECT (title) on%'
                     AND pg_temp.reregister_health() LIKE '%tv_forced;%'
                     AND pg_temp.reregister_health() LIKE '%tv_lost: upgrade_lost_owner lacks SELECT on%'
                     AND pg_temp.reregister_health() LIKE '%tv_rls: row security applies to role upgrade_rls_owner%',
@@ -72,9 +73,14 @@ SELECT :'LAST_ERROR_SQLSTATE' AS lost_state \gset
 \set LAST_ERROR_SQLSTATE none
 UPDATE public.tb_rls SET title = 'r1b';
 SELECT :'LAST_ERROR_SQLSTATE' AS rls_state \gset
+\set LAST_ERROR_SQLSTATE none
+UPDATE public.tb_col SET title = 'c1b';
+SELECT :'LAST_ERROR_SQLSTATE' AS col_state \gset
 \set ON_ERROR_STOP on
 SELECT pg_temp.must(:'lost_state' = '42501', 'a write to tb_lost: ' || :'lost_state');
 SELECT pg_temp.must(:'rls_state' = '42P16', 'a write to tb_rls: ' || :'rls_state');
+SELECT pg_temp.must(:'col_state' = '42501', 'a write to tb_col: ' || :'col_state');
+SELECT pg_temp.must(data->>'title' = 'c1', 'tv_col changed') FROM public.tv_col;
 SELECT pg_temp.must(data->>'title' = 'l1', 'tv_lost changed') FROM public.tv_lost;
 SELECT pg_temp.must(data->>'title' = 'r1', 'tv_rls changed') FROM public.tv_rls;
 
@@ -83,6 +89,7 @@ UPDATE tviews.pg_tview_meta SET definition = left(definition, -length('; SELECT 
  WHERE entity = 'forced';
 GRANT SELECT ON public.tb_lost TO upgrade_lost_owner;
 ALTER TABLE public.tb_rls DISABLE ROW LEVEL SECURITY;
+GRANT SELECT ON public.tb_col TO upgrade_lost_owner;
 SELECT pg_temp.must(status = 'reregistered', 'tv_' || entity || ': ' || status)
 FROM tviews.pg_tviews_reregister_all();
 SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'OK %', 'health after the fixes: ' || pg_temp.reregister_health());
@@ -90,3 +97,5 @@ UPDATE public.tb_lost SET title = 'l1c';
 UPDATE public.tb_rls SET title = 'r1c';
 SELECT pg_temp.must(pg_temp.in_sync('tv_lost', 'pk_lost'), 'tv_lost after the fix');
 SELECT pg_temp.must(pg_temp.in_sync('tv_rls', 'pk_rls'), 'tv_rls after the fix');
+UPDATE public.tb_col SET title = 'c1c';
+SELECT pg_temp.must(pg_temp.in_sync('tv_col', 'pk_col'), 'tv_col after the fix');
