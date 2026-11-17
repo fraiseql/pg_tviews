@@ -256,9 +256,10 @@ and count the rows it filled, so the role needs `SELECT` on the `tv_*` tables to
 A role that loads data in bulk with refresh suspended is granted the two:
 
 ```sql
+CREATE ROLE ops_doc_loader;
 GRANT EXECUTE ON FUNCTION
     tviews.pg_tviews_suspend_triggers(), tviews.pg_tviews_resume_triggers()
-TO ops_doc_deploy;
+TO ops_doc_loader;
 ```
 
 Every function acting on or showing one TVIEW (`pg_tviews_refresh`,
@@ -316,8 +317,8 @@ The roles created on this page are cluster-wide; drop them:
 
 ```sql
 DROP TABLE tv_user;
-DROP OWNED BY ops_doc_deploy, ops_doc_reader, ops_doc_app;
-DROP ROLE ops_doc_deploy, ops_doc_reader, ops_doc_app;
+DROP OWNED BY ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
+DROP ROLE ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
 ```
 
 ## See also
