@@ -9,11 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **E1-03.**
-- **E1-04.**
-- **E1-06.**
-- **E1-08.**
-- **E1-09.**
+- **A TVIEW no longer keeps a row its owner's row security stops returning**
+  (GHSA-3xq4-m5j3-7w4h). A write changing only columns the definition does not name
+  was skipped, even when a policy applying to the TVIEW's owner read them, so a row
+  hidden from the owner stayed in `tv_*`. A TVIEW is now refused while row security
+  applies to a role it reads a table as (below, under Changed).
+- **A copied value stands for the owner's read only on the columns it reads**
+  (GHSA-3jfv-946q-g28x). A write copying changed values into documents checked the
+  owner's `SELECT` on the table as "any column": a column revoked from an owner with
+  column-level grants kept flowing in. The check is now the one PostgreSQL makes for a
+  query naming those columns; otherwise the row is recomputed as the owner (`42501`).
+  Re-registration and the health check's `owner_reads` name the columns lacking.
+- **Suspending refresh is an operator's** (GHSA-hmq5-7ghr-354c): any writer could
+  suspend, write and resume to force full refreshes that lock whole read sets (below,
+  under Changed).
+- **Only the statements pg_tviews issues itself pass its DDL hook unhandled**
+  (GHSA-2cpq-w5hw-475h). DDL run by user code during pg_tviews' work at `COMMIT`, in
+  `CREATE TABLE AS` or in a statement's follow-up work escaped the hook's checks.
+- **Functions that change a TVIEW refuse inside an owner frame** (GHSA-9pg9-q6g6-3j6c,
+  `55000`): `pg_tviews_create`, `_create_or_replace`, `_drop`, `_reregister[_all]`,
+  `_refresh[_all]`, `_rebuild_all`, `_refresh_time_dependent`, `_resync` and
+  `_ensure_propagation_indexes[_all]`, called from a TVIEW's definition or a trigger on
+  a TVIEW table.
 
 ### Changed
 
