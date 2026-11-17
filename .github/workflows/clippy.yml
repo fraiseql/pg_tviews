@@ -45,6 +45,8 @@ jobs:
           "$(go env GOPATH)/bin/actionlint"
       - name: Check the docs make no claim the code no longer keeps
         run: scripts/check-doc-claims.sh
+      - name: Check the tests' owner frame is its specification's
+        run: scripts/check-owner-frame.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})

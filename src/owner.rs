@@ -801,7 +801,7 @@ mod planner {
     use std::collections::HashMap;
     use std::ffi::{CStr, CString};
 
-    const SETTINGS: [&CStr; 40] = [
+    pub(super) const SETTINGS: [&CStr; 40] = [
         c"enable_async_append",
         c"enable_bitmapscan",
         c"enable_distinct_reordering",
@@ -1172,4 +1172,69 @@ pub fn relation_owner(table: Oid) -> TViewResult<Oid> {
         operation: format!("Look up the owner of relation {table:?}"),
         pg_error: "relation does not exist".to_string(),
     })
+}
+
+/// The frame's specification (`docs/reference/owner-frame.md`), from which the
+/// tests' oracle is generated, names exactly the settings the code pins.
+#[cfg(test)]
+mod frame_specification {
+    use super::{PLAN_SETTINGS, RENDER_SETTINGS, planner};
+    use std::ffi::CStr;
+
+    const SPEC: &str = include_str!("../docs/reference/owner-frame.md");
+
+    /// The rows of the table under the heading `## {heading}`, each cell without
+    /// its backquotes.
+    fn rows(heading: &str) -> Vec<Vec<String>> {
+        let start = format!("## {heading}");
+        let mut lines = SPEC.lines().skip_while(|l| *l != start).skip(1);
+        let mut rows = Vec::new();
+        for line in lines.by_ref().take_while(|l| !l.starts_with("## ")) {
+            if !line.starts_with("| `") {
+                continue;
+            }
+            rows.push(
+                line.trim_matches('|')
+                    .split('|')
+                    .map(|c| c.trim().trim_matches('`').to_string())
+                    .collect(),
+            );
+        }
+        assert!(
+            !rows.is_empty(),
+            "owner-frame.md has no table under {start:?}"
+        );
+        rows
+    }
+
+    fn pairs(settings: &[(&CStr, &CStr)]) -> Vec<Vec<String>> {
+        settings
+            .iter()
+            .map(|(n, v)| {
+                vec![
+                    n.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_settings_match() {
+        assert_eq!(rows("Render settings"), pairs(&RENDER_SETTINGS));
+    }
+
+    #[test]
+    fn plan_settings_match() {
+        assert_eq!(rows("Plan settings"), pairs(&PLAN_SETTINGS));
+    }
+
+    #[test]
+    fn planner_settings_match() {
+        let code: Vec<Vec<String>> = planner::SETTINGS
+            .iter()
+            .map(|n| vec![n.to_string_lossy().into_owned()])
+            .collect();
+        assert_eq!(rows("Planner settings"), code);
+    }
 }
