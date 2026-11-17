@@ -69,13 +69,24 @@ RESET ROLE;
 REVOKE SELECT ON tb_col FROM upgrade_lost_owner;
 GRANT SELECT (pk_col, id) ON tb_col TO upgrade_lost_owner;
 
+-- A release that refuses row security applying to a role a TVIEW reads as also
+-- refuses the statements making it apply, but sees none made from another
+-- database: tv_rls's owner is exempt (BYPASSRLS) while the policy is set up
+-- here, and loses the exemption from the postgres database.
 GRANT SELECT, TRIGGER ON tb_rls TO upgrade_rls_owner;
+ALTER ROLE upgrade_rls_owner BYPASSRLS;
 SET ROLE upgrade_rls_owner;
 SELECT pg_tviews_create('tv_rls', $$
     SELECT pk_rls, id, jsonb_build_object('title', title) AS data FROM public.tb_rls $$);
 RESET ROLE;
 CREATE POLICY rls_all ON tb_rls USING (true);
 ALTER TABLE tb_rls ENABLE ROW LEVEL SECURITY;
+\set fixture_db :DBNAME
+\c postgres
+ALTER ROLE upgrade_rls_owner NOBYPASSRLS;
+\c :fixture_db
+SET client_min_messages TO WARNING;
+SET search_path TO "$user", public, tviews;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM tviews.pg_tview_meta
                    WHERE entity = 'forced' AND definition LIKE '%; SELECT 1') THEN
