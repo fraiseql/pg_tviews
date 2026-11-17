@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.40] - 2026-11-17
+
 ### Security
 
 - **A TVIEW no longer keeps a row its owner's row security stops returning**
@@ -2954,7 +2956,8 @@ First beta: a feature-complete transactional materialized JSONB view system.
 
 - Initial project structure on pgrx.
 
-[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.39...HEAD
+[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.40...HEAD
+[0.1.0-beta.40]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.39...v0.1.0-beta.40
 [0.1.0-beta.39]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.38...v0.1.0-beta.39
 [0.1.0-beta.38]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.37...v0.1.0-beta.38
 [0.1.0-beta.37]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.36...v0.1.0-beta.37
