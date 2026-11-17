@@ -63,7 +63,7 @@ impl Space {
 }
 
 /// The columns of a relation whose values are locked: one value per row, the
-/// columns' text forms combined when there are several.
+/// columns' lock forms ([`lock_value`]) combined when there are several.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LockTarget {
     /// The relation (a partition's root, a TVIEW's table for an embed).
