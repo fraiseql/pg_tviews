@@ -517,8 +517,12 @@ fn ddl(sql: &str) -> Result<(), String> {
             ..pg_sys::SPIExecuteOptions::default()
         };
 
+        // This text, and no statement it makes other code run, passes through
+        // the hook unhandled while pg_tviews works for a statement.
+        let issuing = crate::internal_ddl::issuing(c_sql.as_ptr());
         let execute_result =
             pg_sys::SPI_execute_extended(c_sql.as_ptr(), std::ptr::from_ref(&opts));
+        drop(issuing);
 
         // Always finish even on error
         pg_sys::SPI_finish();
@@ -877,6 +881,7 @@ impl OwnedColumn for pgrx::JsonB {}
 impl OwnedColumn for Vec<Oid> {}
 impl OwnedColumn for Vec<Option<Oid>> {}
 impl OwnedColumn for Vec<String> {}
+impl OwnedColumn for Vec<i16> {}
 
 mod sealed {
     pub trait Sealed {}
@@ -890,6 +895,7 @@ mod sealed {
     impl Sealed for Vec<super::Oid> {}
     impl Sealed for Vec<Option<super::Oid>> {}
     impl Sealed for Vec<String> {}
+    impl Sealed for Vec<i16> {}
 }
 
 impl KeptRow<'_> {

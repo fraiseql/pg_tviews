@@ -364,6 +364,7 @@ mod links;
 mod nodes;
 mod predicate;
 mod time;
+mod wholerow;
 
 use crate::utils::ident::quote_if_needed;
 use collect::{
@@ -375,6 +376,7 @@ use nodes::{
     quote_literal, setop_leaves, strip_casts, strip_relabel, term_sql, top_opaque_reason,
     unnest_array, windows_partitioned,
 };
+pub use wholerow::{WholeRead, WholeReads, whole_reads};
 
 #[cfg(test)]
 mod tests {

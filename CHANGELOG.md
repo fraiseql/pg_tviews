@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A TVIEW no longer keeps a row its owner's row security stops returning**
+  (GHSA-3xq4-m5j3-7w4h). A write changing only columns the definition does not name
+  was skipped, even when a policy applying to the TVIEW's owner read them, so a row
+  hidden from the owner stayed in `tv_*`. A TVIEW is now refused while row security
+  applies to a role it reads a table as (below, under Changed).
+- **A copied value stands for the owner's read only on the columns it reads**
+  (GHSA-3jfv-946q-g28x). A write copying changed values into documents checked the
+  owner's `SELECT` on the table as "any column": a column revoked from an owner with
+  column-level grants kept flowing in. The check is now the one PostgreSQL makes for a
+  query naming those columns; otherwise the row is recomputed as the owner (`42501`).
+  Re-registration and the health check's `owner_reads` name the columns lacking.
+- **Suspending refresh is an operator's** (GHSA-hmq5-7ghr-354c): any writer could
+  suspend, write and resume to force full refreshes that lock whole read sets (below,
+  under Changed).
+- **Only the statements pg_tviews issues itself pass its DDL hook unhandled**
+  (GHSA-2cpq-w5hw-475h). DDL run by user code during pg_tviews' work at `COMMIT`, in
+  `CREATE TABLE AS` or in a statement's follow-up work escaped the hook's checks.
+- **Functions that change a TVIEW refuse inside an owner frame** (GHSA-9pg9-q6g6-3j6c,
+  `55000`): `pg_tviews_create`, `_create_or_replace`, `_drop`, `_reregister[_all]`,
+  `_refresh[_all]`, `_rebuild_all`, `_refresh_time_dependent`, `_resync` and
+  `_ensure_propagation_indexes[_all]`, called from a TVIEW's definition or a trigger on
+  a TVIEW table.
+
+### Changed
+
+- **`pg_tviews_suspend_triggers()` and `pg_tviews_resume_triggers()` are an
+  operator's.** `PUBLIC` may no longer execute them, as for the maintenance functions
+  that act on every TVIEW; grant them to the role that loads data in bulk
+  (`docs/user-guides/operators.md`). The update revokes them from `PUBLIC` too. The
+  catalog revision is 13: writes are refused between installing the package and
+  `ALTER EXTENSION pg_tviews UPDATE`.
+- **A TVIEW is refused while row security applies to a role it reads a table as.** A
+  refresh reads every row of every table its TVIEW reads, as the TVIEW's owner, as
+  the owner of each view its definition reads through, and as the owner of each
+  declared `SECURITY DEFINER` function. `CREATE`, replace and
+  re-register refuse a TVIEW when row security applies to one of those roles on one of
+  those tables (`42P16`, naming the table and the role), and so do the statements that
+  would make it apply afterwards (`ENABLE` / `FORCE ROW LEVEL SECURITY`, owner changes,
+  `REASSIGN OWNED`, `CREATE OR REPLACE VIEW`, role changes) and, for a change made where
+  pg_tviews does not see it, the next write to a table the TVIEW reads and every
+  refresh. Policies for other roles are unaffected. Let the TVIEW's owner own the
+  tables it reads, without `FORCE ROW LEVEL SECURITY`; `BYPASSRLS` also exempts it,
+  but on every table of the cluster. See `docs/operations/security.md`.
+
+### Fixed
+
+- **`ALTER EXTENSION pg_tviews UPDATE` completes whatever state a TVIEW is in.** The
+  update re-derives every TVIEW as its owner; one that could not be re-derived (a
+  privilege its owner lost, row security that now refuses it, a view or function it
+  reads changed) failed the whole update. It is now left with `needs_reregister`, and
+  the update completes and names it in a WARNING with the first line of its error.
+  Until it is fixed and re-registered its refreshes skip and patch nothing, and fail
+  where its definition no longer holds; `pg_tviews_check_health()`'s `reregister`
+  component names each TVIEW left, with why when it knows. The upgrade page gives a
+  pre-check to run before the update, which lists the TVIEWs it will leave. A lock
+  held on a TVIEW's backing view no longer holds the update: it waits at most the
+  session's `lock_timeout`, 10 s when the session sets none, and leaves that TVIEW to
+  re-register. See `docs/operations/upgrade.md`.
+- **A TVIEW reading a table whole, through a system column or through a declared
+  function is refreshed on every write to that table.** Its plan lists the columns the
+  definition names, and a write changing none of them was skipped or patched in place:
+  a definition reading `to_jsonb(t)`, `f(t)`, `jsonb_agg(t)`, `t::text`, a join alias,
+  `xmin` or `ctid`, or a function declared with the TVIEW reading the table, kept the
+  old document. No write to such a table is now skipped or patched for that TVIEW, nor
+  any write at all for a TVIEW whose plan is from an earlier release
+  (`needs_reregister`) until it is registered again.
+
 ## [0.1.0-beta.39] - 2026-11-11
 
 ### Fixed

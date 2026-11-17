@@ -186,7 +186,8 @@ fn register_diagnostics() {
         c"pg_tviews.max_queue_size",
         c"Refresh keys a transaction may queue before its next write fails.",
         c"A memory bound, not a policy: raise it only for a bulk change that queues more \
-          than a million keys, or make the change after pg_tviews_suspend_triggers().",
+          than a million keys, or make the change after pg_tviews_suspend_triggers() (an \
+          operator's function).",
         &MAX_QUEUE_SIZE_GUC,
         1,
         i32::MAX,

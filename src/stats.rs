@@ -487,6 +487,50 @@ pub fn slots_by_database() -> std::collections::BTreeMap<u32, usize> {
     out
 }
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// The refreshes and recomputes the fail-closed rule forced in this session, by reason
+    /// (`stopgap:<reason>`), as `pg_tviews_show_queue()` reports them.
+    static PATCH_STATS: std::cell::RefCell<std::collections::BTreeMap<String, u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Test builds: a write to table `relid` refreshed `entity`'s TVIEW, which its
+/// plan's column list alone would have skipped or patched, for `reasons`. Counted for the
+/// session, and logged, so a run over many sessions can count them in the
+/// server log.
+#[cfg(feature = "test-hooks")]
+pub fn record_stopgap(reasons: &[&str], entity: &str, relid: u32) {
+    for reason in reasons {
+        let code = format!("stopgap:{reason}");
+        pgrx::log!("pg_tviews {code} tv_{entity} table {relid}");
+        PATCH_STATS.with_borrow_mut(|m| *m.entry(code).or_insert(0) += 1);
+    }
+}
+
+/// Whether a write to table `relid` may patch `meta`'s TVIEW on the columns its
+/// plan names ([`crate::catalog::stopgap::columns_known`]). Test builds count
+/// why not, as [`record_stopgap`] does, when it may not.
+#[must_use]
+pub fn patch_columns_known(meta: &crate::catalog::TviewMeta, relid: u32) -> bool {
+    let known = crate::catalog::stopgap::columns_known(meta, relid);
+    #[cfg(feature = "test-hooks")]
+    if !known {
+        record_stopgap(
+            &crate::catalog::stopgap::reasons(meta, relid),
+            &meta.entity_name,
+            relid,
+        );
+    }
+    known
+}
+
+/// Test builds: the refreshes [`record_stopgap`] counted in this session.
+#[cfg(feature = "test-hooks")]
+pub fn patch_stats() -> std::collections::BTreeMap<String, u64> {
+    PATCH_STATS.with_borrow(Clone::clone)
+}
+
 /// Forget `table`, dropped or replaced by a rebuild: its slot, and what this
 /// transaction counted for it, which would take the slot again at its end.
 pub fn forget(table: Oid) {

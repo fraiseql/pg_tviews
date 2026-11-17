@@ -251,6 +251,19 @@ fn create_tview_inner(
         view_oid,
     )?;
 
+    // A refresh reads every row of the tables the TVIEW reads: refused before
+    // the fill reads them.
+    crate::catalog::stopgap::check_reads(
+        entity_name,
+        relation_oid(&schema_name, &tv_table_name)?,
+        view_oid,
+        &plan
+            .iter()
+            .map(|&(table, _)| table.to_u32())
+            .collect::<Vec<_>>(),
+        &declarations.function_reads,
+    )?;
+
     // Populate initial data, unless the caller fills the table itself as its
     // owner (a rebuild by another role).
     let rows = if rebuilt_for.is_some() {
@@ -350,7 +363,21 @@ fn finish(
     let plan = crate::dependency::trigger_plan(&derivation.lineage);
     crate::dependency::sync_tables(&plan.iter().map(|&(table, _)| table).collect::<Vec<_>>())?;
     crate::cache::invalidate_all();
+    check_row_security(entity)?;
     crate::audit::log_create(entity, definition)
+}
+
+/// Refuse `entity`'s TVIEW, as registered now, while row security applies on a
+/// table it reads to a role it reads that table as
+/// ([`crate::catalog::stopgap::check_row_security`]).
+///
+/// # Errors
+/// That refusal, or a failed catalog read.
+pub(crate) fn check_row_security(entity: &str) -> TViewResult<()> {
+    match crate::catalog::TviewMeta::load_by_entity(entity)? {
+        Some(meta) => crate::catalog::stopgap::check_row_security(&meta),
+        None => Ok(()),
+    }
 }
 
 /// Re-derive and replace the metadata of an existing TVIEW from `definition`,
@@ -419,6 +446,7 @@ pub fn reregister_metadata(
     }
     .write(declarations, true)?;
     crate::cache::invalidate_all();
+    check_row_security(entity_name)?;
     Ok(crate::dependency::trigger_plan(&derivation.lineage))
 }
 

@@ -1,5 +1,5 @@
 # Catching up after suspended refresh, by a writer that is not the TVIEW's
-# owner, changes only the rows that differ from the view and takes no lock a
+# owner (an operator granted suspend and resume), changes only the rows that differ from the view and takes no lock a
 # reader of the TVIEW waits for: the writer holds INSERT on a base table and no
 # privilege that would let it lock the TVIEW's table. Its owner's catch-up
 # still rebuilds the TVIEW whole (TRUNCATE), and a reader waits for it.
@@ -15,6 +15,8 @@ setup
   SELECT tviews.pg_tviews_create('tv_post', $$
     SELECT p.pk_post, p.id, jsonb_build_object('title', p.title) AS data FROM tb_post p $$);
   GRANT INSERT ON tb_post TO regress_cu_writer;
+  GRANT EXECUTE ON FUNCTION tviews.pg_tviews_suspend_triggers(),
+      tviews.pg_tviews_resume_triggers() TO regress_cu_writer;
   GRANT SELECT ON tv_post TO PUBLIC;
 }
 

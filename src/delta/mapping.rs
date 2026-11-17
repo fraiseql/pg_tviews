@@ -116,28 +116,53 @@ fn route(
     table_oid: Oid,
     event: Event,
 ) -> TViewResult<Route> {
+    // A refresh reads every row of the tables the TVIEW reads.
+    crate::catalog::stopgap::refuse_row_security(meta)?;
     let entity = meta.entity_name.as_str();
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     let computed = computed_columns(entity, table_oid)?;
+    // The columns the TVIEW reads of the table, as its plan says: none known
+    // (every column read) when the plan does not know them.
+    let reads_hold = crate::catalog::stopgap::columns_known(meta, mapping.relid);
+    let attnums: &[i16] = if reads_hold { &mapping.attnums } else { &[] };
+    #[cfg(feature = "test-hooks")]
+    if !reads_hold
+        && event == Event::Update
+        && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
+        && computed.is_none()
+        // SAFETY: an AFTER statement trigger's TriggerData.
+        && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) }
+    {
+        crate::stats::record_stopgap(
+            &crate::catalog::stopgap::reasons(meta, mapping.relid),
+            entity,
+            mapping.relid,
+        );
+    }
     // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
     // decided from the transition tables themselves, before any query.
     let reads_same = event == Event::Update
         && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
         && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
-        && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) };
+        && unsafe { reads_unchanged(trigger.trigger_data(), attnums) };
     // The links are columns it reads: unchanged when those are. A virtual
     // generated column is NULL in the transition tables, so one among the links
-    // counts as changed; the stored ones compare as they are.
-    crate::concurrency::note_write(Some(mapping), event, |links| {
-        (computed.is_some() && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
-            // SAFETY: an AFTER statement trigger's TriggerData.
-            || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
-    });
+    // counts as changed; the stored ones compare as they are. Columns its plan
+    // does not list may link its rows: then every write changes a link.
+    if reads_hold {
+        crate::concurrency::note_write(Some(mapping), event, |links| {
+            (computed.is_some() && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
+                // SAFETY: an AFTER statement trigger's TriggerData.
+                || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
+        });
+    } else {
+        crate::concurrency::note_link_change();
+    }
     if reads_same {
         return Ok(Route::Nothing);
     }
-    let delta = || delta_sql(entity, table_oid, event, &mapping.attnums);
+    let delta = || delta_sql(entity, table_oid, event, attnums);
     Ok(match mapping.kind {
         // A guarded table's rows that meet none of its unlinked reads' conditions
         // change only what its linked reads reach (#284).
@@ -270,6 +295,7 @@ fn apply(
             // read returns the same.
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
+                && crate::stats::patch_columns_known(meta, mapping.relid)
                 && crate::catalog::owner_reads::patch_stands_for_read(meta)
                 && fan_out(trigger, entity, table_oid, mapping)?
             {

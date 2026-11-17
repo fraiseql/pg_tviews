@@ -185,6 +185,15 @@ fn note_row_write(
     table: pg_sys::Oid,
     changed: Option<&[String]>,
 ) {
+    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
+        .ok()
+        .flatten();
+    // A refresh reads every row of the tables the TVIEW reads.
+    if let Some(meta) = meta.as_deref()
+        && let Err(e) = crate::catalog::stopgap::refuse_row_security(meta)
+    {
+        e.raise();
+    }
     if crate::concurrency::links_changed() {
         return;
     }
@@ -193,9 +202,15 @@ fn note_row_write(
         Ok(PgTriggerOperation::Update) => crate::queue::Event::Update,
         _ => crate::queue::Event::Delete,
     };
-    let meta = crate::catalog::TviewMeta::load_reaching(served, table)
-        .ok()
-        .flatten();
+    // Columns the plan does not list may link its rows: every write changes a
+    // link.
+    if meta
+        .as_deref()
+        .is_some_and(|m| !crate::catalog::stopgap::columns_known(m, table.to_u32()))
+    {
+        crate::concurrency::note_link_change();
+        return;
+    }
     let mapping = meta.as_deref().and_then(|m| m.key_mapping(table, None));
     crate::concurrency::note_write(mapping, event, |links| {
         let Some(changed) = changed else {
@@ -252,16 +267,18 @@ fn enqueue_local_keys(
     // depends on NONE of the changed columns cannot alter any target row, so the
     // refresh is skipped. `changed` is None for INSERT/DELETE (membership
     // changes) — those always cascade. A path with an empty `source_columns`
-    // (multi-hop, unknown, or whole-row/.data reference) also always cascades —
-    // the safe default.
+    // also always cascades, and so does one whose columns the plan does not know
+    // ([`crate::catalog::stopgap`]: read whole, through a system column or a
+    // declared function, or by a plan from an earlier release).
     for path in paths {
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.
-        if let Some(changed) = changed
-            && !path.source_columns.is_empty()
-            && !path.source_columns.iter().any(|c| changed.contains(c))
-        {
-            continue;
+        if let Some(changed) = changed {
+            let unread = !path.source_columns.is_empty()
+                && !path.source_columns.iter().any(|c| changed.contains(c));
+            if unread && columns_known(&path.entity_name, path.source_oid.to_u32()) {
+                continue;
+            }
         }
         // An UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
@@ -280,6 +297,26 @@ fn enqueue_local_keys(
             follow_local_path(path, image, &tupdesc);
         }
     }
+}
+
+/// Whether a write to table `relid` may skip `entity`'s TVIEW on the columns its
+/// plan names ([`crate::catalog::stopgap::columns_known`]).
+fn columns_known(entity: &str, relid: u32) -> bool {
+    let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)
+        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))
+    else {
+        return false;
+    };
+    let known = crate::catalog::stopgap::columns_known(&meta, relid);
+    #[cfg(feature = "test-hooks")]
+    if !known {
+        crate::stats::record_stopgap(
+            &crate::catalog::stopgap::reasons(&meta, relid),
+            &meta.entity_name,
+            relid,
+        );
+    }
+    known
 }
 
 /// Enqueue the key a local path reads off one image of the changed row (its
@@ -344,6 +381,10 @@ fn try_capture_direct_patch(
     let direct = &meta.plan.direct;
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
     if direct.is_empty() || !changed.iter().all(|c| data_key(c).is_some()) {
+        return None;
+    }
+    // A copy alone of what the plan knows the TVIEW reads.
+    if !crate::stats::patch_columns_known(&meta, path.source_oid.to_u32()) {
         return None;
     }
     // The copy stands for the owner's read: recomputed where that read differs.

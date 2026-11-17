@@ -8,8 +8,9 @@ use std::os::raw::c_void;
 
 /// What the end of a transaction resets, however it ends: the refresh work, the
 /// savepoints, the value locks held, the running queries, the flush, the
-/// metrics, the write log (the report and the feed) and the refill claims; the
-/// transaction's statistics are merged into `tviews.stats`.
+/// metrics, the write log (the report and the feed), the refill claims and the
+/// row-security probes; the transaction's statistics are merged into
+/// `tviews.stats`.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
     super::savepoint::clear,
@@ -22,6 +23,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::stats::merge,
     crate::cache::end_transaction,
     crate::owner::forget_temp_check,
+    crate::catalog::stopgap::forget,
 ];
 
 /// What an abort resets besides: the caches and the revision check, when the

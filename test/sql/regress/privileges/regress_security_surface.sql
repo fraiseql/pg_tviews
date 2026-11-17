@@ -1,8 +1,8 @@
 -- Least privilege on every pg_tviews entry point.
 --
--- Maintenance functions that act on every TVIEW (the `_all` ones) are not
--- executable by PUBLIC: an operator role is granted them. Every function that acts
--- on, or shows, one TVIEW requires owning it (or the extension), as ALTER TABLE and
+-- Maintenance functions that act on every TVIEW (the `_all` ones), and suspending
+-- refresh (suspend and resume), are not executable by PUBLIC: an operator role is
+-- granted them. Every function that acts on, or shows, one TVIEW requires owning it (or the extension), as ALTER TABLE and
 -- REFRESH MATERIALIZED VIEW do, whoever may execute it. Every function of the extension is one or the other,
 -- or only reads: a new function must be classified here.
 --
@@ -78,6 +78,9 @@ INSERT INTO public.maintenance VALUES
     ('tviews.pg_tviews_reset_stats_all()'),
     ('tviews.pg_tviews_invalidate_caches(oid)'),
     ('tviews.pg_tviews_audit_write(jsonb)'),
+    -- suspending refresh: an operator's (E1-06)
+    ('tviews.pg_tviews_suspend_triggers()'),
+    ('tviews.pg_tviews_resume_triggers()'),
     -- a value lock's tag: superusers only
     ('tviews.pg_tviews_value_lock_tag(regclass,text,text)');
 DO $$
@@ -110,7 +113,6 @@ BEGIN
            'tviews.pg_tviews_plan_rebind(text,jsonb)', 'tviews.pg_tviews_plan_of(oid,text)',
            -- the caller's session
            'tviews.pg_tviews_flush_and_report(integer,boolean,boolean,text[])',
-           'tviews.pg_tviews_suspend_triggers()', 'tviews.pg_tviews_resume_triggers()',
            'tviews.pg_tviews_show_suspended()', 'tviews.pg_tviews_show_queue()',
            -- one TVIEW, owner checked (creation: the schema's CREATE privilege)
            'tviews.pg_tviews_create(text,text,jsonb)',
@@ -147,6 +149,8 @@ SELECT public.must_refuse(ARRAY[
     'SELECT tviews.pg_tviews_reset_stats_all()',
     'SELECT tviews.pg_tviews_invalidate_caches(''public.tb_doc''::regclass)',
     'SELECT tviews.pg_tviews_value_lock_tag(''public.tb_doc'', ''pk_doc'', ''1'')',
+    'SELECT tviews.pg_tviews_suspend_triggers()',
+    'SELECT tviews.pg_tviews_resume_triggers()',
     -- someone else's TVIEW
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes(''doc'', true)',
     'SELECT tviews.pg_tviews_reset_stats(''doc'')',
@@ -167,7 +171,8 @@ RESET ROLE;
 -- owner; acting on one TVIEW still requires owning it.
 GRANT EXECUTE ON FUNCTION tviews.pg_tviews_refresh_all(),
     tviews.pg_tviews_rebuild_all(boolean), tviews.pg_tviews_reregister_all(boolean),
-    tviews.pg_tviews_ensure_propagation_indexes_all(boolean)
+    tviews.pg_tviews_ensure_propagation_indexes_all(boolean),
+    tviews.pg_tviews_suspend_triggers(), tviews.pg_tviews_resume_triggers()
     TO regress_sec_operator;
 SET ROLE regress_sec_operator;
 SELECT public.must_refuse(ARRAY[
@@ -186,7 +191,9 @@ SET ROLE regress_sec_operator;
 SELECT public.must_allow(ARRAY[
     'SELECT * FROM tviews.pg_tviews_rebuild_all(true)',
     'SELECT * FROM tviews.pg_tviews_rebuild_all(false)',
-    'SELECT tviews.pg_tviews_refresh_all()'
+    'SELECT tviews.pg_tviews_refresh_all()',
+    'SELECT tviews.pg_tviews_suspend_triggers()',
+    'SELECT tviews.pg_tviews_resume_triggers()'
 ], 'an operator');
 RESET ROLE;
 DO $$
@@ -213,7 +220,9 @@ SELECT public.must_refuse(ARRAY[
     'SELECT tviews.pg_tviews_refresh_all()',
     'SELECT * FROM tviews.pg_tviews_rebuild_all(true)',
     'SELECT * FROM tviews.pg_tviews_ensure_propagation_indexes_all(true)',
-    'SELECT tviews.pg_tviews_reset_stats_all()'
+    'SELECT tviews.pg_tviews_reset_stats_all()',
+    'SELECT tviews.pg_tviews_suspend_triggers()',
+    'SELECT tviews.pg_tviews_resume_triggers()'
 ], 'the owner without the grant');
 UPDATE public.tb_doc SET title = 'b';
 RESET ROLE;

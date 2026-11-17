@@ -95,6 +95,8 @@ fn rebuild_statements(frame: &OwnerFrame, entity: &str) -> TViewResult<(String, 
         name: entity.to_string(),
     })?;
     frame.require_owner_of(meta.tview_oid)?;
+    // A refresh reads every row of the tables the TVIEW reads.
+    crate::catalog::stopgap::check_row_security(&meta)?;
     let qi_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
     let qi_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
     let view_columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
@@ -155,6 +157,7 @@ pub(crate) fn reconcile(
 ) -> TViewResult<Vec<i64>> {
     use crate::queue::log::Change;
     frame.require_owner_of(meta.tview_oid)?;
+    crate::catalog::stopgap::check_row_security(meta)?;
     crate::concurrency::require_read_committed();
     crate::stats::add(entity, crate::stats::Counter::FullRefreshes, 1);
     // Every row is computed: writers of anything they read wait, and are waited for.

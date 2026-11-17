@@ -39,6 +39,43 @@ pub(crate) fn backing_view_name(schema: &str, table: &str) -> (String, String) {
     )
 }
 
+/// The TVIEWs refused now because row security applies to a role one reads a
+/// table as ([`crate::catalog::stopgap::check_row_security`]), with the refusal.
+/// A catalog that cannot be read lists none: the refresh entry points refuse.
+pub(crate) fn row_security_refusals() -> Vec<(String, TViewError)> {
+    crate::catalog::plans()
+        .map(|plans| {
+            plans
+                .iter()
+                .filter_map(|entry| {
+                    create::check_row_security(&entry.entity)
+                        .err()
+                        .map(|e| (entry.entity.clone(), e))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// After a statement that may make row security apply to a role a TVIEW reads a
+/// table as: refuse it when it does, for a TVIEW not refused before it
+/// (`before`, from [`row_security_refusals`]).
+///
+/// # Errors
+/// That refusal.
+pub(crate) fn check_every_row_security(before: &[String]) -> TViewResult<()> {
+    // SAFETY: makes the changes of the statement just run visible to the checks.
+    unsafe { pg_sys::CommandCounterIncrement() };
+    crate::cache::invalidate_all();
+    match row_security_refusals()
+        .into_iter()
+        .find(|(entity, _)| !before.contains(entity))
+    {
+        Some((_, refusal)) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
 /// After `ALTER TABLE … RENAME` or `SET SCHEMA` of relation `table`: if it is a
 /// TVIEW's table, give its backing view the name the table now derives.
 ///

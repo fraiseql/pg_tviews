@@ -297,6 +297,47 @@ pub(super) unsafe fn privileges_change_of(
     }
 }
 
+/// Whether `pstmt` may make row security apply on a table to a role a TVIEW
+/// reads it as: `ENABLE` or `FORCE ROW LEVEL SECURITY`, an owner change of a
+/// table or a view, `REASSIGN OWNED`, a view replaced (its chain may gain a view
+/// of another owner), and a role's attributes or memberships (`BYPASSRLS`,
+/// `SUPERUSER`, membership in a table's owner). A policy does not decide
+/// whether row security applies, only what it lets through: `CREATE POLICY` is
+/// not one of them.
+///
+/// SAFETY: `pstmt` must be null or a valid `PlannedStmt` from the `ProcessUtility` hook.
+pub(super) unsafe fn row_security_scope_of(pstmt: *const pg_sys::PlannedStmt) -> bool {
+    use pg_sys::AlterTableType as A;
+    use pg_sys::NodeTag as T;
+    // SAFETY: every pointer is null-checked before it is dereferenced.
+    unsafe {
+        if pstmt.is_null() || (*pstmt).utilityStmt.is_null() {
+            return false;
+        }
+        let node = (*pstmt).utilityStmt;
+        #[allow(clippy::cast_ptr_alignment)] // Reason: PostgreSQL Node* → statement cast by tag
+        match (*node).type_ {
+            T::T_AlterRoleStmt
+            | T::T_GrantRoleStmt
+            | T::T_DropRoleStmt
+            | T::T_ReassignOwnedStmt => true,
+            T::T_ViewStmt => (*node.cast::<pg_sys::ViewStmt>()).replace,
+            T::T_AlterTableStmt => {
+                let cmds = (*node.cast::<pg_sys::AlterTableStmt>()).cmds;
+                (0..pg_sys::list_length(cmds)).any(|i| {
+                    let cmd = pg_sys::list_nth(cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    !cmd.is_null()
+                        && matches!(
+                            (*cmd).subtype,
+                            A::AT_EnableRowSecurity | A::AT_ForceRowSecurity | A::AT_ChangeOwner
+                        )
+                })
+            }
+            _ => false,
+        }
+    }
+}
+
 /// The tables a `CREATE TABLE … PARTITION OF`, `ALTER TABLE … ATTACH PARTITION` or
 /// `… DETACH PARTITION` (also `CONCURRENTLY` and `FINALIZE`) adds to or removes
 /// from a partition tree, resolved once `PostgreSQL` has run the statement.

@@ -199,8 +199,9 @@ WHERE l.locktype = 'advisory' AND l.objsubid = 21622
 
 ## Suspended refresh
 
-`pg_tviews_suspend_triggers()` defers refreshes until `pg_tviews_resume_triggers()`
-or the end of the transaction, whichever comes first: suspension never outlives the
+`pg_tviews_suspend_triggers()` (an operator's function, not executable by `PUBLIC`)
+defers refreshes until `pg_tviews_resume_triggers()` or the end of the transaction,
+whichever comes first: suspension never outlives the
 transaction that started it. Resuming brings the TVIEWs that changed, and those that
 embed them, to their views. A caller with the privileges of a TVIEW's owner rebuilds
 it (`TRUNCATE`, with `ACCESS EXCLUSIVE`, as `pg_tviews_refresh` does): its readers wait

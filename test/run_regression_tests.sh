@@ -13,6 +13,9 @@
 #
 # Honors PGHOST/PGPORT/PGUSER (defaults: localhost / 28818 / postgres).
 #
+# A test leaves no role and no database behind: what it left is dropped, and a test
+# that otherwise passed fails.
+#
 # A test reproducing an open bug carries `-- known-failing: <issue>`: its failure
 # is reported as XFAIL and does not fail the suite; once it passes it FAILs until
 # the marker is removed.
@@ -26,6 +29,8 @@ export PGHOST PGPORT PGUSER
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sqldir="$here/sql"
 tmpdb="pg_tviews_regress_$$"
+# An interrupted run drops its database too.
+trap 'psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1' EXIT
 
 psql -d postgres -tAc "SELECT 1" >/dev/null 2>&1 || {
   echo "ERROR: cannot connect to PostgreSQL at $PGHOST:$PGPORT as $PGUSER"; exit 2; }
@@ -54,9 +59,10 @@ verdict() {
   fi
 }
 
-# Judge test file $1 from psql's exit status $2 and its output in $3.
+# Judge test file $1 from psql's exit status $2, its output in $3 and what it left
+# behind in $4.
 report_result() {
-  local f="$1" rc="$2" out="$3" name known why="" once want reject
+  local f="$1" rc="$2" out="$3" left="$4" name known why="" once want reject
   name="$(basename "$f")"
   known=$(sed -n 's/^-- known-failing: //p' "$f" | head -1)
   if [[ "$rc" -ne 0 ]]; then
@@ -95,6 +101,7 @@ report_result() {
       [[ -n "$reject" ]] && grep -qF -- "$reject" "$out" && { why="unexpected output containing '$reject'"; break; }
     done < <(sed -n 's/^-- reject-output: //p' "$f")
   fi
+  [[ -z "$why" && -n "$left" ]] && why="left behind:$left"
   verdict "$name" "$why" "$known"
 }
 
@@ -110,8 +117,15 @@ if [[ $# -gt 0 ]]; then
 else
   mapfile -t files < <(find "$regressdir" -name 'regress_*.sql' | sort)
 fi
+# The roles of the cluster, and the databases a test made beside its own.
+roles() { psql -d postgres -tAc "SELECT rolname FROM pg_catalog.pg_roles ORDER BY 1"; }
+extra_dbs() {
+  psql -d postgres -tAc "SELECT datname FROM pg_catalog.pg_database
+                          WHERE datname LIKE '${tmpdb}\_%' ORDER BY 1"
+}
 out="$(mktemp)"
 for f in "${files[@]}"; do
+  roles_before="$(roles)"
   name="$(basename "$f")"
   psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
   psql -d postgres -c "CREATE DATABASE $tmpdb" >/dev/null 2>&1
@@ -119,7 +133,18 @@ for f in "${files[@]}"; do
   psql -d postgres -qc "ALTER DATABASE $tmpdb SET search_path = \"\$user\", public, tviews" >/dev/null \
     || { echo "ERROR: could not create test database $tmpdb"; exit 2; }
   psql -d "$tmpdb" -q -v ON_ERROR_STOP=1 -f "$f" >"$out" 2>&1
-  report_result "$f" "$?" "$out"
+  rc=$?
+  left=""
+  for db in $(extra_dbs); do
+    left="$left database $db"
+    psql -d postgres -c "DROP DATABASE \"$db\"" >/dev/null 2>&1
+  done
+  psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1
+  for role in $(comm -13 <(echo "$roles_before") <(roles)); do
+    left="$left role $role"
+    psql -d postgres -c "DROP ROLE \"$role\"" >/dev/null 2>&1
+  done
+  report_result "$f" "$rc" "$out" "$left"
 done
 rm -f "$out"
 psql -d postgres -c "DROP DATABASE IF EXISTS $tmpdb" >/dev/null 2>&1

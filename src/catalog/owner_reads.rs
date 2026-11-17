@@ -14,8 +14,10 @@ use pgrx::pg_sys::{self, Oid};
 /// What the roles reading for `meta`'s TVIEW may no longer read: each view's
 /// owner what that view reads (its backing view's owner is the TVIEW's), and the
 /// TVIEW's owner the tables its declared functions read. Each is `"<role> lacks
-/// SELECT on <relation>"` or `"<role> lacks USAGE on schema <schema>"`, sorted;
-/// empty when every read holds.
+/// SELECT (<columns>) on <relation>"`, `"<role> lacks SELECT on every column of
+/// <relation>"` or `"<role> lacks USAGE on schema <schema>"`, sorted; empty when
+/// every read holds. A view reads the columns it names, or every column of a
+/// table the chain reads whole or that a declared function reads ([`lacks`]).
 ///
 /// # Errors
 /// A failed catalog read.
@@ -25,98 +27,228 @@ pub fn lacking(meta: &super::TviewMeta) -> TViewResult<Vec<String>> {
         .iter()
         .flat_map(|(_, relids)| relids.iter().copied())
         .collect();
-    crate::utils::spi::catalog_rows(
-        "WITH RECURSIVE chain(reader, relid, depth) AS ( \
-                 SELECT v.relowner, v.oid, 0 FROM pg_catalog.pg_class v \
-                 WHERE v.oid OPERATOR(pg_catalog.=) $1 \
+    // (reader, relation, its name, the columns the reader's views name; NULL for
+    // a declared function's table).
+    let reads = crate::utils::spi::catalog_rows(
+        "WITH RECURSIVE views(view, depth) AS ( \
+                 SELECT $1::pg_catalog.oid, 0 \
                UNION \
-                 SELECT v.relowner, d.refobjid, c.depth OPERATOR(pg_catalog.+) 1 \
-                 FROM chain c \
-                 JOIN pg_catalog.pg_class v ON v.oid = c.relid AND v.relkind = 'v' \
+                 SELECT d.refobjid, v.depth OPERATOR(pg_catalog.+) 1 \
+                 FROM views v \
+                 JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.view \
+                 JOIN pg_catalog.pg_depend d \
+                   ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
+                  AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+                  AND d.refobjid <> v.view \
+                 JOIN pg_catalog.pg_class r ON r.oid = d.refobjid AND r.relkind = 'v' \
+                 WHERE v.depth OPERATOR(pg_catalog.<) 100 \
+             ), needed(reader, relid, attnums) AS ( \
+                 SELECT v.relowner, d.refobjid, \
+                        pg_catalog.array_agg(DISTINCT d.refobjsubid::pg_catalog.int2) \
+                            FILTER (WHERE d.refobjsubid OPERATOR(pg_catalog.>) 0) \
+                 FROM (SELECT DISTINCT view FROM views) x \
+                 JOIN pg_catalog.pg_class v ON v.oid = x.view AND v.relkind = 'v' \
                  JOIN pg_catalog.pg_rewrite w ON w.ev_class = v.oid \
                  JOIN pg_catalog.pg_depend d \
                    ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = w.oid \
                   AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
                   AND d.refobjid <> v.oid \
-                 WHERE c.depth OPERATOR(pg_catalog.<) 100 \
-             ), needed(reader, relid) AS ( \
-                 SELECT DISTINCT c.reader, c.relid FROM chain c WHERE c.depth > 0 \
-               UNION \
-                 SELECT t.relowner, f.relid \
+                 GROUP BY v.relowner, d.refobjid \
+               UNION ALL \
+                 SELECT t.relowner, f.relid, NULL \
                  FROM pg_catalog.pg_class t, pg_catalog.unnest($3::pg_catalog.oid[]) AS f(relid) \
                  WHERE t.oid OPERATOR(pg_catalog.=) $2 \
-             ), lack(reader, privilege) AS ( \
-                 SELECT n.reader, pg_catalog.format('USAGE on schema %I', s.nspname) \
-                 FROM needed n \
-                 JOIN pg_catalog.pg_class r ON r.oid = n.relid AND r.relkind IN ('r', 'p', 'v', 'm', 'f') \
-                 JOIN pg_catalog.pg_namespace s ON s.oid = r.relnamespace \
-                 WHERE NOT pg_catalog.has_schema_privilege(n.reader, s.oid, 'USAGE') \
-               UNION \
-                 SELECT n.reader, pg_catalog.format('SELECT on %s', r.oid::pg_catalog.regclass) \
-                 FROM needed n \
-                 JOIN pg_catalog.pg_class r ON r.oid = n.relid AND r.relkind IN ('r', 'p', 'v', 'm', 'f') \
-                 WHERE NOT pg_catalog.has_any_column_privilege(n.reader, r.oid, 'SELECT') \
              ) \
-             SELECT pg_catalog.format('%s lacks %s', pg_catalog.pg_get_userbyid(l.reader), l.privilege) \
-             FROM lack l ORDER BY 1",
+             SELECT n.reader, n.relid, r.oid::pg_catalog.regclass::pg_catalog.text, n.attnums \
+             FROM needed n \
+             JOIN pg_catalog.pg_class r ON r.oid = n.relid AND r.relkind IN ('r', 'p', 'v', 'm', 'f')",
         &[
             crate::utils::spi::oid(meta.view_oid),
             crate::utils::spi::oid(meta.tview_oid),
             crate::utils::spi::oid_array(declared),
         ],
-        |row| Ok(row.get::<String>(1)?.unwrap_or_default()),
-    )
+        |row| {
+            Ok((
+                row.get::<Oid>(1)?.unwrap_or(pg_sys::InvalidOid),
+                row.get::<Oid>(2)?.unwrap_or(pg_sys::InvalidOid),
+                row.get::<String>(3)?.unwrap_or_default(),
+                row.get::<Vec<i16>>(4)?,
+            ))
+        },
+    )?;
+    let mut found = Vec::new();
+    for (reader, relid, name, attnums) in reads {
+        let columns = match &attnums {
+            Some(attnums) if !super::stopgap::read_beyond_columns(meta.view_oid, relid) => {
+                Columns::Named(attnums)
+            }
+            _ => Columns::Every,
+        };
+        if let Some(lack) = lacks(reader, relid, columns) {
+            found.push(format!(
+                "{} lacks {}",
+                crate::owner::role_name(reader),
+                lack.describe(relid, &name)
+            ));
+        }
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
 }
 
 /// Whether the owner of `meta`'s TVIEW reads of every relation its plan reads
-/// exactly what a write to it holds: `USAGE` on its schema, `SELECT` on a column
-/// of it, and no row security applying to the owner. Only then may a written value
-/// be copied into the TVIEW instead of read: otherwise the read as the owner fails
-/// or filters, and the row is recomputed. False for a relation that is gone.
+/// exactly what a write to it holds: `USAGE` on its schema, `SELECT` on each
+/// column the plan reads of it ([`lacks`]: every column, where the plan's columns
+/// of it are not known), and no row security applying to the owner (a TVIEW
+/// under row security is refused before it gets here:
+/// `catalog::stopgap::refuse_row_security`). Only then may a written value be
+/// copied into the TVIEW instead of read: otherwise the read as the owner fails,
+/// and the row is recomputed. False for a relation that is gone.
 /// Syscache lookups only.
 #[must_use]
 pub fn patch_stands_for_read(meta: &super::TviewMeta) -> bool {
     let Ok(owner) = crate::owner::relation_owner(meta.tview_oid) else {
         return false;
     };
-    let tables = meta.plan.tables.iter().map(|t| Oid::from(t.relid));
+    let tables = meta.plan.tables.iter().map(|t| {
+        let columns = if !t.attnums.is_empty() && super::stopgap::columns_known(meta, t.relid) {
+            Columns::Named(&t.attnums)
+        } else {
+            Columns::Every
+        };
+        (Oid::from(t.relid), columns)
+    });
     let declared = meta
         .function_reads
         .iter()
-        .flat_map(|(_, relids)| relids.iter().copied());
-    tables
-        .chain(declared)
-        .all(|relid| owner_reads_all_of(owner, relid))
+        .flat_map(|(_, relids)| relids.iter().map(|&relid| (relid, Columns::Every)));
+    tables.chain(declared).all(|(relid, columns)| {
+        lacks(owner, relid, columns).is_none()
+            // SAFETY: a syscache lookup by OID; `noError` reports instead of raising.
+            && unsafe { pg_sys::check_enable_rls(relid, owner, true) }
+                != pg_sys::CheckEnableRlsResult::RLS_ENABLED.cast_signed()
+    })
 }
 
-/// Whether `owner` reads every row of `relid` (see [`patch_stands_for_read`]).
-fn owner_reads_all_of(owner: Oid, relid: Oid) -> bool {
-    if !crate::visibility::schema_usable(relid, owner) {
-        return false;
+/// The columns of a relation a role reads for a TVIEW.
+#[derive(Debug, Clone, Copy)]
+pub enum Columns<'a> {
+    /// Those, by attnum; none: the relation is read without naming a column.
+    Named(&'a [i16]),
+    /// Every column: what is read of it is not known column by column.
+    Every,
+}
+
+/// What a role lacks to read some columns of a relation ([`lacks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lack {
+    /// `USAGE` on the relation's schema.
+    Schema,
+    /// `SELECT` on these columns, by attnum.
+    Columns(Vec<i16>),
+    /// `SELECT` on every column (or the relation is gone).
+    Every,
+    /// `SELECT` on the relation, or on any column of it.
+    Any,
+}
+
+impl Lack {
+    /// What is lacking, for `relid` named `name`.
+    fn describe(&self, relid: Oid, name: &str) -> String {
+        match self {
+            Self::Schema => {
+                // SAFETY: syscache lookups by OID; null when gone.
+                let schema =
+                    unsafe { quoted(pg_sys::get_namespace_name(pg_sys::get_rel_namespace(relid))) };
+                format!("USAGE on schema {}", schema.unwrap_or_default())
+            }
+            Self::Columns(attnums) => {
+                let names: Vec<String> = attnums
+                    .iter()
+                    .map(|&attnum| {
+                        // SAFETY: a syscache lookup by OID and attnum; null when gone.
+                        unsafe { quoted(pg_sys::get_attname(relid, attnum, true)) }
+                            .unwrap_or_else(|| attnum.to_string())
+                    })
+                    .collect();
+                format!("SELECT ({}) on {name}", names.join(", "))
+            }
+            Self::Every => format!("SELECT on every column of {name}"),
+            Self::Any => format!("SELECT on {name}"),
+        }
     }
-    // SAFETY: ACL checks by OID. The table's reports a relation that is gone
-    // instead of raising, and the column check runs only on one found.
+}
+
+/// What `role` lacks to read `columns` of relation `relid`, as PostgreSQL
+/// checks a query naming them: `USAGE` on its schema, and `SELECT` on the
+/// relation or on each column named (on any column when none is named, on every
+/// column for [`Columns::Every`]). `None` when it may read them. Write path and
+/// catalog checks alike: syscache lookups only.
+#[must_use]
+pub fn lacks(role: Oid, relid: Oid, columns: Columns<'_>) -> Option<Lack> {
+    if !crate::visibility::schema_usable(relid, role) {
+        return Some(Lack::Schema);
+    }
+    let select = pg_sys::AclMode::from(pg_sys::ACL_SELECT);
+    // SAFETY: ACL checks by OID. Each reports a relation or column that is gone
+    // instead of raising, and the column checks run only on a relation found.
     unsafe {
         let mut missing = false;
-        // SELECT on the table, else on one of its columns, as
-        // has_any_column_privilege(): the column check alone sees neither the
-        // table's grants nor a superuser.
-        let select = pg_sys::AclMode::from(pg_sys::ACL_SELECT);
-        let on_table = pg_sys::pg_class_aclcheck_ext(relid, owner, select, &raw mut missing);
+        let on_table = pg_sys::pg_class_aclcheck_ext(relid, role, select, &raw mut missing);
         if missing {
-            return false;
+            return Some(Lack::Every);
         }
-        if on_table != pg_sys::AclResult::ACLCHECK_OK
-            && pg_sys::pg_attribute_aclcheck_all(
-                relid,
-                owner,
-                select,
-                pg_sys::AclMaskHow::ACLMASK_ANY,
-            ) != pg_sys::AclResult::ACLCHECK_OK
+        if on_table == pg_sys::AclResult::ACLCHECK_OK {
+            return None;
+        }
+        // No column at all: said as SELECT on the relation, whatever is read.
+        if pg_sys::pg_attribute_aclcheck_all(relid, role, select, pg_sys::AclMaskHow::ACLMASK_ANY)
+            != pg_sys::AclResult::ACLCHECK_OK
         {
-            return false;
+            return Some(Lack::Any);
         }
-        pg_sys::check_enable_rls(relid, owner, true)
-            != pg_sys::CheckEnableRlsResult::RLS_ENABLED.cast_signed()
+        match columns {
+            Columns::Named([]) => None,
+            Columns::Named(attnums) => {
+                let lacking: Vec<i16> = attnums
+                    .iter()
+                    .copied()
+                    .filter(|&attnum| {
+                        let mut gone = false;
+                        pg_sys::pg_attribute_aclcheck_ext(
+                            relid,
+                            attnum,
+                            role,
+                            select,
+                            &raw mut gone,
+                        ) != pg_sys::AclResult::ACLCHECK_OK
+                            || gone
+                    })
+                    .collect();
+                (!lacking.is_empty()).then_some(Lack::Columns(lacking))
+            }
+            Columns::Every => (pg_sys::pg_attribute_aclcheck_all(
+                relid,
+                role,
+                select,
+                pg_sys::AclMaskHow::ACLMASK_ALL,
+            ) != pg_sys::AclResult::ACLCHECK_OK)
+                .then_some(Lack::Every),
+        }
     }
+}
+
+/// `name` as `quote_ident` writes it; `None` for a null pointer.
+///
+/// # Safety
+/// `name` is null or a NUL-terminated string.
+unsafe fn quoted(name: *const std::ffi::c_char) -> Option<String> {
+    if name.is_null() {
+        return None;
+    }
+    // SAFETY: `quote_identifier` returns its argument or a palloc'd copy, both
+    // NUL-terminated.
+    let quoted = unsafe { std::ffi::CStr::from_ptr(pg_sys::quote_identifier(name)) };
+    Some(quoted.to_string_lossy().into_owned())
 }

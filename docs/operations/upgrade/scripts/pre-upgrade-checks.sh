@@ -56,5 +56,6 @@ if (( prepared > 0 )); then
     say "WARN" "$prepared prepared transaction(s): finish them before swapping the library"
 fi
 
+say "reminder" "run the pre-check of docs/operations/upgrade.md: it lists the TVIEWs the update will leave to re-register"
 say "reminder" "take a backup (pg_dump -Fc) before ALTER EXTENSION pg_tviews UPDATE"
 exit "$problems"

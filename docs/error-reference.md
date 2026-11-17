@@ -19,6 +19,7 @@ Placeholders stand for the values each message carries.
 | `42710` | `duplicate_object` | `TypenameTaken` | GraphQL type name "&lt;typename&gt;" is already the type of tv_&lt;entity&gt;'s rows | Name this TVIEW's type with the typename option, or rename the other one's. |
 | `22023` | `invalid_parameter_value` | `InvalidInput` | Invalid input for parameter '&lt;parameter&gt;': &lt;reason&gt; |  |
 | `0A000` | `feature_not_supported` | `DefinitionRefused` | &lt;reason&gt; |  |
+| `42P16` | `invalid_table_definition` | `RowSecurity` | row security applies to role &lt;role&gt; on table &lt;table&gt;, which tv_&lt;entity&gt; reads | The roles a TVIEW reads its tables as must be exempt from row security on them: make the TVIEW's owner the owner of those tables, and do not set them to FORCE ROW LEVEL SECURITY. |
 | `39P01` | `e_r_i_e_trigger_protocol_violated` | `TriggerMisused` | &lt;reason&gt; |  |
 | `42804` | `datatype_mismatch` | `KeyTypeRefused` | &lt;column&gt; is &lt;type&gt;: a TVIEW's pk_&lt;entity&gt; must be an integer key (smallint, integer or bigint) | Key the rows on an integer column, and keep a uuid key in the id column. |
 | `42809` | `wrong_object_type` | `ColumnDdlRefused` | &lt;statement&gt; on TVIEW &lt;table&gt; is refused: a TVIEW's columns are its definition's | Change the definition with tviews.pg_tviews_create_or_replace(): the table follows it. |
@@ -29,7 +30,7 @@ Placeholders stand for the values each message carries.
 | `54001` | `statement_too_complex` | `DepthExceeded` | dependency depth 11 exceeds the maximum of 10 | Flatten the views the TVIEW reads. |
 | `42601` | `syntax_error` | `InvalidSelectStatement` | Invalid SELECT statement: &lt;reason&gt; |  |
 | `42703` | `undefined_column` | `RequiredColumnMissing` | Required column '&lt;column&gt;' missing in &lt;context&gt; |  |
-| `54000` | `program_limit_exceeded` | `RefreshLimit` | refreshing &lt;table&gt; &lt;how&gt; would write 10001 rows in one statement (max_refresh_rows = 10000) | Don't embed this entity in &lt;table&gt;, batch the change offline, or make it after pg_tviews_suspend_triggers(): the TVIEWs it changed are then rebuilt once, at resume or commit. |
+| `54000` | `program_limit_exceeded` | `RefreshLimit` | refreshing &lt;table&gt; &lt;how&gt; would write 10001 rows in one statement (max_refresh_rows = 10000) | Don't embed this entity in &lt;table&gt;, batch the change offline, or make it after pg_tviews_suspend_triggers(), as a role granted it: the TVIEWs it changed are then rebuilt once, at resume or commit. |
 | `55000` | `object_not_in_prerequisite_state` | `WrongState` | &lt;reason&gt; |  |
 | `25000` | `invalid_transaction_state` | `PrepareRefused` | cannot PREPARE TRANSACTION: it refilled the reset UNLOGGED TVIEW &lt;table&gt;, and every writer of it would wait for COMMIT PREPARED | Refill it in a transaction of its own first (any write to a table it reads), then run the work to prepare. |
 | `21000` | `cardinality_violation` | `DuplicateKey` | TVIEW &lt;table&gt;: its backing view returned multiple rows for &lt;key column&gt;=&lt;key&gt; | Make the UNION branches' keys disjoint (a sign or an offset per branch), or keep one row per key with DISTINCT ON over the UNION, ordered by preference. |

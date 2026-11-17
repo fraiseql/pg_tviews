@@ -1,71 +1,98 @@
 //! The guard that lets `pg_tviews` run its own DDL through the `ProcessUtility`
 //! hook unhandled.
+//!
+//! Only the statements `pg_tviews` issues itself pass: any other statement is
+//! handled by the hook.
 
 use pgrx::pg_sys;
+use std::cell::{Cell, RefCell};
+use std::ffi::c_char;
 
-/// Set while `pg_tviews` runs its own work for a statement (an [`InternalDdl`] is
-/// alive): the DDL it issues through SPI reaches the hook again and must pass
-/// through unhandled. Never set while a user's statement runs, so DDL nested in
-/// it (a function called by `EXECUTE` or `CREATE TABLE AS`) is intercepted.
-static mut HOOK_IN_PROGRESS: bool = false;
+thread_local! {
+    /// The transaction nest level of every [`InternalDdl`] alive, outermost first:
+    /// a (sub)transaction abort that unwinds past one releases it.
+    static SCOPES: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    /// The text of the statement `pg_tviews` is executing inside a scope
+    /// ([`issuing`]): `PostgreSQL` hands the hook that very pointer for it.
+    static ISSUING: Cell<*const c_char> = const { Cell::new(std::ptr::null()) };
+}
 
-/// Transaction nest level at which `HOOK_IN_PROGRESS` was set, so a (sub)transaction abort
-/// that unwinds past the hook can release a guard the hook never got to reset.
-static mut HOOK_GUARD_LEVEL: i32 = 0;
-
-/// While alive, statements `pg_tviews` runs pass through the hook unhandled. The
-/// hook holds one while it works on a statement (never while the statement
-/// itself runs), and `pg_tviews` around its own `GRANT`s and owner changes, which
-/// the hook would otherwise follow mid-way. Released when dropped, also when an
-/// error unwinds past it.
+/// While alive, `pg_tviews` works for a statement: the DDL it issues itself
+/// ([`issuing`]) passes through the hook unhandled. The hook holds one while it
+/// works on a statement (never while the statement itself runs), and `pg_tviews`
+/// around its own `GRANT`s and owner changes, which the hook would otherwise
+/// follow mid-way. Released when dropped, also when an error unwinds past it.
 pub(crate) struct InternalDdl {
-    took: bool,
+    depth: usize,
 }
 
 impl InternalDdl {
-    /// Whether `pg_tviews` is running its own DDL.
-    pub(crate) fn active() -> bool {
-        // SAFETY: single-threaded backend; a plain read of a process-local static.
-        unsafe { HOOK_IN_PROGRESS }
+    pub(crate) fn begin() -> Self {
+        // SAFETY: reads the current transaction nest level.
+        let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+        let depth = SCOPES.with_borrow_mut(|scopes| {
+            scopes.push(level);
+            scopes.len() - 1
+        });
+        Self { depth }
     }
 
-    pub(crate) fn begin() -> Self {
-        // SAFETY: single-threaded backend; plain reads/writes of process-local statics.
-        unsafe {
-            if HOOK_IN_PROGRESS {
-                return Self { took: false };
-            }
-            HOOK_IN_PROGRESS = true;
-            HOOK_GUARD_LEVEL = pg_sys::GetCurrentTransactionNestLevel();
-        }
-        Self { took: true }
+    /// Whether `query_string`, the text the hook was handed, is the statement
+    /// `pg_tviews` is issuing inside a scope.
+    pub(crate) fn issued(query_string: *const c_char) -> bool {
+        let issuing = ISSUING.get();
+        !issuing.is_null() && std::ptr::eq(issuing, query_string)
     }
 }
 
 impl Drop for InternalDdl {
     fn drop(&mut self) {
-        if self.took {
-            // SAFETY: as in `begin`.
-            unsafe { HOOK_IN_PROGRESS = false };
-        }
+        SCOPES.with_borrow_mut(|scopes| scopes.truncate(self.depth));
     }
 }
 
-/// Release the reentrancy guard if the hook invocation that took it was aborted.
+/// While alive, `sql` is the statement `pg_tviews` is executing.
+pub(crate) struct Issuing {
+    previous: *const c_char,
+}
+
+/// Mark `sql` (the pointer `PostgreSQL` executes and hands the hook) as the
+/// statement `pg_tviews` issues, when a scope is open; `None` outside one, where
+/// the hook handles `pg_tviews`' statements as any other.
+pub(crate) fn issuing(sql: *const c_char) -> Option<Issuing> {
+    SCOPES
+        .with_borrow(|scopes| !scopes.is_empty())
+        .then(|| Issuing {
+            previous: ISSUING.replace(sql),
+        })
+}
+
+impl Drop for Issuing {
+    fn drop(&mut self) {
+        ISSUING.set(self.previous);
+    }
+}
+
+/// Release the scopes of the hook invocations an abort unwound past.
 ///
 /// An `ereport(ERROR)` raised while the hook runs a statement (e.g. a CTAS inside a DO
-/// block failing with "already exists", caught by the block's EXCEPTION clause) longjmps
-/// past the hook before it can reset `HOOK_IN_PROGRESS`. The guard is released here when
-/// the aborting (sub)transaction is at or above the level that took it; a guard taken by an
-/// enclosing, still-running hook invocation (lower level) is left alone.
-/// `whole_xact` is true for a top-level transaction abort. No SPI: safe in callbacks.
+/// block failing with "already exists", caught by the block's EXCEPTION clause) may
+/// longjmp past the hook before its scope is dropped. The scopes opened at or above
+/// the aborting (sub)transaction's level are released here; those of an enclosing,
+/// still-running hook invocation (lower level) are left alone. `whole_xact` is true
+/// for a top-level transaction abort. No SPI: safe in callbacks.
 pub fn release_on_abort(whole_xact: bool) {
-    // SAFETY: single-threaded backend; plain reads/writes of process-local statics.
-    unsafe {
-        if HOOK_IN_PROGRESS
-            && (whole_xact || pg_sys::GetCurrentTransactionNestLevel() <= HOOK_GUARD_LEVEL)
-        {
-            HOOK_IN_PROGRESS = false;
+    // SAFETY: reads the current transaction nest level.
+    let level = unsafe { pg_sys::GetCurrentTransactionNestLevel() };
+    SCOPES.with_borrow_mut(|scopes| {
+        let kept = if whole_xact {
+            0
+        } else {
+            scopes.iter().take_while(|&&at| at < level).count()
+        };
+        scopes.truncate(kept);
+        if scopes.is_empty() {
+            ISSUING.set(std::ptr::null());
         }
-    }
+    });
 }

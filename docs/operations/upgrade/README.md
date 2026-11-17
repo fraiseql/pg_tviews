@@ -36,6 +36,7 @@ update script: [Extension versioning](../../development/extension-versioning.md)
 ## Pre-Upgrade Checklist
 - [ ] Backup taken and restore tested ([Backup Testing](../disaster-recovery/backup-strategy/backup-testing.md))
 - [ ] `scripts/pre-upgrade-checks.sh` passes in each database
+- [ ] The [pre-check](../upgrade.md#pre-check) lists no TVIEW, or each one it lists is fixed or accepted as left to re-register
 - [ ] Release notes (CHANGELOG) read for the release installed
 - [ ] jsonb_delta installed in each database (the update refuses without it)
 - [ ] Procedure rehearsed on a copy of production
@@ -49,7 +50,7 @@ In [`scripts/`](scripts/):
   installed and available pg_tviews versions, health-check errors, prepared
   transactions). Run as `PGDATABASE=<db> docs/operations/upgrade/scripts/pre-upgrade-checks.sh`.
 - `post-upgrade-validation.sql`: versions, catalog revision, TVIEWs marked
-  `needs_reregister` (none after an update), full health check, and each TVIEW
+  `needs_reregister` (those the update could not re-derive), full health check, and each TVIEW
   compared with its view. Run as
   `psql -X -v ON_ERROR_STOP=1 -d <db> -f docs/operations/upgrade/scripts/post-upgrade-validation.sql`.
 

@@ -90,7 +90,8 @@ Then find why the write was not mapped:
    FROM tviews.registry WHERE cardinality(uncascaded_tables) > 0;
    ```
 2. **Re-registration pending**: TVIEWs with `needs_reregister` may lack the current
-   triggers (`ALTER EXTENSION pg_tviews UPDATE` leaves none).
+   triggers; `ALTER EXTENSION pg_tviews UPDATE` leaves those it could not re-derive
+   (their refreshes skip and patch nothing, and fail where the definition no longer holds).
    ```sql
    SELECT schema, name FROM tviews.registry WHERE needs_reregister;
    SELECT * FROM tviews.pg_tviews_reregister_all();

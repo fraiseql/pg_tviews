@@ -9,7 +9,8 @@
 #   test/upgrade/upgrade_check.sh after recreate     # an older release: drop and recreate
 #
 # Honors PGHOST/PGPORT/PGUSER. Uses the databases pg_tviews_upgrade and
-# pg_tviews_fresh, which it drops and re-creates.
+# pg_tviews_fresh, which it drops and re-creates; once `after` passed, it drops them
+# and the upgrade_* roles its fixtures create.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,11 +19,20 @@ fresh=pg_tviews_fresh
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Catalogs the update refuses (fixtures_refused.sql), and what its error names.
 current="$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../../Cargo.toml" | head -1)"
-refused=(typename_clash lost_privilege)
+refused=(typename_clash)
 declare -A refusal=(
     [typename_clash]="these are shared: Post (tv_post, tv_post_)"
-    [lost_privilege]="tv_lost (upgrade_lost_owner lacks SELECT on "
 )
+# A catalog the update completes on, leaving four TVIEWs it cannot re-derive
+# (fixtures_left_behind.sql), and the operator's pre-check, as the upgrade page
+# gives it.
+left_db="${upgraded}_left_behind"
+left_behind=(tv_col tv_forced tv_lost tv_rls)
+precheck() {
+    sed -n '/<!-- upgrade-precheck:begin -->/,/<!-- upgrade-precheck:end -->/p' \
+        "$here/../../docs/operations/upgrade.md" | sed '/^```/d; /^<!--/d' \
+        | psql -X -At -q -d "$1" -v ON_ERROR_STOP=1 -f -
+}
 
 case "${1:-}" in
 before)
@@ -44,6 +54,18 @@ before)
             psql -X -d "${upgraded}_$case" -q -v case="$case" -f "$here/fixtures_refused.sql"
         done
         echo "security fixtures and refused catalogs created"
+        psql -X -d postgres -qc "DROP DATABASE IF EXISTS $left_db" >/dev/null
+        psql -X -d postgres -qc "CREATE DATABASE $left_db" >/dev/null
+        psql -X -d "$left_db" -q -f "$here/fixtures_left_behind.sql"
+        # The pre-check names what the update will leave, and nothing in a catalog
+        # it re-derives whole.
+        out="$(precheck "$left_db")" || fail "the pre-check: $out"
+        for tview in "${left_behind[@]}"; do
+            grep -q "${tview#tv_}|\|$tview|" <<<"$out" || fail "the pre-check does not name $tview: $out"
+        done
+        out="$(precheck "$upgraded")" || fail "the pre-check: $out"
+        [[ -z "$out" ]] || fail "the pre-check names TVIEWs the update re-derives: $out"
+        echo "the pre-check names the TVIEWs the update will leave to re-register: ${left_behind[*]}"
     fi
     ;;
 after)
@@ -154,6 +176,9 @@ SQL
         echo "dropped and recreated: the TVIEWs follow their base tables"
         ;;
     update)
+        # An update never depends on a TVIEW: none is re-derived strictly.
+        ! grep -q "strict => true" "$here/../../sql/pg_tviews--"*"--${current}.sql" \
+            || fail "the update script re-derives with strict => true"
         start=$(date +%s%N)
         out="$(psql -X -d "$upgraded" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
             || fail "ALTER EXTENSION pg_tviews UPDATE: $out"
@@ -196,6 +221,68 @@ SQL
                 checked+=("$case")
             done
             echo "the update refused the catalogs it must: ${checked[*]:-none}"
+
+            # The update waits for a lock at most 10 s, unless the session set its own
+            # lock_timeout: a TVIEW whose backing view its owner keeps locked is left to
+            # re-register and named. Rehearsed in a transaction rolled back, the session's own setting
+            # untouched after.
+            psql -X -d "$left_db" -q -c "SET application_name = 'upgrade_check_holder'" \
+                -c "BEGIN" -c "LOCK TABLE tviews.public__tv_kept IN ACCESS EXCLUSIVE MODE" \
+                -c "SELECT pg_sleep(60)" -c "ROLLBACK" >/dev/null 2>&1 &
+            holder=$!
+            for _ in $(seq 100); do
+                [[ -n "$(psql -X -At -d "$left_db" -c \
+                    "SELECT 1 FROM pg_catalog.pg_locks l JOIN pg_catalog.pg_stat_activity a USING (pid)
+                      WHERE a.application_name = 'upgrade_check_holder' AND l.granted
+                        AND l.relation = 'tviews.public__tv_kept'::pg_catalog.regclass")" ]] && break
+                sleep 0.1
+            done
+            start=$(date +%s)
+            out="$(timeout 40 psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "SET lock_timeout = 0" \
+                    -c "BEGIN" -c "ALTER EXTENSION pg_tviews UPDATE" \
+                    -c "SELECT 'session lock_timeout: ' || current_setting('lock_timeout')" \
+                    -c "ROLLBACK" 2>&1)" || fail "the update under a held lock did not complete: $out"
+            waited=$(( $(date +%s) - start ))
+            grep -q "tv_kept: .*lock timeout" <<<"$out" || fail "the update did not leave tv_kept: $out"
+            grep -q "session lock_timeout: 0$" <<<"$out" || fail "the update changed lock_timeout: $out"
+            (( waited >= 9 && waited < 30 )) || fail "the update waited ${waited}s for the lock"
+            start=$(date +%s)
+            out="$(timeout 40 psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "SET lock_timeout = '1s'" \
+                    -c "BEGIN" -c "ALTER EXTENSION pg_tviews UPDATE" -c "ROLLBACK" 2>&1)" \
+                || fail "the update under a held lock, lock_timeout 1s: $out"
+            waited=$(( $(date +%s) - start ))
+            grep -q "tv_kept: .*lock timeout" <<<"$out" || fail "the update did not leave tv_kept: $out"
+            (( waited < 9 )) || fail "the session's lock_timeout of 1s was not kept (${waited}s)"
+            psql -X -At -d "$left_db" -c "SELECT pg_catalog.pg_terminate_backend(pid)
+                FROM pg_catalog.pg_stat_activity WHERE application_name = 'upgrade_check_holder'" >/dev/null
+            wait "$holder" || true
+            echo "the update waits 10s for a lock unless the session sets lock_timeout; tv_kept left and named"
+
+            # The update completes whatever a TVIEW's owner chose: rehearsed in a
+            # transaction rolled back, then run.
+            out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "BEGIN" \
+                    -c "ALTER EXTENSION pg_tviews UPDATE" -c "ROLLBACK" 2>&1)" \
+                || fail "the rehearsal of the update: $out"
+            [[ "$(psql -X -At -d "$left_db" -c \
+                "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")" != "$current" ]] \
+                || fail "the rehearsal changed the extension's version"
+            for tview in "${left_behind[@]}"; do
+                grep -q "$tview: " <<<"$out" || fail "the rehearsal does not name $tview: $out"
+            done
+            out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
+                || fail "the update did not complete on a catalog with TVIEWs it cannot re-derive: $out"
+            echo "$out"
+            grep -q "WARNING:  pg_tviews: 4 TVIEW(s) could not be re-derived" <<<"$out" \
+                || fail "the update did not warn: $out"
+            grep -q "tv_lost: .*upgrade_lost_owner lacks SELECT" <<<"$out" || fail "the WARNING for tv_lost: $out"
+            grep -q "tv_rls: .*row security applies to role upgrade_rls_owner" <<<"$out" \
+                || fail "the WARNING for tv_rls: $out"
+            grep -q "tv_forced: .*exactly one SELECT" <<<"$out" || fail "the WARNING for tv_forced: $out"
+            grep -q "tv_col: .*upgrade_lost_owner lacks SELECT (title)" <<<"$out" \
+                || fail "the WARNING for tv_col: $out"
+            psql -X -d "$left_db" -q -f "$here/verify_left_behind.sql"
+            psql -X -d postgres -qc "DROP DATABASE $left_db" >/dev/null
+            echo "the update completed, left ${left_behind[*]} to re-register, named them; health names them"
         fi
         ;;
     *) fail "usage: $0 after update|recreate" ;;
@@ -247,6 +334,19 @@ SQL
         psql -X -d "$upgraded" -q -f "$here/verify_privileges.sql"
         echo "readers read the TVIEW tables; backing views are their owners' alone"
     fi
+
+    # The check leaves no database and no role behind once it passed.
+    for db in "$upgraded" "$fresh"; do
+        psql -X -d postgres -qc "DROP DATABASE IF EXISTS $db" >/dev/null
+    done
+    for role in upgrade_column_reader upgrade_lost_owner upgrade_owner upgrade_rls_owner \
+                upgrade_schema_reader upgrade_table_reader; do
+        psql -X -d postgres -qc "DROP ROLE IF EXISTS $role" >/dev/null
+    done
+    left="$(psql -X -At -d postgres -c \
+        "SELECT pg_catalog.string_agg(rolname, ' ') FROM pg_catalog.pg_roles WHERE rolname LIKE 'upgrade\_%'")"
+    [[ -z "$left" ]] || fail "roles left behind: $left"
+    echo "databases and roles of the check dropped"
     ;;
 *)
     fail "usage: $0 before | after update|recreate"
