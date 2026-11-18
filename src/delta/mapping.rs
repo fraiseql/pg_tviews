@@ -477,41 +477,36 @@ fn fan_out(
         })
         .collect();
     // Both images of each updated row, and which read columns differ between
-    // them byte for byte (D10). An image without its pair is a row whose
-    // primary key changed: the children of its old key no longer join it,
-    // which no patch of its new key writes (#288), so the rows are mapped
+    // them byte for byte (D10): their datums compared here, as the row trigger
+    // compares them (a value stored compressed on one side only counts as
+    // changed, which only maps the rows). An image without its pair is a row
+    // whose primary key changed: the children of its old key no longer join
+    // it, which no patch of its new key writes (#288), so the rows are mapped
     // instead.
     let compared = crate::mutant::drop_last("S16", &columns);
-    let differs = if compared.is_empty() {
-        "pg_catalog.array_fill(false, ARRAY[0])".to_string()
-    } else {
-        format!(
-            "ARRAY[{}]",
+    let n = compared.len();
+    let images: String = ["o", "n"]
+        .iter()
+        .flat_map(|side| {
             compared
                 .iter()
-                .map(|c| {
-                    let c = crate::utils::ident::quoted(c);
-                    crate::refresh::rows_differ(&[format!("o.{c}")], &[format!("n.{c}")])
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
+                .map(move |c| format!(", {side}.{}", crate::utils::ident::quoted(c)))
+        })
+        .collect();
     let sql = format!(
-        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n), {differs} \
+        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n){images} \
          FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
     );
     let pairs = with_transition_tables(trigger, entity, |frame, client, table| {
+        let mut rows = crate::utils::spi::kept_update_over(frame, client, table, &sql, &[])?;
+        let layout = column_layout(&rows, n)?;
         let mut pairs = Vec::new();
-        for row in crate::utils::spi::kept_update_over(frame, client, table, &sql, &[])? {
-            match (
-                row.get::<pgrx::JsonB>(1)?,
-                row.get::<pgrx::JsonB>(2)?,
-                row.get::<Vec<bool>>(3)?,
-            ) {
-                (Some(old), Some(new), Some(differs)) => pairs.push((old.0, new.0, differs)),
-                _ => return Ok(None),
-            }
+        while rows.next().is_some() {
+            let (Some(old), Some(new)) = (rows.get::<pgrx::JsonB>(1)?, rows.get::<pgrx::JsonB>(2)?)
+            else {
+                return Ok(None);
+            };
+            pairs.push((old.0, new.0, images_differ(&rows, &layout)?));
         }
         Ok(Some(pairs))
     })?;
@@ -575,6 +570,52 @@ fn fan_out(
         );
     }
     Ok(true)
+}
+
+/// The length and by-value flag of each of a fan-out query's `n` compared
+/// columns (columns `3..3 + n`, the old images; the new ones follow, same types).
+fn column_layout(
+    rows: &pgrx::spi::SpiTupleTable<'_>,
+    n: usize,
+) -> pgrx::spi::Result<Vec<(i16, bool)>> {
+    (0..n)
+        .map(|i| {
+            let typid = rows.column_type_oid(3 + i)?.value();
+            let (mut len, mut byval) = (0_i16, false);
+            // SAFETY: a syscache lookup of a type the query returns.
+            unsafe { pg_sys::get_typlenbyval(typid, &raw mut len, &raw mut byval) };
+            Ok((len, byval))
+        })
+        .collect()
+}
+
+/// Which compared columns differ between the current row's two images (old at
+/// `3..3 + n`, new at `3 + n..`), by their datums.
+fn images_differ(
+    rows: &pgrx::spi::SpiTupleTable<'_>,
+    layout: &[(i16, bool)],
+) -> pgrx::spi::Result<Vec<bool>> {
+    let n = layout.len();
+    layout
+        .iter()
+        .enumerate()
+        .map(|(i, &(len, byval))| {
+            Ok(
+                match (
+                    rows.get_datum_by_ordinal(3 + i)?,
+                    rows.get_datum_by_ordinal(3 + n + i)?,
+                ) {
+                    (None, None) => false,
+                    // SAFETY: two datums of one type, valid for the current row
+                    // of the tuple table.
+                    (Some(a), Some(b)) => unsafe {
+                        !crate::utils::datum_is_equal(a, b, byval, i32::from(len))
+                    },
+                    _ => true,
+                },
+            )
+        })
+        .collect()
 }
 
 /// A fan-out key and the fields it writes, by path.

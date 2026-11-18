@@ -15,9 +15,9 @@ use pgrx::pg_sys::{self, Oid};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-/// `(entity, relid)` → the command the owner's privileges were checked in, and
-/// the answer.
-type OwnerReads = HashMap<(String, u32), (pg_sys::CommandId, bool)>;
+/// `(TVIEW table OID, relid)` → the command the owner's privileges were checked
+/// in, and the answer.
+type OwnerReads = HashMap<(u32, u32), (pg_sys::CommandId, bool)>;
 
 thread_local! {
     /// Forgotten at the end of the transaction ([`forget`]).
@@ -76,7 +76,7 @@ pub fn patch_env(meta: &super::TviewMeta, relid: u32) -> Env {
 fn owner_reads_all(meta: &super::TviewMeta, relid: u32) -> bool {
     // SAFETY: reads the transaction's current command id.
     let command = unsafe { pg_sys::GetCurrentCommandId(false) };
-    let key = (meta.entity_name.clone(), relid);
+    let key = (meta.tview_oid.to_u32(), relid);
     if let Some(answer) = OWNER_READS.with_borrow(|m| {
         m.get(&key)
             .filter(|(at, _)| *at == command)
