@@ -17,6 +17,7 @@
 # a stale read fails the case, which prints its seed and keeps its SQL.
 #
 # MODES (test/lib/modes.sh) runs every case once per mode, as run.sh does.
+# GEN_PGOPTIONS adds settings to every session (mutants/run.sh names its mutant).
 # GEN_FEATURES (comma-separated) adds the opt-in kinds and value forms of gen.py's
 # OPT_IN (wholerow, syscol, unordered, exact), each left out while its defect is open.
 # GEN_SELFTEST=1 writes with session_replication_role = replica, so no pg_tviews
@@ -70,6 +71,8 @@ for seed in $seeds; do
     for mode in $MODES; do
       PGOPTIONS="$(mode_options "$mode")"
       [[ "$selftest" == 1 ]] && PGOPTIONS+=" -c session_replication_role=replica"
+      # Settings of the caller's (the mutants runner names its mutant here).
+      PGOPTIONS+="${GEN_PGOPTIONS:+ $GEN_PGOPTIONS}"
       # A zone the owner frame overrides, so an oracle reading outside it diverges
       # (PGTZ, which libpq sends, wins over a TimeZone in PGOPTIONS).
       [[ "$selftest" == 2 ]] && export PGTZ=America/New_York

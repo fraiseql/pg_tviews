@@ -63,7 +63,15 @@ impl Walker<'_> {
                         // subquery whose other clauses may read it too.
                         let only_in_data = !combined
                             && read.is_some_and(|r| {
-                                relation_entry(query, r.0) && reads.get(&r) == copied.get(&r)
+                                // Mutant S41: one read of the column goes uncounted.
+                                let read_count = reads.get(&r).map(|&n| {
+                                    if crate::mutant::on("S41") {
+                                        n.saturating_sub(1)
+                                    } else {
+                                        n
+                                    }
+                                });
+                                relation_entry(query, r.0) && read_count.as_ref() == copied.get(&r)
                             });
                         let relid = self.graph.occurrences[column.occ].relid;
                         let root = matches!(&self.graph.identity,

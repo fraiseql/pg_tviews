@@ -336,7 +336,10 @@ impl Flush {
     /// after it was refreshed late (a user trigger wrote what it reads during the
     /// flush), and the parent read the child's old row.
     fn queue(&mut self, key: RefreshKey) {
-        self.processed.remove(&key);
+        // Mutant S24: a key refreshed already in this flush is not refreshed again.
+        if !crate::mutant::on("S24") {
+            self.processed.remove(&key);
+        }
         self.pending.insert(key);
     }
 

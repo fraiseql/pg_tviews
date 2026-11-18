@@ -1,0 +1,4 @@
+# S09, row path: an image whose key column is NULL keys no row.
+# Mutant: the old image of an UPDATE keys no row (a row moving away leaves its
+# old parent as it was).
+features:

@@ -274,8 +274,9 @@ fn enqueue_local_keys(
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.
         if let Some(changed) = changed {
-            let unread = !path.source_columns.is_empty()
-                && !path.source_columns.iter().any(|c| changed.contains(c));
+            let read = crate::mutant::drop_last("S03", &path.source_columns);
+            let unread =
+                !path.source_columns.is_empty() && !read.iter().any(|c| changed.contains(c));
             if unread && columns_known(&path.entity_name, path.source_oid.to_u32()) {
                 continue;
             }
@@ -293,7 +294,11 @@ fn enqueue_local_keys(
             enqueue_refresh_patched(&path.entity_name, pk, fields);
             continue;
         }
-        for &image in &images {
+        for (i, &image) in images.iter().enumerate() {
+            // Mutant S09: the old image of an UPDATE keys no row.
+            if i == 0 && images.len() == 2 && crate::mutant::on("S09") {
+                continue;
+            }
             follow_local_path(path, image, &tupdesc);
         }
     }

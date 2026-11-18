@@ -145,7 +145,7 @@ fn route(
         && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
         && computed.is_none()
         // SAFETY: an AFTER statement trigger's TriggerData.
-        && unsafe { reads_unchanged(trigger.trigger_data(), attnums) };
+        && unsafe { reads_unchanged(trigger.trigger_data(), crate::mutant::drop_last("S11", attnums)) };
     // The links are columns it reads: unchanged when those are. A virtual
     // generated column is NULL in the transition tables, so one among the links
     // counts as changed; the stored ones compare as they are. Columns its plan
@@ -162,12 +162,21 @@ fn route(
     if reads_same {
         return Ok(Route::Nothing);
     }
-    let delta = || delta_sql(entity, table_oid, event, attnums);
+    let delta = || {
+        delta_sql(
+            entity,
+            table_oid,
+            event,
+            crate::mutant::drop_last("S12", attnums),
+        )
+    };
     Ok(match mapping.kind {
         // A guarded table's rows that meet none of its unlinked reads' conditions
         // change only what its linked reads reach (#284).
         MappingKind::AllKeys
-            if full_refresh && !guard_met(trigger, entity, mapping, &delta()?)? =>
+            if full_refresh
+                && (crate::mutant::on("S14")
+                    || !guard_met(trigger, entity, mapping, &delta()?)?) =>
         {
             if mapping.sql.is_some() {
                 Route::Mapped { delta: delta()? }
@@ -434,7 +443,7 @@ fn fan_out(
     let Some(pairs) = pairs else { return Ok(false) };
     let mut patches = Vec::new();
     for (old, new) in &pairs {
-        let changed: Vec<&String> = columns
+        let changed: Vec<&String> = crate::mutant::drop_last("S16", &columns)
             .iter()
             .filter(|c| old.get(*c) != new.get(*c))
             .collect();

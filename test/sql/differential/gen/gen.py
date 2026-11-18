@@ -26,7 +26,9 @@ The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data):
   top       DISTINCT ON the root's pk over a LEFT JOIN of its children
   lookup    a count of another table's rows filtered by constants (=, IN, IS
             NULL, ANDed), linked to no key, under uncascaded_policy full_refresh
-Any of them may filter soft-deleted rows (deleted_at IS NULL).
+Any of them may filter soft-deleted rows (deleted_at IS NULL). An embedding TVIEW
+may carry a user trigger writing back, during the flush, to the row it embeds;
+a `derived` TVIEW reads a copied column again in an expression.
 
 Opt-in kinds (named in `features`, drawn only then, so a run without them writes
 the same cases as before), each a form of reading the analysis must account for:
@@ -98,6 +100,7 @@ KINDS = [
     "last",
     "top",
     "lookup",
+    "derived",
 ]
 
 
@@ -144,6 +147,8 @@ class Shape:
     # the table whose pk keys one row of this TVIEW (an embeddable shape), or None
     keyed_by: Table | None
     aggregate: bool = False
+    # statements run after the TVIEW is created (when it is)
+    after: list[str] = field(default_factory=list)
 
 
 class Case:
@@ -423,7 +428,36 @@ class Case:
             f"  FROM {t.name} t\n  {'LEFT ' if left else ''}JOIN {s.tv} v "
             f"ON v.{s.key} = t.{fk.column}" + self.where([self.soft("t", t)])
         )
-        return Shape(tv, key, sql, {}, [s.tv], t)
+        shape = Shape(tv, key, sql, {}, [s.tv], t)
+        if self.chance(0.8):
+            shape.after = self.writeback(tv, key, t, fk)
+        return shape
+
+    def writeback(self, tv: str, key: str, t: Table, fk: Fk) -> list[str]:
+        """A user trigger on the embedding TVIEW's table that marks, once, the
+        embedded row's text columns: a write during the flush to what the flush
+        refreshed already, so the TVIEWs reading it are refreshed again."""
+        p = fk.parent
+        texts = p.cols_of(("text",))
+        if not texts:
+            return []
+        sets = ", ".join(f"{c} = coalesce(p.{c}, '') || '+'" for c in texts)
+        fn = f"gen_writeback_{tv[3:]}"
+        return [
+            (
+                f"CREATE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER\n"
+                f"  SET search_path = public AS $f$\nBEGIN\n"
+                f"  UPDATE {p.name} p SET {sets} FROM {t.name} t\n"
+                f"   WHERE t.{t.pk} = NEW.{key} AND p.{p.pk} = t.{fk.column}\n"
+                f"     AND coalesce(p.{texts[0]}, '') NOT LIKE '%+';\n"
+                f"  RETURN NULL;\nEND $f$;"
+            ),
+            (
+                f"DO $w$ BEGIN IF to_regclass({lit(tv)}) IS NOT NULL THEN\n"
+                f"  CREATE TRIGGER gen_writeback AFTER UPDATE ON {tv}\n"
+                f"    FOR EACH ROW EXECUTE FUNCTION {fn}();\nEND IF; END $w$;"
+            ),
+        ]
 
     def child_subquery(self, t: Table, c: Table, fk: Fk, select: str) -> str:
         cond = [f"c.{fk.column} = t.{t.pk}", self.soft("c", c)]
@@ -678,6 +712,27 @@ class Case:
         )
         return Shape(tv, key, sql, {}, [], t)
 
+    def shape_derived(self) -> Shape:
+        """A column copied into data and read again by an expression of it."""
+        t = self.rng.choice(self.tables)
+        c, typ = self.rng.choice(t.cols)
+        derive = {
+            "text": f"upper(t.{c})",
+            "int": f"t.{c} * 2",
+            "numeric": f"t.{c} * 2",
+            "bool": f"NOT t.{c}",
+            "timestamptz": f"t.{c} + interval '1 day'",
+            "jsonb": f"t.{c} ? 'u'",
+        }[typ]
+        tv = self.tv_name(f"{t.entity}_d")
+        key = "pk_" + tv[3:]
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"{lit(c)}, t.{c}, {lit(c + '_d')}, {derive}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {}, [], t)
+
     def shape_syscol(self) -> Shape:
         """A system column of the row: its version."""
         t = self.rng.choice(self.tables)
@@ -742,6 +797,7 @@ class Case:
                 f"SELECT gen_create({lit(s.tv)}, {lit(s.key)}, $def$\n{s.sql}\n$def$,\n"
                 f"  {lit(options)}, {needs});"
             )
+            self.out.extend(s.after)
 
     # ── writes ──────────────────────────────────────────────────────────────
     def pick(self, t: Table, n: int) -> str:

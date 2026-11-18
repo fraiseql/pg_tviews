@@ -1,0 +1,3 @@
+# S03, row path: an UPDATE changing none of the columns a path reads skips it.
+# Mutant: the last column of the path's set is not compared.
+features:

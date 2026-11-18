@@ -1,0 +1,3 @@
+# S41, only_in_data: a column read only where data copies it may be patched.
+# Mutant: one read of the column goes uncounted.
+features:

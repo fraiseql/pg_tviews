@@ -44,6 +44,7 @@ mod hooks;
 mod internal_ddl;
 mod lineage;
 mod metrics;
+mod mutant;
 mod owner;
 mod propagate;
 mod publish;

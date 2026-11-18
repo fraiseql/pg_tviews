@@ -195,6 +195,10 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
         .join(", ");
     let stored: Vec<String> = cols.iter().map(|(c, _)| format!("{qi_tv}.{c}")).collect();
     let fresh: Vec<String> = cols.iter().map(|(_, fresh)| fresh.clone()).collect();
+    // Mutant S31: a recomputed row never replaces the stored one.
+    if crate::mutant::on("S31") {
+        return format!("DO UPDATE SET {set} WHERE false");
+    }
     format!("DO UPDATE SET {set} WHERE {}", rows_differ(&stored, &fresh))
 }
 

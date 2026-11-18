@@ -115,7 +115,8 @@ pub fn recompute(
         )?;
         // A key produces at most one row (the upsert refuses duplicates): as many
         // rows as keys means none is gone.
-        let deleted = if produced.keys.len() == chunk.len() {
+        // Mutant S33: keys the view no longer produces are kept.
+        let deleted = if crate::mutant::on("S33") || produced.keys.len() == chunk.len() {
             Vec::new()
         } else {
             super::run_journaled_delete(

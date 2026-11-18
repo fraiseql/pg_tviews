@@ -1,0 +1,3 @@
+# S31, write: a recomputed row equal to the stored one is not written.
+# Mutant: a recomputed row never replaces a stored one.
+features:

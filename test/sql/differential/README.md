@@ -59,8 +59,17 @@ a TVIEW back: the read must see fresh rows).
   into the children of a parent a LEFT JOIN's `ON` filters out), both now in the
   default grammar and in `regress/cascade/regress_fanout_patch_soundness.sql`.
 
+**Skip mutants** (`mutants/`): eleven skip decisions of pg_tviews (each `S<nn>.mutant`
+file says what its decision skips and how its mutant breaks it), switched one at a
+time to decide wrongly in a build with the `test-mutants` feature
+(`pg_tviews.test_mutant`, `src/mutant.rs`): a column-set decision misses the last
+column of its set, a predicate decision skips one class of inputs it must not. The
+generator must see each one; `mutants/run.sh` fails on a survivor, or on a case
+failing otherwise than by a divergence. The generator's `derived` kind and its
+write-back triggers exist to kill S41 and S24.
+
 CI's pg18 job runs 5 shapes on seed 1; the nightly run 20 shapes on three new seeds
-(the date and 1 to 3), in every mode.
+(the date and 1 to 3), in every mode, and the mutants on seeds 1 to 3.
 
 ## What this net does not cover
 

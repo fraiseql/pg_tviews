@@ -52,7 +52,9 @@ jobs:
 
       - name: Build and install pg_tviews and jsonb_delta
         run: |
-          cargo pgrx install --release --no-default-features --features "pg18 test-hooks" --pg-config "$PG_CONFIG"
+          # test-mutants: pg_tviews.test_mutant for the skip mutants below; unset,
+          # every switch is off.
+          cargo pgrx install --release --no-default-features --features "pg18 test-hooks test-mutants" --pg-config "$PG_CONFIG"
           git init -q /tmp/jsonb_delta && git -C /tmp/jsonb_delta fetch -q --depth 1 "${JSONB_DELTA_REPO}" "${JSONB_DELTA_REF}" && git -C /tmp/jsonb_delta checkout -q FETCH_HEAD
           (cd /tmp/jsonb_delta && cargo pgrx install --release --no-default-features \
              --features pg18 --pg-config "$PG_CONFIG")
@@ -87,6 +89,12 @@ jobs:
           source test/lib/modes.sh
           day="$(date -u +%Y%m%d)"
           MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 20 "${day}1 ${day}2 ${day}3" 60
+
+      # Each skip decision switched to decide wrongly, one at a time, on fixed seeds:
+      # a mutant the generator does not see fails the run.
+      - name: Skip mutants
+        if: ${{ !cancelled() }}
+        run: ./test/sql/differential/mutants/run.sh 20 "1 2 3"
 
       - name: Isolation suite
         run: ./test/isolation/run.sh
