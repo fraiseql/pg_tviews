@@ -42,8 +42,11 @@ a TVIEW back: the read must see fresh rows).
 - `GEN_SELFTEST=1` writes with `session_replication_role = replica`, so no pg_tviews
   trigger fires: every case must then diverge. It proves the oracle sees a refresh
   that does not happen.
-- `GEN_FEATURES` turns on writes left out of the default run while their defect is
-  open (`OPT_IN` in `gen.py`); none is. The generator found #288 (an `UPDATE` of a
+- `GEN_FEATURES` turns on shape kinds and value forms left out of the default run
+  while their defect is open (`OPT_IN` in `gen.py`): `wholerow` (a row read whole),
+  `syscol` (a system column), `unordered` (an output depending on row order) and
+  `exact` (numerics with 30 digits or trailing zeros). A named kind is half the draws.
+  The generator found #288 (an `UPDATE` of a
   referenced `pk_<entity>` left its children's fan-out unwritten) and #289 (a fan-out
   into the children of a parent a LEFT JOIN's `ON` filters out), both now in the
   default grammar and in `regress/cascade/regress_fanout_patch_soundness.sql`.

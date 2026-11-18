@@ -17,7 +17,8 @@
 # a stale read fails the case, which prints its seed and keeps its SQL.
 #
 # MODES (test/lib/modes.sh) runs every case once per mode, as run.sh does.
-# GEN_FEATURES (comma-separated) adds the opt-in writes of gen.py's OPT_IN.
+# GEN_FEATURES (comma-separated) adds the opt-in kinds and value forms of gen.py's
+# OPT_IN (wholerow, syscol, unordered, exact), each left out while its defect is open.
 # GEN_SELFTEST=1 writes with session_replication_role = replica, so no pg_tviews
 # trigger fires: every case must then fail, which proves the oracle sees a refresh
 # that does not happen.

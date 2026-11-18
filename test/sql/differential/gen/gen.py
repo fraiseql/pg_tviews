@@ -27,6 +27,17 @@ The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data):
   lookup    a count of another table's rows filtered by constants (=, IN, IS
             NULL, ANDed), linked to no key, under uncascaded_policy full_refresh
 Any of them may filter soft-deleted rows (deleted_at IS NULL).
+
+Opt-in kinds (named in `features`, drawn only then, so a run without them writes
+the same cases as before), each a form of reading the analysis must account for:
+  wholerow  a row read whole: to_jsonb(t), jsonb_agg(c ORDER BY ...) of child
+            rows, a function of the row type, md5(t::text)
+  syscol    a system column: xmin::text
+  unordered an output that depends on row order: an aggregate without ORDER BY,
+            LIMIT 1 without ORDER BY, DISTINCT ON and row_number() over ties
+`exact` changes the written values instead: numerics with 30 digits and with
+trailing zeros (2.50), jsonb holding decimals, so a value that loses digits or
+scale on the way into a document is seen (the oracle compares binary images).
 """
 
 import json
@@ -64,7 +75,10 @@ SUMMABLE = ("int", "numeric")
 # defect: the run stays green while it is open, and naming it reproduces it.
 # None is open: #288 (a referenced pk_<entity> changed) and #289 (a LEFT JOIN
 # filtering its parent) were found this way and are in the default run.
-OPT_IN: set[str] = set()
+# The opt-in kinds and value forms (the module docstring), until the defects
+# they reproduce are fixed.
+OPT_IN_KINDS = ["wholerow", "syscol", "unordered"]
+OPT_IN: set[str] = {*OPT_IN_KINDS, "exact"}
 # the share of the writes made by a mutation function, and in a transaction
 MUTATION_SHARE = 0.2
 TRANSACTION_SHARE = 0.1
@@ -144,6 +158,9 @@ class Case:
         self.shapes: list[Shape] = []
         self.out: list[str] = []
         self.functions = 0
+        # An enabled opt-in kind is half the draws: it is what the run is for.
+        opted = [k for k in OPT_IN_KINDS if k in features]
+        self.kinds = KINDS + opted * (len(KINDS) // max(len(opted), 1))
 
     # ── schema ──────────────────────────────────────────────────────────────
     def make_tables(self) -> None:
@@ -181,6 +198,8 @@ class Case:
         if self.chance(0.08):
             return "NULL"
         n = r.randint(0, 99)
+        if "exact" in self.features and typ in ("numeric", "jsonb"):
+            return self.exact_value(typ, n)
         return {
             "text": lambda: lit(r.choice(["a", "b", "c", "O'k", "é"]) + f"{i}_{n}"),
             "int": lambda: str(n % 44 - 3),
@@ -192,9 +211,26 @@ class Case:
                 f"{r.randint(0, 23):02}:{r.choice(['00', '30'])}:00"
                 f"{r.choice(['+00', '+02', '-05'])}"
             ),
-            "jsonb": lambda: lit(f'{{"k": {n % 10}, "tags": ["t{n % 10}"]}}')
-            + "::jsonb",
+            "jsonb": lambda: (
+                lit(f'{{"k": {n % 10}, "tags": ["t{n % 10}"]}}') + "::jsonb"
+            ),
         }[typ]()
+
+    def exact_value(self, typ: str, n: int) -> str:
+        """A numeric with 30 digits or trailing zeros, or a jsonb holding one."""
+        r = self.rng
+        num = r.choice(
+            [
+                f"{n}.{r.randint(0, 10**28 - 1):028d}",
+                f"{n}.50",
+                f"{n}.0",
+                f"0.{r.randint(1, 9)}0000000000000000000001",
+                f"{r.randint(10**22, 10**23)}",
+            ]
+        )
+        if typ == "numeric":
+            return num
+        return lit(f'{{"k": {num}, "tags": ["t{n % 10}"]}}') + "::jsonb"
 
     def write_schema(self) -> None:
         r = self.rng
@@ -584,12 +620,99 @@ class Case:
         )
         return Shape(tv, key, sql, {}, [], p)
 
+    def shape_wholerow(self) -> Shape | None:
+        """A row read whole, in one of the forms the dialect admits."""
+        r = self.rng
+        form = r.choice(["to_jsonb", "agg", "function", "text"])
+        if form == "agg":
+            pairs = self.child_pairs()
+            if not pairs:
+                return None
+            p, c, fk = r.choice(pairs)
+            tv = self.tv_name(f"{p.entity}_w")
+            key = "pk_" + tv[3:]
+            agg = f"jsonb_agg(c ORDER BY c.{c.pk})"
+            sql = (
+                f"SELECT t.{p.pk} AS {key}, t.id, jsonb_build_object({self.obj('t', p)}, "
+                f"{lit(c.entity + 's')}, {self.child_subquery(p, c, fk, agg)}) AS data\n"
+                f"  FROM {p.name} t" + self.where([self.soft("t", p)])
+            )
+            return Shape(tv, key, sql, {}, [], p)
+        t = r.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_w")
+        key = "pk_" + tv[3:]
+        if form == "to_jsonb":
+            value = "to_jsonb(t)"
+        elif form == "text":
+            value = "md5(t::text)"
+        else:
+            fn = f"gen_row_{t.entity}"
+            if not any(line.startswith(f"CREATE FUNCTION {fn}(") for line in self.out):
+                self.out.append(
+                    f"CREATE FUNCTION {fn}({t.name}) RETURNS text IMMUTABLE "
+                    f"LANGUAGE sql AS $f$ SELECT $1::text $f$;"
+                )
+            value = f"{fn}(t)"
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"{self.obj('t', t)}, 'row', {value}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {}, [], t)
+
+    def shape_syscol(self) -> Shape:
+        """A system column of the row: its version."""
+        t = self.rng.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_x")
+        key = "pk_" + tv[3:]
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"{self.obj('t', t)}, 'version', t.xmin::text) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {}, [], t)
+
+    def shape_unordered(self) -> Shape | None:
+        """An output that depends on the order rows are read in."""
+        r = self.rng
+        pairs = self.child_pairs()
+        if not pairs:
+            return None
+        p, c, fk = r.choice(pairs)
+        tv = self.tv_name(f"{p.entity}_o")
+        key = "pk_" + tv[3:]
+        col = r.choice(c.cols)[0]
+        form = r.choice(["agg", "limit", "distinct_on", "row_number"])
+        if form == "agg":
+            value = self.child_subquery(p, c, fk, f"jsonb_agg(c.{col})")
+        elif form == "limit":
+            value = self.child_subquery(p, c, fk, f"c.{col}")[:-1] + " LIMIT 1)"
+        elif form == "distinct_on":
+            # one child per parent, ordered by a column that ties
+            other = r.choice(c.cols)[0]
+            value = (
+                f"(SELECT DISTINCT ON (c.{fk.column}) c.{col} FROM {c.name} c "
+                f"WHERE c.{fk.column} = t.{p.pk} ORDER BY c.{fk.column}, c.{other} IS NULL)"
+            )
+        else:
+            value = (
+                f"(SELECT jsonb_agg(x.{col} ORDER BY x.rn) FROM (SELECT c.{col}, "
+                f"row_number() OVER (ORDER BY c.{fk.column}) AS rn FROM {c.name} c "
+                f"WHERE c.{fk.column} = t.{p.pk}) x)"
+            )
+        sql = (
+            f"SELECT t.{p.pk} AS {key}, t.id, jsonb_build_object("
+            f"{self.obj('t', p)}, 'o', {value}) AS data\n"
+            f"  FROM {p.name} t" + self.where([self.soft("t", p)])
+        )
+        return Shape(tv, key, sql, {}, [], p)
+
     def make_shapes(self) -> None:
         r = self.rng
         tries = 0
         while len(self.shapes) < self.n_shapes and tries < MAX_DRAWS:
             tries += 1
-            s = self.shape(r.choice(KINDS))
+            s = self.shape(r.choice(self.kinds))
             if s:
                 self.shapes.append(s)
 
@@ -657,8 +780,13 @@ class Case:
                         "text": f"{c} = {c} || '.{i}'",
                         "int": f"{c} = coalesce({c}, 0) + {r.randint(1, 5)}",
                         "bool": f"{c} = NOT coalesce({c}, false)",
-                        "numeric": f"{c} = coalesce({c}, 0) + 1.25",
-                        "jsonb": f"{c} = coalesce({c}, '{{}}') || '{{\"u\": {i}}}'",
+                        "numeric": f"{c} = coalesce({c}, 0) + 1.25"
+                        if "exact" not in self.features
+                        else f"{c} = {self.exact_value('numeric', i)}",
+                        "jsonb": f"{c} = coalesce({c}, '{{}}') || '{{\"u\": {i}}}'"
+                        if "exact" not in self.features
+                        else f"{c} = coalesce({c}, '{{}}') || "
+                        f"jsonb_build_object('u', {self.exact_value('numeric', i)})",
                     }.get(typ, f"{c} = {self.value(typ, i)}")
                 )
             return self.update(t, sets)
