@@ -11,6 +11,7 @@ joined entity nested as `author` / `post`) and five writes:
 | `comment_insert` | 1 new `tv_comment` row |
 | `bio_bulk100` | 100 `tv_user`, 1,000 `tv_post` rows in one statement |
 | `untracked_insert` | nothing: `tb_audit` is read by no TVIEW (the cost of the installed extension alone) |
+| `price` | 1 `tv_product` row, which copies a `numeric` (recomputed, not patched) |
 
 `run.sh [seconds] [clients] [write ...]` prints each write's tps and WAL bytes per
 transaction with pg_tviews, the same for the write with `session_replication_role =

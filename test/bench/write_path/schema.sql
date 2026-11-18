@@ -49,6 +49,19 @@ CREATE TABLE tb_audit (
     note text NOT NULL
 );
 
+-- A lone table whose TVIEW copies a numeric: a copy patch would render it through
+-- serde_json, so a write to it is recomputed (G2).
+CREATE TABLE tb_product (
+    pk_product int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id uuid NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    name text NOT NULL,
+    price numeric(12, 2) NOT NULL
+);
+
+SELECT tviews.pg_tviews_create('bench.tv_product', $$
+    SELECT p.pk_product, p.id,
+           jsonb_build_object('id', p.id::text, 'name', p.name, 'price', p.price) AS data
+    FROM bench.tb_product p $$);
 SELECT tviews.pg_tviews_create('bench.tv_user', $$
     SELECT u.pk_user, u.id, u.identifier,
            jsonb_build_object('id', u.id::text, 'identifier', u.identifier, 'email', u.email,
@@ -82,4 +95,6 @@ FROM generate_series(1, 20000) g;
 INSERT INTO tb_comment (identifier, content, fk_post, fk_author)
 SELECT 'c' || g, repeat('comment ', 15), 1 + (g % 20000), 1 + ((g * 7) % 2000)
 FROM generate_series(1, 100000) g;
+INSERT INTO tb_product (name, price)
+SELECT 'product ' || g, g * 1.25 FROM generate_series(1, 2000) g;
 VACUUM ANALYZE;
