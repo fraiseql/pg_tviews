@@ -79,8 +79,9 @@ BEGIN
     IF text_search IS NOT NULL THEN
         PERFORM pg_catalog.set_config('default_text_search_config', text_search, true);
     END IF;
-    EXECUTE format('SELECT pg_catalog.count(*) FROM %s', tv) INTO tv_rows;
-    EXECUTE format('SELECT pg_catalog.count(*) FROM %s', v) INTO v_rows;
+    -- Both counts in one statement: one snapshot, under concurrent writers too.
+    EXECUTE format('SELECT (SELECT pg_catalog.count(*) FROM %s), (SELECT pg_catalog.count(*) FROM %s)', tv, v)
+       INTO tv_rows, v_rows;
     EXECUTE format(q, key, tv_cols, tv, v_cols, v) INTO tv_only, tv_keys;
     EXECUTE format(q, key, v_cols, v, tv_cols, tv) INTO v_only, v_keys;
     IF switched THEN
