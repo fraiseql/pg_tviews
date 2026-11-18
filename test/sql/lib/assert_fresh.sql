@@ -44,6 +44,8 @@ DECLARE
     owner_role name;
     text_search text;
     caller_role text := pg_catalog.current_setting('role');
+    switched boolean := false;
+    caller_text_search text := pg_catalog.current_setting('default_text_search_config');
     tv_cols text;
     v_cols text;
     tv_rows bigint; v_rows bigint;
@@ -68,7 +70,12 @@ BEGIN
       INTO tv_cols, v_cols
       FROM pg_catalog.pg_attribute WHERE attrelid OPERATOR(pg_catalog.=) v AND attnum > 0 AND NOT attisdropped;
 
-    PERFORM pg_catalog.set_config('role', owner_role, true);
+    -- Inside a SECURITY DEFINER function running as the owner, the role is not
+    -- set (PostgreSQL refuses it there).
+    IF owner_role OPERATOR(pg_catalog.<>) current_user THEN
+        PERFORM pg_catalog.set_config('role', owner_role, true);
+        switched := true;
+    END IF;
     IF text_search IS NOT NULL THEN
         PERFORM pg_catalog.set_config('default_text_search_config', text_search, true);
     END IF;
@@ -76,7 +83,10 @@ BEGIN
     EXECUTE format('SELECT pg_catalog.count(*) FROM %s', v) INTO v_rows;
     EXECUTE format(q, key, tv_cols, tv, v_cols, v) INTO tv_only, tv_keys;
     EXECUTE format(q, key, v_cols, v, tv_cols, tv) INTO v_only, v_keys;
-    PERFORM pg_catalog.set_config('role', caller_role, true);
+    IF switched THEN
+        PERFORM pg_catalog.set_config('role', caller_role, true);
+    END IF;
+    PERFORM pg_catalog.set_config('default_text_search_config', caller_text_search, true);
 
     IF tv_only + v_only = 0 AND tv_rows = v_rows THEN
         RETURN NULL;

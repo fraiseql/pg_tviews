@@ -232,6 +232,23 @@ class Case:
             return num
         return lit(f'{{"k": {num}, "tags": ["t{n % 10}"]}}') + "::jsonb"
 
+    def grants(self, t: Table) -> str:
+        """The roles harness (lib.sql): the TVIEW owner reads, the writer writes.
+        Every other table hides some of its rows from the writer (row security
+        that does not apply to the owner, who bypasses it): what the writer
+        cannot see must still be refreshed."""
+        sql = (
+            f'GRANT SELECT, TRIGGER ON {t.name} TO :"gen_owner";\n'
+            f'GRANT SELECT, INSERT, UPDATE, DELETE ON {t.name} TO :"gen_writer";'
+        )
+        if self.tables.index(t) % 2 == 1:
+            sql += (
+                f"\nALTER TABLE {t.name} ENABLE ROW LEVEL SECURITY;\n"
+                f'CREATE POLICY gen_writer_rows ON {t.name} TO :"gen_writer"\n'
+                f"  USING ({t.pk} % 5 <> 4) WITH CHECK (true);"
+            )
+        return sql
+
     def write_schema(self) -> None:
         r = self.rng
         self.out.append(
@@ -251,6 +268,7 @@ class Case:
                     ref = f" REFERENCES {fk.parent.name} ON DELETE {fk.on_delete}"
                 lines.append(f"{fk.column} {fk.parent.pk_type}{ref}")
             self.out.append(f"CREATE TABLE {t.name} (\n  " + ",\n  ".join(lines) + ");")
+            self.out.append(self.grants(t))
             for fk in t.fks:
                 self.out.append(f"CREATE INDEX ON {t.name} ({fk.column});")
         for t in self.tables:
@@ -814,6 +832,8 @@ class Case:
     def write_statements(self) -> None:
         r = self.rng
         i = 1
+        # Every write, mutation functions included, is the writer's.
+        self.out.append('SET ROLE :"gen_writer";')
         while i <= self.n_statements:
             x = r.random()
             if x < MUTATION_SHARE:

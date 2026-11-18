@@ -39,9 +39,17 @@ a TVIEW back: the read must see fresh rows).
   any other error, a divergence after a top-level statement or a stale read inside a
   mutation fails the case, printing its seed and keeping its SQL to replay. `MODES`
   as above.
+- **Roles.** Every TVIEW is created by a role that is no superuser and owns no base
+  table (granted `SELECT` and `TRIGGER`), every write is made by a third role (from
+  which every other table hides some rows by row security the owner bypasses), and
+  the oracle reads as the owner, in the frame of `docs/reference/owner-frame.md`.
+  `run.sh` creates the two roles for the run and drops them.
 - `GEN_SELFTEST=1` writes with `session_replication_role = replica`, so no pg_tviews
   trigger fires: every case must then diverge. It proves the oracle sees a refresh
-  that does not happen.
+  that does not happen. `GEN_SELFTEST=2` lets the oracle read in the session's
+  settings (another time zone) instead of the frame's: a case rendering a
+  timestamptz must then diverge, and one must. It proves the oracle reads in the
+  frame.
 - `GEN_FEATURES` turns on shape kinds and value forms left out of the default run
   while their defect is open (`OPT_IN` in `gen.py`): `wholerow` (a row read whole),
   `syscol` (a system column), `unordered` (an output depending on row order) and
