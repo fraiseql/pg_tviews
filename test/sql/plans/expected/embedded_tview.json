@@ -26,6 +26,12 @@
       "entity_name": "post",
       "initial_attnum": "public.tb_post.pk_post",
       "initial_col": "pk_post",
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "root": true,
       "source_columns": [
         "pk_post",
@@ -69,6 +75,12 @@
         "public.tb_post.pk_post",
         "public.tb_post.fk_user"
       ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "relid": "public.tb_post",
       "table": "public.tb_post"
     },
@@ -85,6 +97,10 @@
       "kind": "propagated",
       "links": [
         "public.tv_user.pk_user"
+      ],
+      "read_set": [
+        1,
+        3
       ],
       "relid": "public.tv_user",
       "table": "public.tv_user",

@@ -5,8 +5,7 @@
 -- Runs in autocommit on purpose: the UPDATE is its own transaction.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_fanout_unflushed_commit.sql
---
--- known-failing: #321 (G3)
+-- allow-output: queued refreshes for
 -- expect-output: unflushed fan-out at commit: PASS
 
 \set ON_ERROR_STOP on

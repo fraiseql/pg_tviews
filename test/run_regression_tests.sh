@@ -16,6 +16,9 @@
 # A test leaves no role and no database behind: what it left is dropped, and a test
 # that otherwise passed fails.
 #
+# A test that provokes a refused commit carries `-- allow-output: queued
+# refreshes for`; any other test printing that fails.
+#
 # A test reproducing an open bug carries `-- known-failing: <issue>`: its failure
 # is reported as XFAIL and does not fail the suite; once it passes it FAILs until
 # the marker is removed.
@@ -91,8 +94,9 @@ report_result() {
     done < <(sed -n 's/^-- expect-output: //p' "$f")
   fi
   # Refresh work still queued at COMMIT fails it: a file that turns
-  # ON_ERROR_STOP off must not hide that.
-  if [[ -z "$why" ]] && ! grep -q '^-- expect-output: missed flush at commit' "$f" \
+  # ON_ERROR_STOP off must not hide that, unless it says it provokes it
+  # (`-- allow-output: queued refreshes for`).
+  if [[ -z "$why" ]] && ! grep -qxF -- '-- allow-output: queued refreshes for' "$f" \
      && grep -qF "queued refreshes for" "$out"; then
     why="unexpected output containing 'queued refreshes for'"
   fi

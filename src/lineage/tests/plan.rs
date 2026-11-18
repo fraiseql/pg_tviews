@@ -13,6 +13,7 @@ fn table(relid: u32, relname: &str, kind: TableKind) -> TableLineage {
         sql: None,
         reads: Vec::new(),
         columns: Vec::new(),
+        read_set: None,
         lookups: Vec::new(),
         index_hints: Vec::new(),
         hop: None,
@@ -164,6 +165,7 @@ fn a_restored_plan_is_rebound_by_relid_and_column_number() {
         entity_name: "post".into(),
         initial_col: "pk_post".into(),
         source_columns: vec!["pk_post".into()],
+        read_set: Some(vec![1, 3]),
         root: true,
         initial_attnum: Some(1),
     }];
@@ -191,6 +193,8 @@ fn a_restored_plan_is_rebound_by_relid_and_column_number() {
         Some("SELECT DISTINCT o1.{c:110:1} FROM pg_tviews_delta d, {r:110} o1")
     );
     assert_eq!(rebound.paths[0].source_oid, pgrx::pg_sys::Oid::from(110));
+    // The paths' read sets are rebound too.
+    assert_eq!(rebound.paths[0].read_set.as_deref(), Some(&[1, 2][..]));
     // A number the plan does not name has no new value.
     let unnamed = |r: u32, a: i16| (r != 10 || a != 3).then_some(a);
     assert_eq!(

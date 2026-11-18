@@ -3,8 +3,6 @@
 -- document changes, not only the embedded copy patched.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_embed_read_elsewhere.sql
---
--- known-failing: #321 (S30)
 -- expect-output: embed read elsewhere: PASS
 
 \set ON_ERROR_STOP on

@@ -14,7 +14,9 @@
 # case its own database; SEEDS a space-separated list (default "1 2 3"); STATEMENTS
 # random writes per case (default 40). A definition is created, or refused with a
 # documented SQLSTATE (REFUSED, listed in lib.sql); any other error, a divergence or
-# a stale read fails the case, which prints its seed and keeps its SQL.
+# a stale read fails the case, which prints its seed and keeps its SQL. Before the
+# writes, each TVIEW's stored read sets are checked by perturbation (gen_perturb in
+# lib.sql): an UPDATE of a column outside them must leave its view's rows alone.
 #
 # MODES (test/lib/modes.sh) runs every case once per mode, as run.sh does.
 # GEN_PGOPTIONS adds settings to every session (mutants/run.sh names its mutant).

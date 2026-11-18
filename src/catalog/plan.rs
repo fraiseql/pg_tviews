@@ -166,6 +166,7 @@ mod tests {
                 entity_name: "post".into(),
                 initial_col: "pk_post".into(),
                 source_columns: vec!["title".into()],
+                read_set: Some(vec![1, 2]),
                 root: true,
                 initial_attnum: Some(1),
             }],
@@ -307,6 +308,41 @@ mod tests {
         )
         .unwrap();
         assert!(older.tables[0].reads.is_empty());
+    }
+
+    /// A plan stored by beta.39 or beta.40 has no read set: its tables and
+    /// paths decode as `Unknown`, whatever columns (`attnums`, `source_columns`)
+    /// it names, so no write to them is skipped or patched until re-derived.
+    #[test]
+    fn a_plan_stored_without_read_sets_reads_unknown() {
+        use crate::catalog::facts::stored;
+        use crate::decide::ReadSet;
+        let plan = TviewPlan::decode(
+            "post",
+            serde_json::json!({
+                "version": PLAN_VERSION,
+                "tables": [{"relid": 1, "table": "public.tb_post", "kind": "mapped", "sql": "",
+                            "attnums": [1, 2], "columns": ["pk_post", "title"]}],
+                "paths": [{"source_oid": 1, "source_table": "tb_post", "entity_name": "post",
+                           "initial_col": "pk_post", "source_columns": ["pk_post", "title"],
+                           "root": true}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(stored(plan.tables[0].read_set.as_deref()), ReadSet::Unknown);
+        assert_eq!(stored(plan.paths[0].read_set.as_deref()), ReadSet::Unknown);
+        let current = TviewPlan::decode(
+            "post",
+            with_table(&serde_json::json!({
+                "relid": 1, "table": "public.tb_post", "kind": "mapped", "sql": "",
+                "read_set": [2]
+            })),
+        )
+        .unwrap();
+        assert_eq!(
+            stored(current.tables[0].read_set.as_deref()),
+            ReadSet::Complete(std::iter::once(2_i16).collect())
+        );
     }
 
     #[test]

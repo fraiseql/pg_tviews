@@ -3,8 +3,6 @@
 -- written as an operator as when written as a call.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_operator_function_reads.sql
---
--- known-failing: #321 (G4)
 -- expect-output: operator function reads: PASS
 
 \set ON_ERROR_STOP on

@@ -10,6 +10,10 @@
       "entity_name": "custbadge",
       "initial_attnum": "public.tb_customer.pk_customer",
       "initial_col": "pk_customer",
+      "read_set": [
+        1,
+        2
+      ],
       "root": true,
       "source_columns": [
         "pk_customer",
@@ -22,6 +26,10 @@
       "entity_name": "custbadge",
       "initial_attnum": "public.tb_vnote.fk_customer",
       "initial_col": "fk_customer",
+      "read_set": [
+        1,
+        4
+      ],
       "root": false,
       "source_columns": [
         "pk_vnote",
@@ -48,6 +56,10 @@
       "links": [
         "public.tb_customer.pk_customer"
       ],
+      "read_set": [
+        1,
+        2
+      ],
       "relid": "public.tb_customer",
       "table": "public.tb_customer"
     },
@@ -64,6 +76,10 @@
       "kind": "local",
       "links": [
         "public.tb_vnote.fk_customer"
+      ],
+      "read_set": [
+        1,
+        4
       ],
       "relid": "public.tb_vnote",
       "table": "public.tb_vnote"

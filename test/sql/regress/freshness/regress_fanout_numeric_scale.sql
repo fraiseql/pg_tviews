@@ -3,8 +3,6 @@
 -- every reader of it, does not.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_fanout_numeric_scale.sql
---
--- known-failing: #321 (G2)
 -- expect-output: fan-out numeric scale: PASS
 
 \set ON_ERROR_STOP on

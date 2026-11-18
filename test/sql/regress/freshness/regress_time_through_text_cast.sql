@@ -3,8 +3,6 @@
 -- TVIEW declares time_refresh.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_time_through_text_cast.sql
---
--- known-failing: #321 (G4)
 -- expect-output: time through a text cast: PASS
 
 \set ON_ERROR_STOP on

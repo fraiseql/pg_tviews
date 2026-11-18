@@ -576,6 +576,26 @@ fn entities(
         .map_err(|e| crate::utils::spi::catalog_error(operation, &e))
 }
 
+/// The TVIEWs whose plan does not know which columns of `table` they read (a
+/// whole-row read, a system column, a declared function reading it, a plan
+/// stored without read sets), by entity: what a change of its row type (a
+/// column added, dropped or renamed) may change without a trigger firing.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn whole_readers_of(table: Oid) -> TViewResult<Vec<String>> {
+    let mut readers = Vec::new();
+    for entity in table_readers_of(table)? {
+        let unknown = super::TviewMeta::load_by_entity(&entity)?.is_none_or(|meta| {
+            super::facts::read_set(&meta, table.to_u32()) == crate::decide::ReadSet::Unknown
+        });
+        if unknown {
+            readers.push(entity);
+        }
+    }
+    Ok(readers)
+}
+
 /// The TVIEWs whose plan reads `table`, by entity, whatever triggers they have
 /// on it.
 ///

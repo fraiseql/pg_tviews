@@ -146,3 +146,87 @@ ALTER FUNCTION gen_read_back(int, text) OWNER TO :"gen_owner";
 \if :gen_selftest_frame
 ALTER FUNCTION fresh_diff(regclass, text) RESET ALL;
 \endif
+
+-- The rows of view `v`, as the owner reads them in the frame: each row's text
+-- (a number keeps its scale there, an array its order), sorted: the rows of a
+-- TVIEW are keyed, their order is not part of it.
+CREATE FUNCTION gen_view_image(v regclass) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
+SET TimeZone = 'UTC' SET DateStyle = 'ISO, YMD' SET extra_float_digits = '1'
+AS $$
+DECLARE image text;
+BEGIN
+    EXECUTE format('SELECT string_agg(r::text, E''\n'' ORDER BY r::text) FROM %s r', v) INTO image;
+    RETURN image;
+END $$;
+ALTER FUNCTION gen_view_image(regclass) OWNER TO :"gen_owner";
+
+-- The independent check of the read sets: for each TVIEW, each table its plan
+-- reads column by column (`read_set`), and each column of it outside that set,
+-- an UPDATE of a few rows to another value, and one to the same value (which
+-- moves the rows and changes their system columns), each rolled back, must leave
+-- the backing view's rows as they were. No pg_tviews trigger fires
+-- (session_replication_role = replica): the claim tested is the read set's alone.
+-- Raises PERTURBED with the TVIEW, table and column otherwise.
+CREATE FUNCTION gen_perturb() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    s record;
+    t record;
+    c record;
+    v regclass;
+    before text;
+    after text;
+    change text;
+    tested int := 0;
+BEGIN
+    PERFORM set_config('session_replication_role', 'replica', true);
+    FOR s IN SELECT g.tv, m.view_oid::oid::regclass AS view, m.plan
+               FROM gen_shape g JOIN tviews.pg_tview_meta m ON m.table_oid::oid = g.tv::oid
+              ORDER BY g.tv::text LOOP
+        before := gen_view_image(s.view);
+        FOR t IN
+            SELECT e.relid, bool_and(e.read_set IS NOT NULL) AS known,
+                   array_agg(DISTINCT a.n) FILTER (WHERE a.n IS NOT NULL) AS read_set
+              FROM (SELECT (x->>'relid')::oid AS relid, x->'read_set' AS read_set
+                      FROM jsonb_array_elements(s.plan->'tables') x
+                    UNION ALL
+                    SELECT (x->>'source_oid')::oid, x->'read_set'
+                      FROM jsonb_array_elements(coalesce(s.plan->'paths', '[]')) x) e
+              LEFT JOIN LATERAL jsonb_array_elements_text(coalesce(e.read_set, '[]')) a(n) ON true
+             WHERE NOT EXISTS (SELECT FROM tviews.pg_tview_meta o WHERE o.table_oid::oid = e.relid)
+             GROUP BY e.relid LOOP
+            CONTINUE WHEN NOT t.known;
+            FOR c IN SELECT a.attname, a.attnum FROM pg_attribute a
+                      WHERE a.attrelid = t.relid AND a.attnum > 0 AND NOT a.attisdropped
+                        AND a.attgenerated = '' AND a.attidentity <> 'a'
+                        AND (a.attnum::text <> ALL (coalesce(t.read_set, '{}')))
+                      ORDER BY a.attnum LOOP
+                FOREACH change IN ARRAY ARRAY[
+                    format('(SELECT o.%1$I FROM %2$s o WHERE o.%1$I IS DISTINCT FROM r.%1$I ORDER BY o.ctid LIMIT 1)',
+                           c.attname, t.relid::regclass),
+                    format('r.%I', c.attname)] LOOP
+                    after := NULL;
+                    BEGIN
+                        EXECUTE format('UPDATE %1$s r SET %2$I = %3$s WHERE r.ctid = ANY (ARRAY(SELECT ctid FROM %1$s ORDER BY ctid LIMIT 3))',
+                                       t.relid::regclass, c.attname, change);
+                        after := coalesce(gen_view_image(s.view), '');
+                        RAISE EXCEPTION 'gen_perturb: roll back';
+                    EXCEPTION WHEN OTHERS THEN
+                        -- An UPDATE the table refuses (a constraint) tests nothing.
+                        IF SQLERRM <> 'gen_perturb: roll back' THEN
+                            after := NULL;
+                        END IF;
+                    END;
+                    IF after IS NOT NULL THEN
+                        tested := tested + 1;
+                        IF after IS DISTINCT FROM coalesce(before, '') THEN
+                            RAISE EXCEPTION 'PERTURBED %: an UPDATE of %.% (outside its read set %) changed its view: SET % = %',
+                                s.tv, t.relid::regclass, c.attname, t.read_set, c.attname, change;
+                        END IF;
+                    END IF;
+                END LOOP;
+            END LOOP;
+        END LOOP;
+    END LOOP;
+    PERFORM set_config('session_replication_role', 'origin', true);
+    RAISE NOTICE 'perturbed % column(s) outside the read sets', tested;
+END $$;

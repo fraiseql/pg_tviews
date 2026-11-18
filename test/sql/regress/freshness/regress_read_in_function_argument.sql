@@ -3,8 +3,6 @@
 -- refreshes the rows whose function argument reads a written row.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_read_in_function_argument.sql
---
--- known-failing: #321 (walker)
 -- expect-output: read in the argument of a function in FROM: PASS
 
 \set ON_ERROR_STOP on

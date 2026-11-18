@@ -2,8 +2,6 @@
 -- every digit: 30 significant digits are not rounded to a double's 17.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_fanout_numeric_precision.sql
---
--- known-failing: #321 (G2)
 -- expect-output: fan-out numeric precision: PASS
 
 \set ON_ERROR_STOP on

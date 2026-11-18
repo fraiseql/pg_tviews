@@ -121,16 +121,29 @@ thread_local! {
     /// skip parents of rows whose refresh changed nothing.
     static FLUSH_CHANGED: RefCell<std::collections::HashSet<(String, i64)>> =
         RefCell::new(std::collections::HashSet::new());
+    /// TVIEWs rebuilt or refilled whole during the current flush: any of their
+    /// rows may have changed (G5).
+    static FLUSH_REBUILT: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
 }
 
 /// A flush starts: forget the previous flush's changed rows.
 pub fn begin_flush() {
     FLUSH_CHANGED.with(|c| c.borrow_mut().clear());
+    FLUSH_REBUILT.with(|c| c.borrow_mut().clear());
 }
 
-/// Whether `entity`'s row `pk` was inserted, updated or deleted in this flush.
+/// Whether `entity`'s row `pk` was inserted, updated or deleted in this flush,
+/// or may have been: its TVIEW was rebuilt or refilled whole in it.
 pub fn changed_in_flush(entity: &str, pk: i64) -> bool {
-    FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
+    FLUSH_REBUILT.with(|c| c.borrow().contains(entity))
+        || FLUSH_CHANGED.with(|c| c.borrow().contains(&(entity.to_string(), pk)))
+}
+
+/// Note a TVIEW rebuilt or refilled whole in the flush: every row of it counts
+/// as changed.
+pub(super) fn note_flush_rebuilt(entity: &str) {
+    FLUSH_REBUILT.with(|c| c.borrow_mut().insert(entity.to_string()));
 }
 
 /// How many rows of each TVIEW the last flush inserted, updated or deleted, by

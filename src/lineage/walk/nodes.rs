@@ -1,6 +1,6 @@
 //! Helpers over query nodes: opaque levels, casts, set operations, quoting.
 
-use super::{Column, Oid, Resolved, Sql, cstr, elements, list_len, pg_sys, tag};
+use super::{Column, Oid, Resolved, Sql, TViewError, cstr, elements, list_len, pg_sys, tag};
 
 /// Why a level's occurrences sit under a window function.
 pub(super) const WINDOW_REASON: &str = "read under a window function";
@@ -89,8 +89,14 @@ pub(super) unsafe fn in_clause(sortref: pg_sys::Index, clause: *mut pg_sys::List
 
 /// The leaf range table indexes of a set-operation tree, left to right.
 ///
+/// # Errors
+/// [`TViewError::DefinitionRefused`] on a node PostgreSQL does not build there.
+///
 /// SAFETY: `node` is a valid `SetOperationStmt` or `RangeTblRef`.
-pub(super) unsafe fn setop_leaves(node: *mut pg_sys::Node, leaves: &mut Vec<usize>) {
+pub(super) unsafe fn setop_leaves(
+    node: *mut pg_sys::Node,
+    leaves: &mut Vec<usize>,
+) -> Result<(), TViewError> {
     crate::utils::guard_depth();
     // SAFETY: checked by tag before each cast.
     unsafe {
@@ -100,12 +106,21 @@ pub(super) unsafe fn setop_leaves(node: *mut pg_sys::Node, leaves: &mut Vec<usiz
             }
             Some(pg_sys::NodeTag::T_SetOperationStmt) => {
                 let op = node.cast::<pg_sys::SetOperationStmt>();
-                setop_leaves((*op).larg, leaves);
-                setop_leaves((*op).rarg, leaves);
+                setop_leaves((*op).larg, leaves)?;
+                setop_leaves((*op).rarg, leaves)?;
             }
-            _ => {}
+            // walk: R a set operation branch PostgreSQL does not build: none of
+            // its rows would be walked
+            _ => {
+                return Err(TViewError::DefinitionRefused {
+                    reason: "the definition's set operation holds a branch pg_tviews does not \
+                             know"
+                        .to_string(),
+                });
+            }
         }
     }
+    Ok(())
 }
 
 /// SAFETY: `node` is null or a valid expression.
@@ -168,6 +183,8 @@ pub(super) unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::N
                             | pg_sys::CoercionForm::COERCE_IMPLICIT_CAST
                     );
                     let [arg] = elements::<pg_sys::Node>((*f).args)[..] else {
+                        // walk: n/a(a function of several arguments is no cast: stripping
+                        // stops)
                         break;
                     };
                     if !is_cast {
@@ -183,6 +200,7 @@ pub(super) unsafe fn strip_casts(mut node: *mut pg_sys::Node) -> (*mut pg_sys::N
                         },
                     )
                 }
+                // walk: n/a(anything else is no cast: stripping stops)
                 _ => break,
             };
             casts.push(cast);
@@ -218,6 +236,7 @@ pub(super) fn term_sql(term: &Resolved) -> Option<Sql> {
             sql.push_text(")");
             Some(sql)
         }
+        // walk: U a term SQL cannot name: the caller treats the expression as opaque
         _ => None,
     }
 }
@@ -237,6 +256,7 @@ pub(super) unsafe fn unnest_array(node: *mut pg_sys::Node) -> Option<*mut pg_sys
             return None;
         }
         let [array] = elements::<pg_sys::Node>((*f).args)[..] else {
+            // walk: U not unnest of one array: the caller treats the function as opaque
             return None;
         };
         Some(array)
@@ -253,6 +273,7 @@ pub(super) unsafe fn equality(
     // SAFETY: checked by tag before each cast.
     unsafe {
         let [Resolved::Col(x), Resolved::Col(y)] = chosen[..] else {
+            // walk: U not an equality of two columns: no equivalence, nothing maps through it
             return None;
         };
         if tag(expr) != Some(pg_sys::NodeTag::T_OpExpr) {

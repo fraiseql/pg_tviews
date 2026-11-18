@@ -279,10 +279,9 @@ impl Flush {
                     // The parent's patch stands for its owner's read of the child,
                     // and is all the parent reads of the child's row.
                     Some(chain) => self.cached_meta(&parent.entity)?.and_then(|m| {
-                        (crate::catalog::owner_reads::patch_stands_for_read(&m)
-                            && crate::stats::patch_columns_known(&m, child_table))
-                        .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
-                        .flatten()
+                        crate::stats::patch_reads_known(&m, child_table)
+                            .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
+                            .flatten()
                     }),
                     None => None,
                 };

@@ -23,6 +23,7 @@ pub const MAX_DEPTH: usize = 32;
 /// A range-table index, or an attribute number, as a `usize`: positive in a query
 /// tree; 0 (which names no entry) for anything else.
 pub(super) fn index(n: impl TryInto<usize>) -> usize {
+    // walk: n/a(a negative index names no entry: 0)
     n.try_into().unwrap_or(0)
 }
 
@@ -329,6 +330,7 @@ unsafe fn conjuncts(node: *mut pg_sys::Node) -> Vec<*mut pg_sys::Node> {
                     .flat_map(|n| conjuncts(n))
                     .collect()
             }
+            // walk: n/a(any other expression is one conjunct)
             Some(_) => vec![node],
         }
     }
@@ -350,6 +352,7 @@ fn list_len(list: *mut pg_sys::List) -> usize {
         0
     } else {
         // SAFETY: a valid, non-null List.
+        // walk: n/a(a list's length is never negative)
         usize::try_from(unsafe { (*list).length }).unwrap_or(0)
     }
 }

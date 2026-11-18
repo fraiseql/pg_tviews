@@ -1,0 +1,15 @@
+# The SQL a TVIEW definition may use, and how pg_tviews reads it.
+#
+# [leaf.<id>]: a kind of node the lineage walker passes over without a rule of
+# its own (`// walk: leaf(<id>)` in src/lineage/walk/). Each names the generic
+# walk that still visits the node's Vars, so the columns it reads are in the
+# read sets all the same. scripts/check-walk-arms.sh checks that every tag
+# names an entry here and every entry is tagged somewhere.
+
+[leaf.descend]
+description = "A node a collector has nothing to record of: an expression other than the ones it collects."
+visits = "PostgreSQL's expression_tree_walker descends into the node's children, so the collector still sees every Var, function and sub-select below it."
+
+[leaf.walked-inside]
+description = "A whole-row or column read of a subquery, CTE or function entry, rather than of a table."
+visits = "The read-set walk (src/lineage/walk/wholerow.rs) visits every Var of every query level, those of the subquery or CTE included, whether the level above reads its outputs or not."

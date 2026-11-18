@@ -2,8 +2,6 @@
 -- has none) fails the write instead of committing it with the TVIEW untouched.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_recompute_no_columns.sql
---
--- known-failing: #321 (S32)
 -- expect-output: recompute without columns: PASS
 
 \set ON_ERROR_STOP on

@@ -48,7 +48,17 @@ SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'WARNING 4 TVIEWs left to r
 UPDATE public.tb_kept SET title = 'k1b';
 SELECT pg_temp.must(pg_temp.in_sync('tv_kept', 'pk_kept'), 'tv_kept after a write');
 
--- tv_forced skips nothing and patches nothing: an UPDATE of a column nothing
+-- tv_forced keeps the previous release's plan, which stores no read set: its
+-- tables and paths read as unknown.
+SELECT pg_temp.must(NOT EXISTS (
+        SELECT 1 FROM tviews.pg_tview_meta m,
+             pg_catalog.jsonb_array_elements(
+                 (m.plan OPERATOR(pg_catalog.->) 'tables')
+                 OPERATOR(pg_catalog.||) COALESCE(m.plan OPERATOR(pg_catalog.->) 'paths',
+                                                  '[]'::pg_catalog.jsonb)) e
+        WHERE m.entity = 'forced' AND e OPERATOR(pg_catalog.?) 'read_set'),
+    'the left-behind tv_forced has a read set');
+-- So it skips nothing and patches nothing: an UPDATE of a column nothing
 -- reads recomputes its row, one of a copied column is not patched.
 BEGIN;
 SELECT pg_temp.mark();

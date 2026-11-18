@@ -36,6 +36,7 @@ pub fn record(recorded: Recorded) {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn record_rebuilt(entity: &str) -> crate::TViewResult<()> {
+    report::note_flush_rebuilt(entity);
     report::append_rebuilt(entity);
     if crate::config::publish_changes().is_some()
         && let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)?

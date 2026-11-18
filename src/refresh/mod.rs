@@ -208,8 +208,11 @@ pub(crate) fn upsert_conflict_action(qi_tv: &str, col_names: &[String], key_col:
 /// Safe under the owner's `search_path = pg_catalog, pg_temp` for any column type,
 /// including types whose `=` lives outside `pg_catalog` or that have none.
 pub(crate) fn rows_differ(stored: &[String], fresh: &[String]) -> String {
+    let equal = match crate::decide::noop_guard() {
+        crate::decide::Equality::Binary => "OPERATOR(pg_catalog.*=)",
+    };
     format!(
-        "NOT (ROW({})::pg_catalog.record OPERATOR(pg_catalog.*=) ROW({})::pg_catalog.record)",
+        "NOT (ROW({})::pg_catalog.record {equal} ROW({})::pg_catalog.record)",
         stored.join(", "),
         fresh.join(", ")
     )

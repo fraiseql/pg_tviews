@@ -656,8 +656,27 @@ impl FollowUps {
         }
         if let Some(rewrite) = self.value_rewrite {
             let readers = match &rewrite {
-                ValueRewrite::Expression { table, columns } => {
-                    crate::catalog::queries::column_readers_of(*table, columns)
+                ValueRewrite::Expression {
+                    table,
+                    columns,
+                    row_type,
+                } => {
+                    let mut readers = if columns.is_empty() {
+                        Ok(Vec::new())
+                    } else {
+                        crate::catalog::queries::column_readers_of(*table, columns)
+                    };
+                    if *row_type && let Ok(found) = &mut readers {
+                        match crate::catalog::queries::whole_readers_of(*table) {
+                            Ok(whole) => {
+                                found.extend(whole);
+                                found.sort();
+                                found.dedup();
+                            }
+                            Err(e) => readers = Err(e),
+                        }
+                    }
+                    readers
                 }
                 ValueRewrite::EnumLabel(enum_type) => {
                     crate::catalog::queries::type_readers_of(*enum_type)

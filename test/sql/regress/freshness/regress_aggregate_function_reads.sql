@@ -3,8 +3,6 @@
 -- (function_reads), behind an aggregate as when written as a call.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_aggregate_function_reads.sql
---
--- known-failing: #321 (G4)
 -- expect-output: aggregate function reads: PASS
 
 \set ON_ERROR_STOP on

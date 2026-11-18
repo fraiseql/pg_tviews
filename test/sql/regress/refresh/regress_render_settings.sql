@@ -108,7 +108,9 @@ SELECT keeps_settings($$UPDATE tb_event SET f = 1.0 / 3 WHERE pk_event = 1$$);
 SELECT assert_pinned('tv_event', 'pk_event', 'a cascade (tv_event)');
 SELECT assert_pinned('tv_log', 'pk_log', 'a cascade (tv_log)');
 
--- 7. A writer whose role sets every other setting values render or SQL parses
+-- 7. (`stamp` is text read as a timestamptz: a stored 'now' would read the
+--    clock, so the TVIEW declares its time refresh.)
+--    A writer whose role sets every other setting values render or SQL parses
 --    under: the locale categories (to a non-C locale when the cluster has one),
 --    the time zone abbreviations, array_nulls, quote_all_identifiers,
 --    transform_null_equals, standard_conforming_strings and the text search
@@ -131,7 +133,7 @@ SELECT tviews.pg_tviews_create('tv_misc', $q$
         'ts', to_tsvector(m.body)::text, 'ident', quote_ident(m.tag), 'arr', m.arr::text[],
         'stamp', m.stamp::timestamptz, 'nulleq', public.null_eq(m.nul), 'esc', public.esc_len(),
         'v', m.n) AS data
-    FROM public.tb_misc m $q$);
+    FROM public.tb_misc m $q$, '{"time_refresh": "external"}');
 DROP ROLE IF EXISTS regress_rs_writer;
 CREATE ROLE regress_rs_writer LOGIN;
 GRANT USAGE ON SCHEMA tviews TO regress_rs_writer;

@@ -10,6 +10,13 @@
       "entity_name": "contract",
       "initial_attnum": "public.tb_contract.id_contract",
       "initial_col": "id_contract",
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
       "root": true,
       "source_columns": [
         "pk_contract",
@@ -46,6 +53,13 @@
         "public.tb_contract.pk_contract",
         "public.tb_contract.id_contract",
         "public.tb_contract.version_no"
+      ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
       ],
       "relid": "public.tb_contract",
       "table": "public.tb_contract"

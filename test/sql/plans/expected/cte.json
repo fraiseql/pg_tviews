@@ -15,6 +15,11 @@
       "entity_name": "user",
       "initial_attnum": "public.tb_user.pk_user",
       "initial_col": "pk_user",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_user",
@@ -28,6 +33,9 @@
       "entity_name": "user",
       "initial_attnum": "public.tb_post.fk_user",
       "initial_col": "fk_user",
+      "read_set": [
+        3
+      ],
       "root": false,
       "source_columns": [
         "fk_user"
@@ -55,6 +63,11 @@
       "links": [
         "public.tb_user.pk_user"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_user",
       "table": "public.tb_user"
     },
@@ -69,6 +82,9 @@
       "kind": "local",
       "links": [
         "public.tb_post.fk_user"
+      ],
+      "read_set": [
+        3
       ],
       "relid": "public.tb_post",
       "table": "public.tb_post"

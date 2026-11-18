@@ -24,6 +24,12 @@
       "entity_name": "note",
       "initial_attnum": "public.tb_note.pk_note",
       "initial_col": "pk_note",
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "root": true,
       "source_columns": [
         "pk_note",
@@ -57,6 +63,12 @@
         "public.tb_note.pk_note",
         "public.tb_note.fk_doc"
       ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "relid": "public.tb_note",
       "table": "public.tb_note"
     },
@@ -73,6 +85,10 @@
       "kind": "propagated",
       "links": [
         "public.tv_doc.pk_doc"
+      ],
+      "read_set": [
+        1,
+        3
       ],
       "relid": "public.tv_doc",
       "table": "public.tv_doc",

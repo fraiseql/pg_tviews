@@ -57,6 +57,8 @@ impl Walker<'_> {
                     self.deparse_cast((*r).arg.cast(), ty, term_of, next_var)
                 }
                 pg_sys::NodeTag::T_BoolExpr => self.deparse_bool(expr.cast(), term_of, next_var),
+                // walk: U a node it does not write: the expression is opaque, or the guard is
+                // dropped (refresh more)
                 _ => None,
             }
         }
@@ -104,6 +106,7 @@ impl Walker<'_> {
                     sql.push_text(&format!(" OPERATOR({name}) "));
                     sql.push_sql(self.deparse(r, term_of, next_var)?);
                 }
+                // walk: U an operator of no or three arguments: not written, as above
                 _ => return None,
             }
         }
@@ -124,6 +127,7 @@ impl Walker<'_> {
         unsafe {
             let name = self.operator_name((*op).opno);
             let [l, r] = elements::<pg_sys::Node>((*op).args)[..] else {
+                // walk: U as above
                 return None;
             };
             let mut sql = Sql::text("(");
@@ -153,6 +157,7 @@ impl Walker<'_> {
             if (*f).funcformat != pg_sys::CoercionForm::COERCE_EXPLICIT_CALL
                 && (*f).funcformat != pg_sys::CoercionForm::COERCE_SQL_SYNTAX
             {
+                // walk: U an implicit cast of no argument: not written, as above
                 let [arg, ..] = args[..] else { return None };
                 let ty = ((*f).funcresulttype, pg_sys::exprTypmod(f.cast()));
                 return self.deparse_cast(arg, ty, term_of, next_var);
@@ -246,6 +251,7 @@ impl Walker<'_> {
                 )
                 .ok()
                 .flatten()
+                // walk: n/a(a catalog lookup; an empty name fails the deparsed SQL loudly)
                 .unwrap_or_default()
             })
             .clone()
@@ -284,6 +290,20 @@ impl Walker<'_> {
         let mut funcids = Vec::new();
         // SAFETY: a read-only walk of a valid Query.
         unsafe { collect_functions(query, &mut funcids) };
+        // An aggregate calls its parts: the transition, final and other
+        // functions of its `pg_aggregate` row. One whose parts cannot be read
+        // counts as untracked itself.
+        let mut parts: Vec<Oid> = Vec::new();
+        for &f in &funcids {
+            match aggregate_parts(f) {
+                Some(found) => parts.extend(found),
+                None if !self.graph.untracked_functions.contains(&f.to_u32()) => {
+                    self.graph.untracked_functions.push(f.to_u32());
+                }
+                None => {}
+            }
+        }
+        funcids.extend(parts);
         for funcid in funcids {
             let (name, immutable) = self.function(funcid);
             if !immutable
@@ -294,4 +314,24 @@ impl Walker<'_> {
             }
         }
     }
+}
+
+/// The functions aggregate `funcid` calls (none when it is not an aggregate):
+/// those of its `pg_aggregate` row; `None` when they cannot be read.
+fn aggregate_parts(funcid: Oid) -> Option<Vec<Oid>> {
+    // SAFETY: a syscache lookup by OID.
+    if unsafe { pg_sys::get_func_prokind(funcid) } != pg_sys::PROKIND_AGGREGATE.cast_signed() {
+        return Some(Vec::new());
+    }
+    crate::utils::spi::one::<Vec<Oid>>(
+        "SELECT pg_catalog.array_agg(f) FILTER (WHERE f OPERATOR(pg_catalog.<>) 0) FROM \
+             pg_catalog.pg_aggregate a, \
+             LATERAL pg_catalog.unnest(ARRAY[a.aggtransfn, a.aggfinalfn, a.aggcombinefn, \
+                 a.aggserialfn, a.aggdeserialfn, a.aggmtransfn, a.aggminvtransfn, \
+                 a.aggmfinalfn]::pg_catalog.oid[]) AS f \
+         WHERE a.aggfnoid OPERATOR(pg_catalog.=) $1",
+        &[crate::utils::spi::oid(funcid)],
+    )
+    .ok()
+    .map(Option::unwrap_or_default)
 }

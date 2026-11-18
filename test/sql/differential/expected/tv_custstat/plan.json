@@ -10,6 +10,9 @@
       "entity_name": "custstat",
       "initial_attnum": "public.tb_order.fk_customer",
       "initial_col": "fk_customer",
+      "read_set": [
+        3
+      ],
       "root": false,
       "source_columns": [
         "fk_customer"
@@ -21,6 +24,11 @@
       "entity_name": "custstat",
       "initial_attnum": "public.tb_customer.pk_customer",
       "initial_col": "pk_customer",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": false,
       "source_columns": [
         "pk_customer",
@@ -46,6 +54,9 @@
       "links": [
         "public.tb_order.fk_customer"
       ],
+      "read_set": [
+        3
+      ],
       "relid": "public.tb_order",
       "table": "public.tb_order"
     },
@@ -64,6 +75,11 @@
       "kind": "local",
       "links": [
         "public.tb_customer.pk_customer"
+      ],
+      "read_set": [
+        1,
+        2,
+        3
       ],
       "relid": "public.tb_customer",
       "table": "public.tb_customer"

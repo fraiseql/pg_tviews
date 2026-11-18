@@ -37,6 +37,7 @@ mod audit;
 mod cache;
 mod catalog;
 mod concurrency;
+mod decide;
 mod delta;
 mod executor;
 mod flush;

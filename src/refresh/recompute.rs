@@ -47,9 +47,14 @@ pub fn recompute(
     let key_col = &meta.identity.column;
     let key_type = &meta.key_type;
 
+    // A registered TVIEW always has columns: none is a broken catalog row, and
+    // refreshing nothing would commit the write with the rows stale (S32).
     let col_names = &meta.view_columns;
     if col_names.is_empty() {
-        return Ok(super::Touched::default());
+        return Err(crate::TViewError::CatalogError {
+            operation: format!("Recompute rows of tv_{}", meta.entity_name),
+            pg_error: "its catalog row lists no column of its backing view".to_string(),
+        });
     }
     let col_list = super::column_list(col_names);
 

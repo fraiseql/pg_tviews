@@ -935,6 +935,8 @@ class Case:
         self.write_schema()
         self.make_shapes()
         self.write_shapes()
+        # The read sets, checked by perturbation before any write.
+        self.out.append("SELECT gen_perturb();")
         self.write_statements()
         return "\n".join(self.out) + "\n"
 

@@ -3,8 +3,6 @@
 -- a written row.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_read_in_limit.sql
---
--- known-failing: #321 (walker)
 -- expect-output: read in a LIMIT: PASS
 
 \set ON_ERROR_STOP on

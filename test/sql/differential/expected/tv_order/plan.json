@@ -7,9 +7,7 @@
       "lookups": [
         "fk_customer"
       ],
-      "path": [
-        "customer"
-      ]
+      "path": []
     }
   ],
   "key": {
@@ -21,6 +19,13 @@
       "entity_name": "order",
       "initial_attnum": "public.tb_order.id",
       "initial_col": "id",
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
       "root": true,
       "source_columns": [
         "pk_order",
@@ -58,6 +63,13 @@
         "public.tb_order.id",
         "public.tb_order.fk_customer"
       ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
       "relid": "public.tb_order",
       "table": "public.tb_order"
     },
@@ -77,6 +89,10 @@
       "kind": "mapped",
       "links": [
         "public.tb_line.fk_order"
+      ],
+      "read_set": [
+        3,
+        5
       ],
       "reads": [
         {
@@ -101,6 +117,10 @@
       "kind": "propagated",
       "links": [
         "public.tv_customer.pk_customer"
+      ],
+      "read_set": [
+        1,
+        3
       ],
       "relid": "public.tv_customer",
       "table": "public.tv_customer",

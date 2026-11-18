@@ -3,8 +3,6 @@
 -- rounded to doubles.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_patch_jsonb_numbers.sql
---
--- known-failing: #321 (G2)
 -- expect-output: patched jsonb numbers: PASS
 
 \set ON_ERROR_STOP on

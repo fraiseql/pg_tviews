@@ -121,38 +121,54 @@ fn route(
     let entity = meta.entity_name.as_str();
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     let computed = computed_columns(entity, table_oid)?;
-    // The columns the TVIEW reads of the table, as its plan says: none known
-    // (every column read) when the plan does not know them.
-    let reads_hold = crate::catalog::stopgap::columns_known(meta, mapping.relid);
-    let attnums: &[i16] = if reads_hold { &mapping.attnums } else { &[] };
+    let virtual_read = computed.is_some();
+    // The columns the TVIEW reads of the table, when its plan knows them and
+    // they hold now (`crate::decide`): none known (every column read) otherwise.
+    let read = crate::catalog::facts::read_set(meta, mapping.relid);
+    let env = crate::catalog::facts::env(meta, mapping.relid);
+    let trusted: Option<Vec<i16>> =
+        crate::decide::trusted_read_set(&read, env).map(|r| r.iter().collect());
+    let mapped = matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys);
     #[cfg(feature = "test-hooks")]
-    if !reads_hold
+    if trusted.is_none()
         && event == Event::Update
-        && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
-        && computed.is_none()
+        && mapped
+        && !virtual_read
         // SAFETY: an AFTER statement trigger's TriggerData.
         && unsafe { reads_unchanged(trigger.trigger_data(), &mapping.attnums) }
     {
-        crate::stats::record_stopgap(
-            &crate::catalog::stopgap::reasons(meta, mapping.relid),
-            entity,
-            mapping.relid,
-        );
+        crate::stats::count_refusal(meta, mapping.relid);
     }
     // An UPDATE that changed none of the columns the TVIEW reads maps to no key:
-    // decided from the transition tables themselves, before any query.
-    let reads_same = event == Event::Update
-        && matches!(mapping.kind, MappingKind::Mapped | MappingKind::AllKeys)
-        && computed.is_none()
-        // SAFETY: an AFTER statement trigger's TriggerData.
-        && unsafe { reads_unchanged(trigger.trigger_data(), crate::mutant::drop_last("S11", attnums)) };
+    // decided from the transition tables themselves, before any query. The
+    // columns of the read set some row changed: all of them when any did.
+    let changed: crate::decide::Attnums = match &trusted {
+        Some(columns)
+            if event == Event::Update
+                && mapped
+                && !virtual_read
+                // SAFETY: an AFTER statement trigger's TriggerData.
+                && unsafe {
+                    reads_unchanged(
+                        trigger.trigger_data(),
+                        crate::mutant::drop_last("S11", columns),
+                    )
+                } =>
+        {
+            crate::decide::Attnums::new()
+        }
+        Some(columns) => columns.iter().collect(),
+        None => crate::decide::Attnums::new(),
+    };
+    let reads_same = mapped
+        && crate::decide::statement_skip(decide_event(event), &read, &changed, virtual_read, env);
     // The links are columns it reads: unchanged when those are. A virtual
     // generated column is NULL in the transition tables, so one among the links
     // counts as changed; the stored ones compare as they are. Columns its plan
     // does not list may link its rows: then every write changes a link.
-    if reads_hold {
+    if trusted.is_some() {
         crate::concurrency::note_write(Some(mapping), event, |links| {
-            (computed.is_some() && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
+            (virtual_read && links.iter().any(|&attnum| is_virtual(table_oid, attnum)))
                 // SAFETY: an AFTER statement trigger's TriggerData.
                 || (!reads_same && !unsafe { reads_unchanged(trigger.trigger_data(), links) })
         });
@@ -162,6 +178,11 @@ fn route(
     if reads_same {
         return Ok(Route::Nothing);
     }
+    // The pair filter (S12): the columns a row's two images are compared on.
+    let compared: Vec<i16> = crate::decide::pair_filter(decide_event(event), &read, env)
+        .map(|r| r.iter().collect())
+        .unwrap_or_default();
+    let attnums: &[i16] = &compared;
     let delta = || {
         delta_sql(
             entity,
@@ -170,21 +191,25 @@ fn route(
             crate::mutant::drop_last("S12", attnums),
         )
     };
+    // An `all_keys` table under `full_refresh` refreshes the whole TVIEW, but
+    // a guarded table's rows that meet none of its unlinked reads' conditions
+    // change only what its linked reads reach (#284).
+    let whole = full_refresh
+        && !crate::mutant::on("S14")
+        && crate::decide::lookup_filter(
+            full_refresh,
+            mapping.guard.is_some(),
+            mapping.guard.is_none() || guard_met(trigger, entity, mapping, &delta()?)?,
+        );
     Ok(match mapping.kind {
-        // A guarded table's rows that meet none of its unlinked reads' conditions
-        // change only what its linked reads reach (#284).
-        MappingKind::AllKeys
-            if full_refresh
-                && (crate::mutant::on("S14")
-                    || !guard_met(trigger, entity, mapping, &delta()?)?) =>
-        {
+        MappingKind::AllKeys if full_refresh && !whole => {
             if mapping.sql.is_some() {
                 Route::Mapped { delta: delta()? }
             } else {
                 Route::Nothing
             }
         }
-        MappingKind::AllKeys if full_refresh => Route::FullRefresh,
+        MappingKind::AllKeys if whole => Route::FullRefresh,
         // An `all_keys` table outside `full_refresh` still maps the reads of it
         // that can be traced.
         MappingKind::Mapped | MappingKind::AllKeys if mapping.sql.is_some() => {
@@ -192,6 +217,15 @@ fn route(
         }
         _ => Route::Nothing,
     })
+}
+
+/// The decisions' name of a write's event.
+const fn decide_event(event: Event) -> crate::decide::Event {
+    match event {
+        Event::Insert => crate::decide::Event::Insert,
+        Event::Update => crate::decide::Event::Update,
+        Event::Delete => crate::decide::Event::Delete,
+    }
 }
 
 /// Whether a changed row (`delta`) of an `all_keys` table meets the conditions of
@@ -304,9 +338,7 @@ fn apply(
             // read returns the same.
             if mapping.kind == MappingKind::Mapped
                 && event == Event::Update
-                && crate::stats::patch_columns_known(meta, mapping.relid)
-                && crate::catalog::owner_reads::patch_stands_for_read(meta)
-                && fan_out(trigger, entity, table_oid, mapping)?
+                && fan_out(trigger, meta, table_oid, mapping)?
             {
                 return Ok(());
             }
@@ -405,36 +437,79 @@ fn capture_pass<'a>(
 }
 
 /// Write an UPDATE into every TVIEW row it reaches instead of recomputing them,
-/// when the mapping has a fan-out patch and every updated row
-/// qualifies: same key, and only columns the patch copies into `data` changed.
-/// Returns false (map the rows instead) otherwise.
+/// when the mapping has a fan-out patch and [`crate::decide::fanout_patch`]
+/// allows it for every updated row: same key, and only columns the patch copies
+/// into `data`, exactly, changed among those the TVIEW reads. Whether a column
+/// changed is the binary comparison of its two images, in SQL. Returns false
+/// (map the rows instead) otherwise.
 fn fan_out(
     trigger: &PgTrigger<'_>,
-    entity: &str,
+    meta: &TviewMeta,
     table_oid: Oid,
     mapping: &KeyMapping,
 ) -> TViewResult<bool> {
+    let entity = meta.entity_name.as_str();
     let (Some(fanout), Some(key_col)) = (&mapping.fanout, &mapping.key_col) else {
         return Ok(false);
     };
-    if !crate::config::direct_patch_enabled() {
-        return Ok(false);
-    }
-    let Some((same_row, columns)) = row_pairing(table_oid, &mapping.attnums)? else {
+    let read = crate::catalog::facts::read_set(meta, mapping.relid);
+    let env = crate::catalog::facts::patch_env(meta, mapping.relid);
+    let Some(trusted) = crate::decide::trusted_read_set(&read, env) else {
+        #[cfg(feature = "test-hooks")]
+        crate::stats::count_refusal(meta, mapping.relid);
         return Ok(false);
     };
-    // Both images of each updated row. An image without its pair is a row whose
-    // primary key changed: the children of its old key no longer join it, which
-    // no patch of its new key writes (#288), so the rows are mapped instead.
+    if !env.direct_patch_enabled {
+        return Ok(false);
+    }
+    let read_attnums: Vec<i16> = trusted.iter().collect();
+    let Some((same_row, columns)) = row_pairing(table_oid, &read_attnums)? else {
+        return Ok(false);
+    };
+    // The read columns `data` copies, each with whether the copy is exact.
+    let copied: Vec<crate::decide::Copied> = read_attnums
+        .iter()
+        .zip(&columns)
+        .filter(|(_, name)| fanout.fields.iter().any(|(c, _)| c == *name))
+        .map(|(&attnum, _)| crate::decide::Copied {
+            attnum,
+            exact: crate::catalog::facts::copy_is_exact(mapping.relid, attnum),
+        })
+        .collect();
+    // Both images of each updated row, and which read columns differ between
+    // them byte for byte (D10). An image without its pair is a row whose
+    // primary key changed: the children of its old key no longer join it,
+    // which no patch of its new key writes (#288), so the rows are mapped
+    // instead.
+    let compared = crate::mutant::drop_last("S16", &columns);
+    let differs = if compared.is_empty() {
+        "pg_catalog.array_fill(false, ARRAY[0])".to_string()
+    } else {
+        format!(
+            "ARRAY[{}]",
+            compared
+                .iter()
+                .map(|c| {
+                    let c = crate::utils::ident::quoted(c);
+                    crate::refresh::rows_differ(&[format!("o.{c}")], &[format!("n.{c}")])
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     let sql = format!(
-        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n) \
+        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n), {differs} \
          FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
     );
     let pairs = with_transition_tables(trigger, entity, |frame, client, table| {
         let mut pairs = Vec::new();
         for row in crate::utils::spi::kept_update_over(frame, client, table, &sql, &[])? {
-            match (row.get::<pgrx::JsonB>(1)?, row.get::<pgrx::JsonB>(2)?) {
-                (Some(old), Some(new)) => pairs.push((old.0, new.0)),
+            match (
+                row.get::<pgrx::JsonB>(1)?,
+                row.get::<pgrx::JsonB>(2)?,
+                row.get::<Vec<bool>>(3)?,
+            ) {
+                (Some(old), Some(new), Some(differs)) => pairs.push((old.0, new.0, differs)),
                 _ => return Ok(None),
             }
         }
@@ -442,10 +517,12 @@ fn fan_out(
     })?;
     let Some(pairs) = pairs else { return Ok(false) };
     let mut patches = Vec::new();
-    for (old, new) in &pairs {
-        let changed: Vec<&String> = crate::mutant::drop_last("S16", &columns)
+    for (old, new, differs) in &pairs {
+        let changed: crate::decide::Attnums = read_attnums
             .iter()
-            .filter(|c| old.get(*c) != new.get(*c))
+            .zip(differs)
+            .filter(|(_, d)| **d)
+            .map(|(&attnum, _)| attnum)
             .collect();
         if changed.is_empty() {
             continue;
@@ -453,17 +530,26 @@ fn fan_out(
         let Some(key) = new.get(key_col).and_then(serde_json::Value::as_i64) else {
             return Ok(false);
         };
-        if old.get(key_col) != new.get(key_col) {
+        let key_changed = old.get(key_col) != new.get(key_col);
+        if !crate::decide::fanout_patch(
+            crate::decide::Event::Update,
+            &read,
+            &changed,
+            key_changed,
+            true,
+            &copied,
+            env,
+        ) {
             return Ok(false);
         }
         // Each changed column at every path it is copied to.
         let mut fields = serde_json::Map::new();
-        for column in changed {
-            let mut paths = fanout.fields.iter().filter(|(c, _)| c == column).peekable();
-            if paths.peek().is_none() {
-                return Ok(false);
-            }
-            for (_, path) in paths {
+        for (_, column) in read_attnums
+            .iter()
+            .zip(&columns)
+            .filter(|(attnum, _)| changed.contains(**attnum))
+        {
+            for (_, path) in fanout.fields.iter().filter(|(c, _)| c == column) {
                 fields.insert(
                     crate::queue::patch::fanout_path_key(path),
                     new.get(column).cloned().unwrap_or_default(),
