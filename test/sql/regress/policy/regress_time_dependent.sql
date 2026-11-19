@@ -50,9 +50,10 @@ FROM (VALUES ('CURRENT_DATE', 'CURRENT_DATE'), ('CURRENT_TIMESTAMP', 'CURRENT_TI
      LATERAL (SELECT error_of(format($$SELECT tviews.pg_tviews_create_or_replace('tv_contract',
          'SELECT pk_contract, id, (%s)::text AS t FROM tb_contract', '{"uncascaded_policy": "full_refresh"}')$$,
          expr)) AS outcome) o;
--- Not the time: age() of two values, a date literal, CURRENT_USER.
+-- Not the time: age() of two values, a date literal, SESSION_USER (CURRENT_USER
+-- is refused: it names the reader, regress_reader_functions_refused).
 SELECT tviews.pg_tviews_create('tv_contract', $$SELECT pk_contract, id, age(ends_at, ends_at) AS a,
-    DATE '2026-01-01' AS d, CURRENT_USER AS u FROM tb_contract$$);
+    DATE '2026-01-01' AS d, SESSION_USER AS u FROM tb_contract$$);
 SELECT must(NOT time_dependent AND options->>'time_refresh' IS NULL, 'a TVIEW reading no time')
 FROM tviews.registry WHERE entity = 'contract';
 SELECT tviews.pg_tviews_drop('tv_contract');

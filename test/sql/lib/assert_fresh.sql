@@ -37,6 +37,7 @@ SET xmloption = 'content'
 SET gin_fuzzy_search_limit = '0'
 SET plan_cache_mode = 'auto'
 SET jit = 'off'
+SET row_security = 'on'
 -- END frame
 AS $$
 DECLARE

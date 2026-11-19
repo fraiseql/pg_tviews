@@ -41,6 +41,7 @@ mod decide;
 mod delta;
 mod executor;
 mod flush;
+mod guard;
 mod hooks;
 mod internal_ddl;
 mod lineage;

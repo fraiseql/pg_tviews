@@ -277,8 +277,8 @@ JOIN tb_user u ON u.pk_user = p.fk_user;
 5. The TVIEW is registered in `tviews.pg_tview_meta`, with what step 3 derived stored
    as one propagation plan (`plan`); tools read it through `tviews.registry`
    ([Contract for tools](read-contract.md)).
-6. Triggers are installed on the tables the definition reads (see
-   [Triggers](#triggers)).
+6. Triggers are installed on the tables the definition reads, and the table gets its
+   guard (see [Triggers](#triggers)).
 
 All of it happens in the caller's transaction: a rollback leaves nothing behind.
 
@@ -437,6 +437,10 @@ A definition is refused, nothing created, when:
 - it reads a table a logical replication subscription writes (`0A000`): the apply
   worker fires no statement trigger. Create the TVIEW on the publisher and publish its
   table ([Replication](../operations/replication.md));
+- it reads who reads it, `CURRENT_USER`, `CURRENT_ROLE` or `USER`, at any level of
+  its view chain (`0A000`): a TVIEW's rows are the same for every reader and are
+  refreshed as its owner. Filter what each role reads with a row security policy on
+  `tv_<entity>` ([Row-level security on `tv_*`](#row-level-security-on-tv_));
 - it reads a temporary table: PostgreSQL refuses the backing view it would need
   (`cannot create temporary relation in non-temporary schema`).
 
@@ -798,6 +802,57 @@ TVIEW requires owning it (or being a member of its owner, or of the extension's
 owner), otherwise `42501`. The maintenance functions that act on every TVIEW are not
 executable by `PUBLIC` ([Operator role](../user-guides/operators.md#operator-role)).
 
+## Row-level security on `tv_*`
+
+A TVIEW's rows are the same for every reader: pg_tviews computes them as the TVIEW's
+owner. What each reader may read of them is the policies on `tv_<entity>`, as on any
+table. The pattern:
+
+```sql fragment
+-- The scope columns, projected beside data.
+SELECT tviews.pg_tviews_create('tv_contract', $$
+    SELECT c.pk_contract, c.id, c.tenant_id, c.path,
+           jsonb_build_object('name', c.name, 'sites', …) AS data
+    FROM tb_contract c … $$);
+ALTER TABLE tv_contract ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON tv_contract FOR SELECT
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+```
+
+- **What a reader reads of a row is everything in it.** A document embeds its children
+  and copies columns whole: every embedded collection, and every copied column, must be
+  readable by every reader of its parent row. Content scoped more narrowly than its
+  parent (a child table whose policy is narrower, a column some readers may not
+  select) is not embedded: make it a TVIEW of its own, read through its own table and
+  policy. The health check's `tv_policies` component reports a TVIEW embedding rows of
+  a table with row security whose policies differ from its own, and a TVIEW without row
+  security that other roles read while a table it reads filters its readers.
+- **The owner reads every row.** `ENABLE ROW LEVEL SECURITY` leaves the table's owner
+  out of its policies, as PostgreSQL does. Under `FORCE ROW LEVEL SECURITY` a policy
+  would hide rows from the refresh, which would leave them stale: every statement
+  pg_tviews runs on the table (refreshes, the rebuild, the time refresh) fails with
+  `55000` unless the owner has a permissive policy that filters nothing, and no
+  restrictive policy applies to it:
+
+  ```sql fragment
+  CREATE POLICY tviews_owner ON tv_contract FOR ALL TO app_owner
+      USING (true) WITH CHECK (true);
+  ```
+
+  `ALTER TABLE … FORCE ROW LEVEL SECURITY` is not refused, since `pg_restore` runs it
+  before `CREATE POLICY`: it warns, and the health check's `tv_policies` component
+  reports the table until it is fixed. pg_tviews' statements run with `row_security =
+  on` whatever the session says ([The owner frame](owner-frame.md)).
+- **A definition does not read its reader**: `CURRENT_USER`, `CURRENT_ROLE` and `USER`
+  are refused ([Refused definitions](#refused-definitions)).
+- **Indexes.** Every column whose name ends in `_id` gets a managed B-tree index,
+  `tenant_id` included: add only what the policies need besides, such as a GiST index
+  on `(tenant_id, path)` (`btree_gist`). A refresh that leaves `tenant_id` and `path`
+  unchanged stays a HOT update with these indexes, as long as none is on `data`.
+- **Changing the TVIEW.** A `pg_tviews_create_or_replace()` that rebuilds the table
+  puts its row security and policies back on the new table; a policy naming a column
+  the new definition dropped fails the change, naming the policy.
+
 ## DROP TABLE tv_*
 
 ```sql fragment
@@ -910,6 +965,28 @@ DISABLE TRIGGER` cannot stop one TVIEW alone. Use
 needs installing by hand: `tviews.pg_tviews_check_health()` reports missing, orphaned
 or disabled triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()`
 re-installs them.
+
+### The TVIEW's own table
+
+pg_tviews is the only writer of a TVIEW's table. Each `tv_<entity>` carries a statement
+trigger, `trg_tview_guard` (`tviews.pg_tview_guard_trigger`), that refuses an `INSERT`,
+`UPDATE`, `DELETE` or `TRUNCATE` from outside pg_tviews with `55000`, whoever runs it,
+its owner and a superuser included: a row written by hand would leave the table, and
+every document embedding the row, differing from the definition until the next refresh.
+
+- **The owner's `TRUNCATE`** is allowed, to rebuild the table with
+  `SELECT tviews.pg_tviews_refresh('tv_<entity>')`.
+- **`pg_dump` and `pg_restore`**: a full restore creates the trigger after loading the
+  data. A **data-only** restore into an existing schema is refused at the first TVIEW
+  table: leave the TVIEW tables' data out (`pg_dump --exclude-table-data='*.tv_*'`), and
+  pg_tviews refills each empty TVIEW from its definition. Do not use
+  `--disable-triggers`, which also skips the rebind of pg_tviews' catalog rows.
+- **Logical replication and `session_replication_role = replica`**: the guard is an
+  ordinary trigger, so a session in replica role, and a subscription's apply worker,
+  bypass it as they bypass every ordinary trigger. The health check reports a TVIEW
+  table a subscription writes (component `triggers`).
+- The health check also reports a guard missing or disabled; `pg_tviews_reregister()`
+  restores a missing one.
 
 ### Firing order
 

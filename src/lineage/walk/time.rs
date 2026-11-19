@@ -1,18 +1,44 @@
-//! How a level reads the current time.
+//! How a level reads the current time, or its reader.
 
-use super::{Oid, Walker, list_len, pg_guard, pg_sys, tag};
+use super::{Oid, TViewError, TViewResult, Walker, list_len, pg_guard, pg_sys, tag};
 
 impl Walker<'_> {
     /// Record the time this level reads: `CURRENT_DATE` and the other SQL
     /// value functions of the time, and the `pg_catalog` functions that return
     /// the current time. Its rows then change with no write.
     ///
+    /// # Errors
+    /// [`TViewError::DefinitionRefused`] when the level reads who reads it:
+    /// `CURRENT_USER`, `CURRENT_ROLE`, `USER` (D8: a document whose content
+    /// depends on its reader cannot be the same for every reader of its row).
+    ///
     /// SAFETY: `query` is the valid Query of the innermost level.
-    pub(super) unsafe fn note_time(&mut self, query: *mut pg_sys::Node) {
+    pub(super) unsafe fn note_time(&mut self, query: *mut pg_sys::Node) -> TViewResult<()> {
         let mut found = Vec::new();
         // SAFETY: a read-only walk of a valid Query.
         unsafe { collect_time(query, &mut found) };
         for node in found {
+            let reader = match node {
+                TimeNode::Value(op) => reader_value_name(op),
+                TimeNode::Function(funcid, _) => match self.function(funcid).0.as_str() {
+                    "pg_catalog.current_user" | "pg_catalog.\"current_user\"" => {
+                        Some("current_user")
+                    }
+                    // walk: n/a(another function names no reader)
+                    _ => None,
+                },
+                // walk: n/a(a cast names no reader)
+                TimeNode::Cast(_) => None,
+            };
+            if let Some(reader) = reader {
+                return Err(TViewError::DefinitionRefused {
+                    reason: format!(
+                        "the definition reads {reader}: a TVIEW's rows are the same for every \
+                         reader, and its refresh runs as its owner. Filter what each role reads \
+                         with a row security policy on the TVIEW's table instead"
+                    ),
+                });
+            }
             let name = match node {
                 TimeNode::Value(op) => time_value_name(op).map(str::to_string),
                 TimeNode::Function(funcid, args) => {
@@ -40,6 +66,20 @@ impl Walker<'_> {
                 self.graph.time_reads.push(name);
             }
         }
+        Ok(())
+    }
+}
+
+/// How a SQL value function naming the reader is written, `None` for another
+/// one. `SESSION_USER` names the session, not the role reading: not one.
+const fn reader_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str> {
+    use pg_sys::SQLValueFunctionOp as Op;
+    match op {
+        Op::SVFOP_CURRENT_USER => Some("CURRENT_USER"),
+        Op::SVFOP_CURRENT_ROLE => Some("CURRENT_ROLE"),
+        Op::SVFOP_USER => Some("USER"),
+        // walk: n/a(another SQL value function names no reader)
+        _ => None,
     }
 }
 

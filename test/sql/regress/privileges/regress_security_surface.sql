@@ -131,6 +131,7 @@ BEGIN
            -- triggers and event triggers
            'tviews.pg_tview_trigger_handler()', 'tviews.pg_tview_delta_trigger()',
            'tviews.pg_tview_flush_trigger()', 'tviews.pg_tview_truncate_trigger()',
+           'tviews.pg_tview_guard_trigger()',
            'tviews.pg_tviews_handle_ddl_event()', 'tviews.pg_tviews_handle_drop_event()',
            'tviews.pg_tviews_meta_rebind()', 'tviews.pg_tviews_meta_changed()']) f);
     IF unclassified IS NOT NULL THEN

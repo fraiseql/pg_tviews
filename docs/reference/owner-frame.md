@@ -46,6 +46,12 @@ How the frame's statements are planned. Fixed values:
 |---|---|
 | `plan_cache_mode` | `auto` |
 | `jit` | `off` |
+| `row_security` | `on` |
+
+`row_security` decides, when a statement is planned, whether a policy that applies to the
+owner is applied or makes the statement fail. pg_tviews refuses to maintain a TVIEW that a
+policy applying to its owner could filter ([Row-level security on `tv_*`](ddl.md#row-level-security-on-tv_)),
+so it is pinned for the one case it allows, whatever the writer's session says.
 
 ## Planner settings
 

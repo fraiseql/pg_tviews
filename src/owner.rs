@@ -558,8 +558,14 @@ pub const RENDER_SETTINGS: [(&CStr, &CStr); 16] = [
 /// would plan every lookup again at each call. Never JIT-compiled (#283): a
 /// refresh reads a few rows by key, or rebuilds a TVIEW once, and compiling its
 /// statements cost more than it saved whenever a cost estimate crossed
-/// `jit_above_cost`.
-pub const PLAN_SETTINGS: [(&CStr, &CStr); 2] = [(c"plan_cache_mode", c"auto"), (c"jit", c"off")];
+/// `jit_above_cost`. Row security on: a policy that applies to the owner, which
+/// `pg_tviews` allows only when it filters nothing ([`crate::guard`]), is applied
+/// rather than failing the statement in a session that turned it off.
+pub const PLAN_SETTINGS: [(&CStr, &CStr); 3] = [
+    (c"plan_cache_mode", c"auto"),
+    (c"jit", c"off"),
+    (c"row_security", c"on"),
+];
 
 /// While alive, the [`RENDER_SETTINGS`] (and [`PLAN_SETTINGS`]) are in force; dropping it restores the
 /// session's values (an error's (sub)transaction abort restores them instead).
@@ -679,6 +685,12 @@ impl Drop for CatalogPath {
         // SAFETY: closes the nest level `pin` opened.
         unsafe { pg_sys::AtEOXact_GUC(false, self.guc_level) };
     }
+}
+
+/// Whether an owner frame is open: the statement running now is `pg_tviews`'
+/// own, run as a TVIEW's owner.
+pub fn in_owner_frame() -> bool {
+    OPEN_FRAMES.with(std::cell::Cell::get) > 0
 }
 
 /// Whether `pg_tviews` is doing work on a caller's behalf (a [`CatalogPath`] or

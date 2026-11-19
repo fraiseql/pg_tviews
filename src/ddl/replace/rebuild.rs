@@ -178,6 +178,7 @@ pub(super) fn rebuild(
     // What the rebuild must put back, as statements computed before the drop.
     let restore = crate::utils::spi::strings(RESTORE_STATEMENTS, &objects)?;
     let user_indexes = user_indexes(meta.tview_oid)?;
+    let row_security = row_security_statements(meta.tview_oid)?;
 
     let owner = crate::owner::Owner::of_tview(meta)?;
     crate::ddl::drop::drop_tview(
@@ -208,6 +209,7 @@ pub(super) fn rebuild(
     restore_privileges(&restore, &tv, &view)?;
     crate::ddl::privileges::follow(Some(rebuilt.tview_oid), true)?;
     recreate_user_indexes(&tv_name, user_indexes)?;
+    recreate_row_security(&tv_name, row_security)?;
     create::apply_json_indexes(entity, schema, rebuilt.tview_oid, &declared.indexes)?;
     // Filled as its owner, now that the owner is back.
     crate::refresh::full::fill_empty_tview(entity)
@@ -246,33 +248,87 @@ fn restore_privileges(restore: &[String], tv: &str, view: &str) -> TViewResult<(
 /// names the index when it no longer applies.
 fn recreate_user_indexes(tv_name: &str, indexes: Vec<(String, String)>) -> TViewResult<()> {
     for (index, definition) in indexes {
-        let wrapped = crate::utils::spi::connect(|client| {
-            client
-                .select(
-                    "SELECT pg_catalog.format('DO %L', pg_catalog.format(\
-                         'BEGIN EXECUTE %L; EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION \
-                          USING MESSAGE = %L || SQLERRM, ERRCODE = SQLSTATE; END', $1, $2))",
-                    None,
-                    &[
-                        crate::utils::spi::text(&definition),
-                        crate::utils::spi::text(format!(
-                            "index {index} on {tv_name} cannot be re-created after the \
-                             rebuild: "
-                        )),
-                    ],
-                )?
-                .first()
-                .get_one::<String>()
-        })
-        .map_err(|e| crate::utils::spi::catalog_error("Prepare a user index", &e))?
-        .unwrap_or_default();
-        crate::utils::spi::run_ddl(&wrapped)?;
+        recreate(&format!("index {index}"), tv_name, &definition)?;
     }
     Ok(())
 }
 
+/// The table's row security, as statements that put it back on the rebuilt
+/// table: `ENABLE` and `FORCE ROW LEVEL SECURITY`, then each policy, with its
+/// name and what it says. Read before the drop.
+fn row_security_statements(table: pg_sys::Oid) -> TViewResult<Vec<(String, String)>> {
+    crate::utils::spi::connect(|client| {
+        let mut statements = Vec::new();
+        for row in client.select(
+            "SELECT 'row level security', pg_catalog.format('ALTER TABLE %s %s', c.oid::pg_catalog.regclass, \
+                 pg_catalog.concat_ws(', ', CASE WHEN c.relrowsecurity THEN 'ENABLE ROW LEVEL SECURITY' END, \
+                                            CASE WHEN c.relforcerowsecurity THEN 'FORCE ROW LEVEL SECURITY' END)) \
+             FROM pg_catalog.pg_class c \
+             WHERE c.oid = $1 AND (c.relrowsecurity OR c.relforcerowsecurity) \
+             UNION ALL \
+             SELECT * FROM (SELECT pg_catalog.format('policy %I', p.polname), \
+                    pg_catalog.format('CREATE POLICY %I ON %s AS %s FOR %s TO %s%s%s', p.polname, \
+                        p.polrelid::pg_catalog.regclass, \
+                        CASE WHEN p.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END, \
+                        CASE p.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT' \
+                                      WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END, \
+                        (SELECT pg_catalog.string_agg(CASE WHEN r = 0 THEN 'PUBLIC' \
+                                    ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(r)) END, \
+                                    ', ' ORDER BY r) \
+                         FROM pg_catalog.unnest(p.polroles) r), \
+                        ' USING (' || pg_catalog.pg_get_expr(p.polqual, p.polrelid) || ')', \
+                        ' WITH CHECK (' || pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) || ')') \
+             FROM pg_catalog.pg_policy p WHERE p.polrelid = $1 ORDER BY p.polname) policies",
+            None,
+            &[crate::utils::spi::oid(table)],
+        )? {
+            if let (Some(what), Some(statement)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
+                statements.push((what, statement));
+            }
+        }
+        Ok::<_, spi::Error>(statements)
+    })
+    .map_err(|e| crate::utils::spi::catalog_error("Read the TVIEW's row security", &e))
+}
+
+/// Put the table's row security back on the rebuilt table
+/// ([`row_security_statements`]); a policy naming a column the new definition
+/// dropped fails, naming it.
+fn recreate_row_security(tv_name: &str, statements: Vec<(String, String)>) -> TViewResult<()> {
+    for (what, statement) in statements {
+        recreate(&what, tv_name, &statement)?;
+    }
+    Ok(())
+}
+
+/// Run `definition`, which re-creates `what` on the rebuilt `tv_name`; its
+/// error names both.
+fn recreate(what: &str, tv_name: &str, definition: &str) -> TViewResult<()> {
+    let wrapped = crate::utils::spi::connect(|client| {
+        client
+            .select(
+                "SELECT pg_catalog.format('DO %L', pg_catalog.format(\
+                     'BEGIN EXECUTE %L; EXCEPTION WHEN OTHERS THEN RAISE EXCEPTION \
+                      USING MESSAGE = %L || SQLERRM, ERRCODE = SQLSTATE; END', $1, $2))",
+                None,
+                &[
+                    crate::utils::spi::text(definition),
+                    crate::utils::spi::text(format!(
+                        "{what} on {tv_name} cannot be re-created after the rebuild: "
+                    )),
+                ],
+            )?
+            .first()
+            .get_one::<String>()
+    })
+    .map_err(|e| crate::utils::spi::catalog_error("Prepare a re-creation", &e))?
+    .unwrap_or_default();
+    crate::utils::spi::run_ddl(&wrapped)
+}
+
 /// Why a TVIEW (`$1` its table, `$2` its backing view) cannot be rebuilt: objects
-/// that depend on it, and table properties a rebuild would drop.
+/// that depend on it, and table properties a rebuild would drop. The table's own
+/// policies are not: the rebuild re-creates them ([`row_security_statements`]).
 pub(super) const REBUILD_REFUSALS: &str = "\
     SELECT DISTINCT pg_catalog.pg_describe_object(d.classid, d.objid, d.objsubid) \
            || ' depends on it' \
@@ -283,12 +339,13 @@ pub(super) const REBUILD_REFUSALS: &str = "\
                AND (SELECT ev_class FROM pg_catalog.pg_rewrite WHERE oid = d.objid) = $2) \
       AND NOT (d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass \
                AND (SELECT conrelid FROM pg_catalog.pg_constraint WHERE oid = d.objid) = $1) \
-  UNION ALL SELECT 'row level security is enabled' FROM pg_catalog.pg_class \
-    WHERE oid = $1 AND (relrowsecurity OR relforcerowsecurity) \
-  UNION ALL SELECT pg_catalog.format('policy %I', polname) FROM pg_catalog.pg_policy \
-    WHERE polrelid = $1 \
+      AND NOT (d.classid = 'pg_catalog.pg_policy'::pg_catalog.regclass \
+               AND (SELECT polrelid FROM pg_catalog.pg_policy WHERE oid = d.objid) = $1) \
   UNION ALL SELECT pg_catalog.format('trigger %I', tgname) FROM pg_catalog.pg_trigger \
     WHERE tgrelid = $1 AND NOT tgisinternal \
+      AND tgfoid NOT IN (SELECT p.oid FROM pg_catalog.pg_proc p \
+                         JOIN pg_catalog.pg_extension e ON e.extnamespace = p.pronamespace \
+                         WHERE e.extname = 'pg_tviews' AND p.proname = 'pg_tview_guard_trigger') \
   UNION ALL SELECT pg_catalog.format('rule %I', rulename) FROM pg_catalog.pg_rewrite \
     WHERE ev_class = $1 \
   UNION ALL SELECT pg_catalog.format('membership in publication %I', p.pubname) \

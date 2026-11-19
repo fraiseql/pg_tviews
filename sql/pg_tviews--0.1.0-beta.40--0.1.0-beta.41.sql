@@ -4,6 +4,18 @@
 -- statements above the re-derivation (docs/development/extension-versioning.md).
 -- Released scripts are never edited.
 
+-- pg_tviews is the only writer of a TVIEW's table (D14): the guard trigger's
+-- function. The re-derivation below gives every TVIEW's table its guard.
+CREATE FUNCTION @extschema@.pg_tview_guard_trigger()
+RETURNS TRIGGER
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'pg_tview_guard_trigger_wrapper';
+
+CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
+RETURNS integer
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS 'SELECT 14';
+
 -- Every TVIEW is re-derived inside the update, as its owner. The update does not
 -- depend on what a TVIEW's owner chose: a TVIEW that cannot be re-derived keeps
 -- needs_reregister (its refreshes skip and patch nothing) and is named in a

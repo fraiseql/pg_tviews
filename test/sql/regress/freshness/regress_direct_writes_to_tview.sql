@@ -6,7 +6,6 @@
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_direct_writes_to_tview.sql
 --
--- known-failing: #321 (D14)
 -- expect-output: direct writes to a TVIEW: PASS
 
 \set ON_ERROR_STOP on
@@ -52,6 +51,63 @@ SELECT refused($s$ INSERT INTO tv_user (pk_user, id, data) VALUES (3, gen_random
                'an INSERT into tv_user by its owner');
 SELECT assert_fresh('tv_user', 'pk_user', 'the refused writes');
 SELECT assert_fresh('tv_post', 'pk_post', 'the refused writes');
+
+-- A role granted every write on the table is refused too, its TRUNCATE included
+-- (only the owner's is allowed).
+CREATE ROLE regress_d14_writer;
+GRANT USAGE ON SCHEMA tviews TO regress_d14_writer;
+GRANT ALL ON tv_user TO regress_d14_writer;
+SET ROLE regress_d14_writer;
+SELECT refused($s$ UPDATE tv_user SET data = '{}' $s$, '55000', 'an UPDATE of tv_user by a role granted it');
+SELECT refused($s$ TRUNCATE tv_user $s$, '55000', 'a TRUNCATE of tv_user by a role granted it');
+RESET ROLE;
+REVOKE ALL ON tv_user FROM regress_d14_writer;
+REVOKE USAGE ON SCHEMA tviews FROM regress_d14_writer;
+DROP ROLE regress_d14_writer;
+SELECT assert_fresh('tv_user', 'pk_user', 'the refused writes of a granted role');
+
+-- A session in replica role bypasses it, as it bypasses every ordinary trigger
+-- (a logical-replication apply worker runs so); a refresh repairs the table.
+SET session_replication_role = replica;
+UPDATE tv_user SET data = '{"name": "eve"}' WHERE pk_user = 1;
+RESET session_replication_role;
+DO $$ BEGIN
+    IF fresh_diff('tv_user', 'pk_user') IS NULL THEN
+        RAISE EXCEPTION 'FAIL: the replica-role write did not reach tv_user';
+    END IF;
+END $$;
+SELECT tviews.pg_tviews_refresh('tv_user');
+SELECT assert_fresh('tv_user', 'pk_user', 'a refresh after a replica-role write');
+
+-- The health check reports a guard disabled or gone; re-registering restores it.
+CREATE FUNCTION triggers_health() RETURNS text LANGUAGE sql AS $$
+    SELECT status || ': ' || message FROM tviews.pg_tviews_check_health()
+    WHERE component = 'triggers' $$;
+DO $$ BEGIN
+    IF triggers_health() NOT LIKE 'OK:%' THEN
+        RAISE EXCEPTION 'FAIL: health before: %', triggers_health();
+    END IF;
+END $$;
+ALTER TABLE tv_user DISABLE TRIGGER trg_tview_guard;
+DO $$ BEGIN
+    IF triggers_health() NOT LIKE 'ERROR:%disabled trigger%trg_tview_guard on public.tv_user%' THEN
+        RAISE EXCEPTION 'FAIL: a disabled guard: %', triggers_health();
+    END IF;
+END $$;
+ALTER TABLE tv_user ENABLE TRIGGER trg_tview_guard;
+DROP TRIGGER trg_tview_guard ON tv_post;
+DO $$ BEGIN
+    IF triggers_health() NOT LIKE 'ERROR:%missing trigger%pg_tview_guard_trigger on public.tv_post (post)%' THEN
+        RAISE EXCEPTION 'FAIL: a dropped guard: %', triggers_health();
+    END IF;
+END $$;
+SELECT tviews.pg_tviews_reregister('tv_post');
+DO $$ BEGIN
+    IF triggers_health() NOT LIKE 'OK:%' THEN
+        RAISE EXCEPTION 'FAIL: health after re-registering: %', triggers_health();
+    END IF;
+END $$;
+SELECT refused($s$ DELETE FROM tv_post $s$, '55000', 'a DELETE from tv_post after its guard was restored');
 
 TRUNCATE tv_user;
 SELECT tviews.pg_tviews_refresh('tv_user');

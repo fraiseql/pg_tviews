@@ -27,7 +27,8 @@ CREATE FUNCTION ours(t regclass) RETURNS text LANGUAGE sql AS $$
     SELECT coalesce(string_agg(tg.tgname, ',' ORDER BY tg.tgname), '')
     FROM pg_trigger tg JOIN pg_proc p ON p.oid = tg.tgfoid
     WHERE tg.tgrelid = t AND tg.tgparentid = 0
-      AND p.pronamespace = 'tviews'::regnamespace $$;
+      AND p.pronamespace = 'tviews'::regnamespace
+      AND p.proname <> 'pg_tview_guard_trigger' $$;  -- a TVIEW's own guard (D14)
 
 CREATE TABLE tb_sku (pk_sku bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                      name text, cost int NOT NULL DEFAULT 0, bio text);

@@ -686,10 +686,16 @@ impl FollowUps {
                 e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
             }
         }
-        if let Some(before) = &self.row_security_before
-            && let Err(e) = crate::ddl::check_every_row_security(before)
-        {
-            e.raise();
+        if let Some(before) = &self.row_security_before {
+            if let Err(e) = crate::ddl::check_every_row_security(before) {
+                e.raise();
+            }
+            // Row security on a TVIEW's own table is not refused here, since
+            // pg_restore runs FORCE before CREATE POLICY: its maintenance fails
+            // until fixed (D6), which the caller hears now.
+            if let Err(e) = crate::guard::warn_filtered() {
+                e.raise();
+            }
         }
     }
 }

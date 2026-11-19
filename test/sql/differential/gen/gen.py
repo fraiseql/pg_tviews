@@ -37,6 +37,15 @@ the same cases as before), each a form of reading the analysis must account for:
   syscol    a system column: xmin::text
   unordered an output that depends on row order: an aggregate without ORDER BY,
             LIMIT 1 without ORDER BY, DISTINCT ON and row_number() over ties
+Every table carries a tenant_id, and every row references parents of its own
+tenant only (inserts and moves pick parents of the row's tenant; a flip moves a
+row with no children to the other tenant, with its parents). Every TVIEW projects
+the tenant of its root row, and the readers' policies on the base tables and on
+tv_* filter on it: the documented row security pattern (docs/reference/ddl.md,
+"Row-level security on tv_*"), checked by the visibility oracle (visibility.sql)
+after each check. The tenant choices draw from their own random stream, so the
+shapes and writes of a seed are those it drew before.
+
 `exact` changes the written values instead: numerics with 30 digits and with
 trailing zeros (2.50), jsonb holding decimals, so a value that loses digits or
 scale on the way into a document is seen (the oracle compares binary images).
@@ -124,6 +133,8 @@ class Table:
     soft: bool
     fks: list[Fk] = field(default_factory=list)
     rows: int = 0
+    # the tenant of each initial row (1 or 2), by pk - 1
+    tenants: list[int] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -147,6 +158,9 @@ class Shape:
     # the table whose pk keys one row of this TVIEW (an embeddable shape), or None
     keyed_by: Table | None
     aggregate: bool = False
+    # its rows read rows of every tenant (a lookup, or a TVIEW embedding one):
+    # the visibility oracle compares its keys only
+    keys_only: bool = False
     # statements run after the TVIEW is created (when it is)
     after: list[str] = field(default_factory=list)
 
@@ -156,6 +170,11 @@ class Case:
         self, rng: random.Random, n_shapes: int, n_statements: int, features: set[str]
     ) -> None:
         self.rng = rng
+        # The tenant choices: their own stream, so the shapes and writes drawn
+        # from `rng` are those a seed drew before tenants existed.
+        self.vr = random.Random(repr(rng.getstate()[1][:8]))
+        # The column the reader without a policy-free column cannot select.
+        self.revoked: tuple[Table, str] | None = None
         self.features = features
         self.n_shapes = n_shapes
         self.n_statements = n_statements
@@ -190,6 +209,9 @@ class Case:
                         )
                     )
             self.tables.append(t)
+        # One column of one table the column-scoped reader may not select.
+        rt = self.vr.choice(self.tables)
+        self.revoked = (rt, self.vr.choice(rt.cols)[0])
 
     def chance(self, p: float) -> bool:
         return self.rng.random() < p
@@ -246,12 +268,39 @@ class Case:
             f'GRANT SELECT, TRIGGER ON {t.name} TO :"gen_owner";\n'
             f'GRANT SELECT, INSERT, UPDATE, DELETE ON {t.name} TO :"gen_writer";'
         )
+        sql += f"\nALTER TABLE {t.name} ENABLE ROW LEVEL SECURITY;"
         if self.tables.index(t) % 2 == 1:
             sql += (
-                f"\nALTER TABLE {t.name} ENABLE ROW LEVEL SECURITY;\n"
-                f'CREATE POLICY gen_writer_rows ON {t.name} TO :"gen_writer"\n'
+                f'\nCREATE POLICY gen_writer_rows ON {t.name} TO :"gen_writer"\n'
                 f"  USING ({t.pk} % 5 <> 4) WITH CHECK (true);"
             )
+        else:
+            sql += (
+                f'\nCREATE POLICY gen_writer_all ON {t.name} TO :"gen_writer"\n'
+                f"  USING (true) WITH CHECK (true);"
+            )
+        return sql + "\n" + self.reader_grants(t)
+
+    def reader_grants(self, t: Table) -> str:
+        """The readers of the visibility oracle (visibility.sql): readers A and B
+        of tenants 1 and 2, reader C of tenant 1, who may not select one column
+        of one table, and reader N, whom no policy lets read a row."""
+        cols = [t.pk, "id", "tenant_id"] + [c for c, _ in t.cols]
+        cols += (["deleted_at"] if t.soft else []) + [fk.column for fk in t.fks]
+        c_cols = ""
+        if self.revoked and self.revoked[0] is t:
+            c_cols = " (" + ", ".join(c for c in cols if c != self.revoked[1]) + ")"
+        sql = (
+            f'GRANT SELECT ON {t.name} TO :"gen_reader_a", :"gen_reader_b", '
+            f':"gen_reader_n";\n'
+            f'GRANT SELECT{c_cols} ON {t.name} TO :"gen_reader_c";\n'
+            f"CREATE POLICY gen_tenant ON {t.name} FOR SELECT\n"
+            f'  TO :"gen_reader_a", :"gen_reader_b", :"gen_reader_c"\n'
+            f"  USING (tenant_id = nullif(current_setting('gen.tenant', true), '')::int);"
+        )
+        if t.fks:
+            # Self-test 3 ("narrower"): a child table reader A reads less of.
+            sql += f"\nSELECT gen_narrow({lit(t.name)}, {lit(t.pk)});"
         return sql
 
     def write_schema(self) -> None:
@@ -265,6 +314,7 @@ class Case:
                 "id uuid NOT NULL DEFAULT gen_random_uuid()",
             ]
             lines += [f"{c} {typ}" for c, typ in t.cols]
+            lines.append("tenant_id int NOT NULL")
             if t.soft:
                 lines.append("deleted_at timestamptz")
             for fk in t.fks:
@@ -285,17 +335,23 @@ class Case:
                     v.append(
                         "NULL" if self.chance(0.75) else lit("2026-01-01 00:00:00+00")
                     )
+                refs: list[int | None] = []
                 for fk in t.fks:
                     if self.chance(0.1):
-                        v.append("NULL")
+                        refs.append(None)
                     elif fk.on_delete is None and self.chance(0.05):
-                        v.append("999")
+                        refs.append(999)
                     else:
-                        v.append(str(r.randint(1, fk.parent.rows)))
+                        refs.append(r.randint(1, fk.parent.rows))
+                tenant = self.initial_tenant(t, refs)
+                t.tenants.append(tenant)
+                v.append(str(tenant))
+                v += ["NULL" if ref is None else str(ref) for ref in refs]
                 values.append("(" + ", ".join(v) + ")")
             cols = (
                 [c for c, _ in t.cols]
                 + (["deleted_at"] if t.soft else [])
+                + ["tenant_id"]
                 + [fk.column for fk in t.fks]
             )
             self.out.append(
@@ -303,6 +359,33 @@ class Case:
                 + ",\n  ".join(values)
                 + ";"
             )
+
+    def initial_tenant(self, t: Table, refs: list[int | None]) -> int:
+        """The tenant of an initial row of `t` referencing `refs` (a parent's
+        pk, 999 for none, or None), each moved in place to a parent of the row's
+        tenant: its first existing parent's, else drawn."""
+        tenant = None
+        for fk, ref in zip(t.fks, refs, strict=True):
+            if ref is not None and ref <= fk.parent.rows:
+                tenant = fk.parent.tenants[ref - 1]
+                break
+        if tenant is None:
+            tenant = self.vr.choice([1, 2])
+        for i, (fk, ref) in enumerate(zip(t.fks, refs, strict=True)):
+            if ref is None or ref > fk.parent.rows:
+                continue
+            n = fk.parent.rows
+            same = [
+                (ref - 1 + k) % n + 1
+                for k in range(n)
+                if fk.parent.tenants[(ref - 1 + k) % n] == tenant
+            ]
+            refs[i] = same[0] if same else None
+        return tenant
+
+    def tenant_col(self, alias: str) -> str:
+        """The root row's tenant, projected beside data for the policy on tv_*."""
+        return f", {alias}.tenant_id"
 
     # ── TVIEW grammar ───────────────────────────────────────────────────────
     def tv_name(self, base: str) -> str:
@@ -340,7 +423,7 @@ class Case:
         tv = self.tv_name(t.entity)
         key = "pk_" + tv[3:]
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id{self.extra_cols('t', t)}, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}{self.extra_cols('t', t)}, "
             f"jsonb_build_object({self.obj('t', t)}) AS data\n  FROM {t.name} t"
             + self.where([self.soft("t", t)])
         )
@@ -394,7 +477,7 @@ class Case:
             frontier.append((pa, fk.parent))
         extra = self.extra_cols("t", t)
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id{extra}, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}{extra}, "
             f"jsonb_build_object({', '.join(parts)}) AS data\n  FROM {t.name} t\n  "
             + "\n  ".join(j[0] for j in joins)
             + self.where(conds)
@@ -422,13 +505,13 @@ class Case:
             # (refused with 0A000 otherwise, docs/user-guides/aggregate-tviews.md)
             extra += f", t.{fk.column}"
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id{extra}, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}{extra}, "
             f"jsonb_build_object({self.obj('t', t)}, {lit(fk.parent.entity)}, v.data)"
             " AS data\n"
             f"  FROM {t.name} t\n  {'LEFT ' if left else ''}JOIN {s.tv} v "
             f"ON v.{s.key} = t.{fk.column}" + self.where([self.soft("t", t)])
         )
-        shape = Shape(tv, key, sql, {}, [s.tv], t)
+        shape = Shape(tv, key, sql, {}, [s.tv], t, keys_only=s.keys_only)
         if self.chance(0.8):
             shape.after = self.writeback(tv, key, t, fk)
         return shape
@@ -491,7 +574,7 @@ class Case:
                 + self.child_subquery(t, c, fk, f"max(c.{col})")
             )
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, "
             f"jsonb_build_object({', '.join(parts)}) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
@@ -523,11 +606,13 @@ class Case:
             conds.append("x.deleted_at IS NULL")
         lookup = f"(SELECT count(*) FROM {o.name} x WHERE {' AND '.join(conds)})"
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, "
             f"jsonb_build_object({self.obj('t', t)}, 'k', {lookup}) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
-        return Shape(tv, key, sql, {"uncascaded_policy": "full_refresh"}, [], t)
+        return Shape(
+            tv, key, sql, {"uncascaded_policy": "full_refresh"}, [], t, keys_only=True
+        )
 
     def shape_array(self) -> Shape | None:
         r = self.rng
@@ -552,7 +637,7 @@ class Case:
             "'[]'::jsonb)"
         )
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object({self.obj('t', t)}, "
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object({self.obj('t', t)}, "
             f"{lit(c.entity + 's')}, {self.child_subquery(t, c, fk, agg)}) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
@@ -564,11 +649,11 @@ class Case:
         tv = self.tv_name(f"{a.entity}_{b.entity}_u")
         key = "pk_" + tv[3:]
         sql = (
-            f"SELECT a.{a.pk} AS {key}, a.id, "
+            f"SELECT a.{a.pk} AS {key}, a.id{self.tenant_col('a')}, "
             f"jsonb_build_object('kind', {lit(a.entity)}, {self.obj('a', a)}) AS data\n"
             f"  FROM {a.name} a"
             + self.where([self.soft("a", a)])
-            + f"\nUNION ALL\nSELECT -b.{b.pk}, b.id, "
+            + f"\nUNION ALL\nSELECT -b.{b.pk}, b.id{self.tenant_col('b')}, "
             f"jsonb_build_object('kind', {lit(b.entity)}, {self.obj('b', b)}) AS data\n"
             f"  FROM {b.name} b" + self.where([self.soft("b", b)])
         )
@@ -583,10 +668,10 @@ class Case:
         fk = r.choice(t.fks) if t.fks else None
         where = self.where([self.soft("t", t)]).replace("\n  ", " ")
         sql = (
-            f"WITH x AS (SELECT t.{t.pk}, t.id, {inner}"
+            f"WITH x AS (SELECT t.{t.pk}, t.id, t.tenant_id, {inner}"
             + (f", t.{fk.column}" if fk else "")
             + f" FROM {t.name} t{where})\n"
-            f"SELECT x.{t.pk} AS {key}, x.id, jsonb_build_object({self.obj('x', t)}"
+            f"SELECT x.{t.pk} AS {key}, x.id{self.tenant_col('x')}, jsonb_build_object({self.obj('x', t)}"
         )
         if fk:
             c = r.choice(fk.parent.cols)[0]
@@ -618,11 +703,11 @@ class Case:
             col = r.choice(c.cols_of(MAXABLE))
             parts.append(f"{lit('max_' + col)}, max(c.{col})")
         sql = (
-            f"SELECT c.{fk.column} AS {key}, p.id, "
+            f"SELECT c.{fk.column} AS {key}, p.id{self.tenant_col('p')}, "
             f"jsonb_build_object({', '.join(parts)}) AS data\n"
             f"  FROM {c.name} c JOIN {p.name} p ON p.{p.pk} = c.{fk.column}"
             + self.where([self.soft("c", c), self.soft("p", p)])
-            + f"\n  GROUP BY c.{fk.column}, p.id, p.{pcol}"
+            + f"\n  GROUP BY c.{fk.column}, p.id, p.tenant_id, p.{pcol}"
         )
         options = {}
         if self.chance(0.5):
@@ -639,7 +724,7 @@ class Case:
         key = "pk_" + tv[3:]
         order = r.choice(c.cols_of(ORDERABLE))
         sql = (
-            f"SELECT DISTINCT ON (c.{fk.column}) c.{fk.column} AS {key}, p.id, "
+            f"SELECT DISTINCT ON (c.{fk.column}) c.{fk.column} AS {key}, p.id{self.tenant_col('p')}, "
             f"jsonb_build_object({self.obj('c', c)}, {lit(p.entity)}, p.{p.cols[0][0]})"
             " AS data\n"
             f"  FROM {c.name} c JOIN {p.name} p ON p.{p.pk} = c.{fk.column}"
@@ -663,7 +748,7 @@ class Case:
             on += f" AND {s}"
         col = r.choice(c.cols)[0]
         sql = (
-            f"SELECT DISTINCT ON (p.{p.pk}) p.{p.pk} AS {key}, p.id, "
+            f"SELECT DISTINCT ON (p.{p.pk}) p.{p.pk} AS {key}, p.id{self.tenant_col('p')}, "
             f"jsonb_build_object({self.obj('p', p)}, {lit('top_' + col)}, c.{col})"
             " AS data\n"
             f"  FROM {p.name} p LEFT JOIN {c.name} c ON {on}"
@@ -685,7 +770,7 @@ class Case:
             key = "pk_" + tv[3:]
             agg = f"jsonb_agg(c ORDER BY c.{c.pk})"
             sql = (
-                f"SELECT t.{p.pk} AS {key}, t.id, jsonb_build_object({self.obj('t', p)}, "
+                f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object({self.obj('t', p)}, "
                 f"{lit(c.entity + 's')}, {self.child_subquery(p, c, fk, agg)}) AS data\n"
                 f"  FROM {p.name} t" + self.where([self.soft("t", p)])
             )
@@ -706,7 +791,7 @@ class Case:
                 )
             value = f"{fn}(t)"
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
             f"{self.obj('t', t)}, 'row', {value}) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
@@ -727,7 +812,7 @@ class Case:
         tv = self.tv_name(f"{t.entity}_d")
         key = "pk_" + tv[3:]
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
             f"{lit(c)}, t.{c}, {lit(c + '_d')}, {derive}) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
@@ -739,7 +824,7 @@ class Case:
         tv = self.tv_name(f"{t.entity}_x")
         key = "pk_" + tv[3:]
         sql = (
-            f"SELECT t.{t.pk} AS {key}, t.id, jsonb_build_object("
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
             f"{self.obj('t', t)}, 'version', t.xmin::text) AS data\n"
             f"  FROM {t.name} t" + self.where([self.soft("t", t)])
         )
@@ -774,7 +859,7 @@ class Case:
                 f"WHERE c.{fk.column} = t.{p.pk}) x)"
             )
         sql = (
-            f"SELECT t.{p.pk} AS {key}, t.id, jsonb_build_object("
+            f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
             f"{self.obj('t', p)}, 'o', {value}) AS data\n"
             f"  FROM {p.name} t" + self.where([self.soft("t", p)])
         )
@@ -795,26 +880,29 @@ class Case:
             needs = "ARRAY[" + ", ".join(lit(n) for n in s.needs) + "]::text[]"
             self.out.append(
                 f"SELECT gen_create({lit(s.tv)}, {lit(s.key)}, $def$\n{s.sql}\n$def$,\n"
-                f"  {lit(options)}, {needs});"
+                f"  {lit(options)}, {needs}, {str(s.keys_only).lower()});"
             )
             self.out.extend(s.after)
 
     # ── writes ──────────────────────────────────────────────────────────────
-    def pick(self, t: Table, n: int) -> str:
+    def pick(self, t: Table, n: int, tenant: str | None = None) -> str:
+        """`n` keys of `t` (of tenant `tenant`, an SQL expression, when given)."""
+        where = f"WHERE {t.name}.tenant_id = {tenant} " if tenant else ""
         return (
-            f"(SELECT {t.pk} FROM {t.name} ORDER BY {t.pk} "
+            f"(SELECT {t.pk} FROM {t.name} {where}ORDER BY {t.pk} "
             f"OFFSET {self.rng.randint(0, 9)} LIMIT {n})"
         )
 
     def n(self) -> int:
         return 1 if self.chance(0.55) else self.rng.randint(2, 4)
 
-    def fk_value(self, fk: Fk) -> str:
+    def fk_value(self, fk: Fk, tenant: str) -> str:
+        """A reference to a parent of tenant `tenant` (an SQL expression)."""
         if self.chance(0.08):
             return "NULL"
         if fk.on_delete is None and self.chance(0.06):
             return "999"
-        return self.pick(fk.parent, 1)
+        return self.pick(fk.parent, 1, tenant)
 
     def update(self, t: Table, sets: list[str], n: int | None = None) -> str:
         rows = self.pick(t, n or self.n())
@@ -835,16 +923,13 @@ class Case:
             ops += ["rekey"]
         op = r.choice(ops)
         if op == "insert":
-            cols = [c for c, _ in t.cols] + [fk.column for fk in t.fks]
-            rows = [
-                "("
-                + ", ".join(
-                    [self.value(typ, i) for _, typ in t.cols]
-                    + [self.fk_value(fk) for fk in t.fks]
-                )
-                + ")"
-                for _ in range(self.n())
-            ]
+            cols = [c for c, _ in t.cols] + ["tenant_id"] + [fk.column for fk in t.fks]
+            rows = []
+            for _ in range(self.n()):
+                tenant = str(self.vr.choice([1, 2]))
+                values = [self.value(typ, i) for _, typ in t.cols] + [tenant]
+                values += [self.fk_value(fk, tenant) for fk in t.fks]
+                rows.append("(" + ", ".join(values) + ")")
             return f"INSERT INTO {t.name} ({', '.join(cols)}) VALUES {', '.join(rows)}"
         if op == "update":
             sets = []
@@ -865,7 +950,10 @@ class Case:
                 )
             return self.update(t, sets)
         if op == "move":
-            sets = [f"{fk.column} = {self.fk_value(fk)}" for fk in r.sample(t.fks, 1)]
+            sets = [
+                f"{fk.column} = {self.fk_value(fk, f'{t.name}.tenant_id')}"
+                for fk in r.sample(t.fks, 1)
+            ]
             if self.chance(0.3):
                 c, typ = r.choice(t.cols)
                 sets.append(f"{c} = {self.value(typ, i)}")
@@ -882,8 +970,38 @@ class Case:
             f"DELETE FROM {t.name} WHERE {t.pk} IN {self.pick(t, r.choice([1, 1, 2]))}"
         )
 
+    def flip(self) -> str:
+        """Move rows of a table that no row references to the other tenant,
+        each fk_ to a parent of that tenant: a write to the column the policies
+        filter on. Run as the session's superuser: a child the writer cannot
+        see still counts."""
+        vr = self.vr
+        t = vr.choice(self.tables)
+        sets = ["tenant_id = 3 - tenant_id"] + [
+            f"{fk.column} = (SELECT p.{fk.parent.pk} FROM {fk.parent.name} p "
+            f"WHERE p.tenant_id = 3 - {t.name}.tenant_id ORDER BY p.{fk.parent.pk} "
+            f"OFFSET {vr.randint(0, 3)} LIMIT 1)"
+            for fk in t.fks
+        ]
+        unreferenced = "".join(
+            f" AND NOT EXISTS (SELECT FROM {c.name} c WHERE c.{fk.column} = {t.name}.{t.pk})"
+            for c, fk in self.children(t)
+        )
+        return (
+            f"UPDATE {t.name} SET {', '.join(sets)} WHERE {t.pk} IN "
+            f"(SELECT {t.pk} FROM {t.name} ORDER BY {t.pk} OFFSET {vr.randint(0, 9)} "
+            f"LIMIT {vr.randint(1, 3)}){unreferenced}"
+        )
+
     def check(self, label: str) -> str:
-        return f"SELECT gen_check({lit(label)});"
+        """Every TVIEW equals its view (as its owner), then each reader reads of
+        it only what its evaluation as that reader returns (as the session's
+        superuser, who may take the readers' roles)."""
+        return (
+            f"SELECT gen_check({lit(label)});\nRESET ROLE;\n"
+            f"SELECT gen_visible({lit(label)});\n"
+            'SET ROLE :"gen_writer";'
+        )
 
     def write_statements(self) -> None:
         r = self.rng
@@ -929,6 +1047,10 @@ class Case:
                 self.out.append(stmt + ";")
                 self.out.append(self.check(f"#{i} {stmt}"))
                 i += 1
+            if self.vr.random() < 0.15:
+                flip = self.flip()
+                self.out.append(f'RESET ROLE;\n{flip};\nSET ROLE :"gen_writer";')
+                self.out.append(self.check(f"a flip: {flip}"))
 
     def render(self) -> str:
         self.make_tables()

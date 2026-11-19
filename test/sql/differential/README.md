@@ -44,12 +44,34 @@ a TVIEW back: the read must see fresh rows).
   which every other table hides some rows by row security the owner bypasses), and
   the oracle reads as the owner, in the frame of `docs/reference/owner-frame.md`.
   `run.sh` creates the two roles for the run and drops them.
+- **Visibility** (`visibility.sql`). Every table carries a `tenant_id`, and every row
+  references parents of its own tenant only: inserts and moves pick parents of the
+  row's tenant, and a flip moves a row nothing references, with its parents, to the
+  other tenant (a write to the column the policies filter on). Every TVIEW projects
+  its root's tenant. The pattern of `docs/reference/ddl.md` ("Row-level security on
+  `tv_*`") is applied: the base tables and every `tv_*` carry the same tenant policy
+  for the readers, and a reader is granted a `tv_*` when it may evaluate its
+  definition. Four readers (`run.sh` creates them): A and B of tenants 1 and 2, C of
+  tenant 1 who may not select one column of one table, N whom no policy lets read a
+  row. After every check outside a mutation function, `gen_visible()` evaluates each
+  definition as each reader (the backing view's query run as a query, so the base
+  tables' policies apply to the reader, as `security_invoker` would) and fails
+  (`LEAKED`) when a row the reader reads from `tv_*` is not, binary-wise, the row of
+  its evaluation with that key. A privilege error evaluating it means the reader
+  reads none of its rows. A TVIEW reading rows of every tenant (a lookup, and a TVIEW
+  embedding one) is compared on its keys. Functions a definition calls keep their own
+  rights. The tenant choices draw from their own random stream: a seed's shapes and
+  writes are those it drew before.
 - `GEN_SELFTEST=1` writes with `session_replication_role = replica`, so no pg_tviews
   trigger fires: every case must then diverge. It proves the oracle sees a refresh
   that does not happen. `GEN_SELFTEST=2` lets the oracle read in the session's
   settings (another time zone) instead of the frame's: a case rendering a
   timestamptz must then diverge, and one must. It proves the oracle reads in the
-  frame.
+  frame. `GEN_SELFTEST=3` runs every case under each wrong row security pattern: a
+  `tv_*` without row security, a child table reader A reads less of than its parent
+  (a restrictive policy on it), a `tv_*` granted to reader C, who may not select a
+  column it copies. For each, some case must leak. It proves the visibility oracle
+  sees a reader reading more than its definition returns to it.
 - `GEN_FEATURES` turns on shape kinds and value forms left out of the default run
   while their defect is open (`OPT_IN` in `gen.py`): `wholerow` (a row read whole),
   `syscol` (a system column), `unordered` (an output depending on row order) and

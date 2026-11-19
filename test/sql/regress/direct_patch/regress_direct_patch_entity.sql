@@ -123,7 +123,11 @@ END $$;
 
 -- ── Cycle 3: fallbacks ───────────────────────────────────────────────────────
 -- (a) Missing tview row ⇒ patch RETURNING empty ⇒ recompute (UPSERT re-creates it).
+-- pg_tviews refuses a direct write (D14), which a session in replica role
+-- bypasses, as every ordinary trigger.
+SET session_replication_role = replica;
 DELETE FROM tv_user WHERE pk_user = 2;
+RESET session_replication_role;
 UPDATE tb_user SET bio = 'reborn' WHERE pk_user = 2;
 SELECT _c_assert(0, 1, 1, 'missing row: fallback to recompute');
 DO $$ BEGIN

@@ -49,6 +49,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             contents_check(),
             function_paths_check(),
             owner_reads_check(),
+            tv_policies_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -447,6 +448,97 @@ fn owner_reads_check() -> Check {
             ),
         )
     }
+}
+
+/// Row security on the TVIEWs' own tables (D6, D8):
+/// - an ERROR for a table whose owner a policy can filter (`FORCE ROW LEVEL
+///   SECURITY` without a policy letting it read and write every row): its
+///   refreshes fail ([`crate::guard::filtered_tviews`]);
+/// - a WARNING for a table other roles may read, without row security, while a
+///   table it reads filters its readers: the TVIEW publishes what they hide;
+/// - a WARNING for a table embedding rows of a table with row security whose
+///   policies differ from its own: a reader may read, inside a document, rows
+///   that table hides from it. Policies are compared as written (command,
+///   permissive, `USING`, `WITH CHECK`), roles aside.
+fn tv_policies_check() -> Check {
+    let filtered = match crate::guard::filtered_tviews() {
+        Ok(filtered) => filtered,
+        Err(e) => return error("tv_policies", format!("could not be checked: {e}")),
+    };
+    if !filtered.is_empty() {
+        let found: Vec<String> = filtered
+            .iter()
+            .map(|(table, owner, why)| format!("{table} ({owner}: {why})"))
+            .collect();
+        return error(
+            "tv_policies",
+            format!(
+                "row security applies to the owner of {}: its refreshes fail; give the owner a \
+                 policy USING (true) WITH CHECK (true), or NO FORCE ROW LEVEL SECURITY",
+                sample(&found)
+            ),
+        );
+    }
+    let warnings = crate::utils::spi::strings(&tv_policy_warnings_sql(), &[]);
+    match warnings {
+        Ok(found) if found.is_empty() => ok(
+            "tv_policies",
+            "No TVIEW publishes rows a policy of a table it reads hides",
+        ),
+        Ok(found) => warning("tv_policies", sample(&found)),
+        Err(e) => error("tv_policies", format!("could not be checked: {e}")),
+    }
+}
+
+/// The query of [`tv_policies_check`]'s warnings, one message per row.
+fn tv_policy_warnings_sql() -> String {
+    format!(
+        "WITH tv AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS tv, m.plan, c.relrowsecurity AS rls, \
+                    c.relowner, c.relacl \
+             FROM {schema}.pg_tview_meta m \
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid \
+         ), \
+         policed AS ( \
+             SELECT DISTINCT r.entity, r.relid \
+             FROM {schema}.reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid \
+             WHERE c.relkind IN ('r', 'p') AND c.relrowsecurity \
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid = r.relid) \
+         ), \
+         roots AS ( \
+             SELECT tv.entity, (p->>'source_oid')::pg_catalog.oid AS relid \
+             FROM tv, pg_catalog.jsonb_array_elements(tv.plan->'paths') p \
+             WHERE (p->>'root')::boolean \
+         ), \
+         sig AS ( \
+             SELECT p.polrelid AS relid, \
+                    pg_catalog.string_agg(pg_catalog.format('%s/%s/%s/%s', p.polcmd, \
+                        p.polpermissive, pg_catalog.pg_get_expr(p.polqual, p.polrelid), \
+                        pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)), ';' ORDER BY 1) AS s \
+             FROM pg_catalog.pg_policy p GROUP BY p.polrelid \
+         ) \
+         SELECT pg_catalog.format('%s has no row security while %s, which it reads, filters \
+                                   its readers: whoever reads %s reads what that policy hides', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass, \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         WHERE NOT tv.rls \
+           AND EXISTS (SELECT 1 FROM pg_catalog.aclexplode(tv.relacl) a \
+                       WHERE a.grantee <> tv.relowner AND a.privilege_type = 'SELECT') \
+         UNION ALL \
+         SELECT pg_catalog.format('%s embeds rows of %s, whose policies differ from its own: a \
+                                   reader may read in a document a row that table hides from it', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         LEFT JOIN sig child ON child.relid = x.relid \
+         LEFT JOIN sig own ON own.relid = tv.tv \
+         WHERE tv.rls \
+           AND NOT EXISTS (SELECT 1 FROM roots r WHERE r.entity = tv.entity AND r.relid = x.relid) \
+           AND child.s IS DISTINCT FROM own.s \
+         ORDER BY 1",
+        schema = crate::utils::ext_schema(),
+    )
 }
 
 /// Whether the caller has the privileges of the owner of `meta`'s TVIEW: only

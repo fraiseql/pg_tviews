@@ -7,20 +7,46 @@ SET client_min_messages TO WARNING;
 CREATE EXTENSION IF NOT EXISTS jsonb_delta;
 CREATE EXTENSION IF NOT EXISTS pg_tviews;
 \ir ../../lib/assert_fresh.sql
+\ir ../visibility.sql
 
 -- The roles (run.sh creates them for the run, passing their names as gen_owner
 -- and gen_writer): every TVIEW is created by gen_owner, who is no superuser and
 -- owns no base table (it is granted SELECT and TRIGGER on each); every write is
 -- made by gen_writer; the oracle reads as the owner (fresh_diff).
 GRANT CREATE ON SCHEMA public TO :"gen_owner", :"gen_writer";
-CREATE TABLE gen_shape (tv regclass PRIMARY KEY, key text NOT NULL);
+CREATE TABLE gen_shape (tv regclass PRIMARY KEY, key text NOT NULL,
+                        keys_only boolean NOT NULL DEFAULT false);
 GRANT SELECT, INSERT ON gen_shape TO :"gen_owner";
 SELECT set_config('gen.owner', :'gen_owner', false) IS NOT NULL AS owner_noted;
+
+-- The readers of the visibility oracle (visibility.sql), created by run.sh: A and
+-- B read tenants 1 and 2, C tenant 1 without one column (the case's grants), N
+-- has no policy. gen.wrong names the deliberately wrong pattern of self-test 3:
+-- none, nopolicy (no row security on tv_*), narrower (a child table reader A
+-- reads less of than its parent) or revoked (tv_* granted to a reader who may not
+-- select a column its definition copies).
+CREATE TABLE gen_reader (role name PRIMARY KEY, tenant int NOT NULL);
+INSERT INTO gen_reader VALUES (:'gen_reader_a', 1), (:'gen_reader_b', 2),
+                              (:'gen_reader_c', 1), (:'gen_reader_n', 1);
+SELECT set_config('gen.wrong', :'gen_wrong', false) IS NOT NULL AS wrong_noted,
+       set_config('gen.reader_a', :'gen_reader_a', false) IS NOT NULL AS reader_a_noted,
+       set_config('gen.reader_n', :'gen_reader_n', false) IS NOT NULL AS reader_n_noted;
+
+-- Self-test 3 (narrower): reader A reads fewer rows of child table `tb` than of
+-- its parents, so a parent embeds rows A may not read.
+CREATE FUNCTION gen_narrow(tb text, pk text) RETURNS void LANGUAGE plpgsql AS $f$
+BEGIN
+    IF current_setting('gen.wrong') = 'narrower' THEN
+        EXECUTE format('CREATE POLICY gen_narrower ON %I AS RESTRICTIVE FOR SELECT TO %I '
+                       'USING (%I %% 3 <> 0)', tb, current_setting('gen.reader_a'), pk);
+    END IF;
+END $f$;
 
 -- Create one generated TVIEW. It is created and fresh, or refused with one of the
 -- SQLSTATEs below (reported as REFUSED, not failed); any other error fails the run
 -- with the definition. A definition embedding a TVIEW that was refused is skipped.
-CREATE FUNCTION gen_create(tv text, key text, def text, options jsonb, needs text[])
+CREATE FUNCTION gen_create(tv text, key text, def text, options jsonb, needs text[],
+                           keys_only boolean)
 RETURNS void LANGUAGE plpgsql AS $f$
 DECLARE
     -- The refusals docs/reference/api.md ("Errors") and docs/reference/shapes.md
@@ -59,8 +85,9 @@ BEGIN
         RAISE EXCEPTION 'UNEXPECTED % creating %: %', state, tv, msg
             USING DETAIL = format('options %s, definition:%s', options, def);
     END;
-    INSERT INTO gen_shape VALUES (tv::regclass, key);
+    INSERT INTO gen_shape VALUES (tv::regclass, key, keys_only);
     PERFORM assert_fresh(tv::regclass, key, 'creation');
+    PERFORM gen_expose(tv::regclass);
 END $f$;
 
 -- Raise unless every created TVIEW equals its view.
@@ -105,6 +132,7 @@ SET xmloption = 'content'
 SET gin_fuzzy_search_limit = '0'
 SET plan_cache_mode = 'auto'
 SET jit = 'off'
+SET row_security = 'on'
 -- END frame
 AS $$
 DECLARE

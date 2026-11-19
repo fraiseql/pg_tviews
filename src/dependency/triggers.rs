@@ -11,6 +11,8 @@ const FLUSH_HANDLER: &str = "pg_tview_flush_trigger";
 const DELTA_HANDLER: &str = "pg_tview_delta_trigger";
 /// Statement-level `TRUNCATE` trigger function: refreshes the whole TVIEW.
 const TRUNCATE_HANDLER: &str = "pg_tview_truncate_trigger";
+/// The guard of a TVIEW's own table ([`crate::guard`]).
+const GUARD_HANDLER: &str = crate::guard::GUARD_HANDLER;
 
 /// Transition tables of the delta triggers, as the handler reads them.
 pub const OLD_TABLE: &str = "pg_tviews_old";
@@ -279,13 +281,15 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
     );
     crate::utils::spi::connect(|client| {
         let mut problems = TriggerProblems::default();
-        for row in client.select(&query, None, &[])? {
-            if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
-                match kind.as_str() {
-                    "orphaned" => problems.orphaned.push(what),
-                    "missing" => problems.missing.push(what),
-                    "disabled" => problems.disabled.push(what),
-                    _ => problems.per_tview.push(what),
+        for query in [query.as_str(), guard_problems_sql().as_str()] {
+            for row in client.select(query, None, &[])? {
+                if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
+                    match kind.as_str() {
+                        "orphaned" => problems.orphaned.push(what),
+                        "missing" => problems.missing.push(what),
+                        "disabled" => problems.disabled.push(what),
+                        _ => problems.per_tview.push(what),
+                    }
                 }
             }
         }
@@ -295,6 +299,44 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
         operation: "Check pg_tviews triggers".to_string(),
         pg_error: e.to_string(),
     })
+}
+
+/// The guards of the TVIEWs' own tables ([`crate::guard`]) as
+/// [`trigger_problems`] rows: one missing, disabled, switched to `ENABLE
+/// REPLICA`, or on a table a logical replication subscription writes (its apply
+/// worker fires no ordinary trigger: `pg_tviews` is no longer the table's only
+/// writer).
+fn guard_problems_sql() -> String {
+    format!(
+        "WITH guards AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS relid, t.tgname, t.tgenabled \
+             FROM {schema}.pg_tview_meta m \
+             LEFT JOIN (pg_catalog.pg_trigger t \
+                        JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+                         AND p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+                         AND p.proname = '{GUARD_HANDLER}') \
+               ON t.tgrelid = m.table_oid::pg_catalog.oid \
+         ) \
+         SELECT 'missing', pg_catalog.format('{GUARD_HANDLER} on %s (%s)', \
+                                             g.relid::pg_catalog.regclass, g.entity) \
+         FROM guards g WHERE g.tgname IS NULL \
+         UNION ALL \
+         SELECT 'disabled', pg_catalog.format('%I on %s%s', g.tgname, \
+                                              g.relid::pg_catalog.regclass, \
+                                              CASE g.tgenabled WHEN 'R' THEN \
+                                                ' (ENABLE REPLICA: refuses writes only when \
+                                                 session_replication_role is replica)' \
+                                              WHEN 'D' THEN '' \
+                                              ELSE ' (a logical replication subscription \
+                                                 writes the TVIEW table: pg_tviews is no \
+                                                 longer its only writer)' END) \
+         FROM guards g WHERE g.tgenabled IN ('D', 'R') \
+            OR (g.tgname IS NOT NULL \
+                AND EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
+                            WHERE s.srrelid = g.relid)) \
+         ORDER BY 1, 2",
+        schema = crate::utils::ext_schema(),
+    )
 }
 
 /// Refuse what `entity`'s triggers would need on the tables of `plan` that the

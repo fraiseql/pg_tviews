@@ -353,6 +353,8 @@ fn finish(
     definition: &str,
 ) -> TViewResult<()> {
     crate::catalog::indexes::record(table_oid, indexes)?;
+    // Filled: from now on, only pg_tviews writes it (D14).
+    crate::guard::install(table_oid)?;
     // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
@@ -499,6 +501,7 @@ pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
     if let Some(meta) = crate::catalog::TviewMeta::load_to_rederive(entity)? {
         // Its backing view is its owner's alone, whatever was granted on it before.
         super::privileges::follow(Some(meta.tview_oid), false)?;
+        crate::guard::install(meta.tview_oid)?;
         warn_function_paths(entity, &meta)?;
     }
     crate::catalog::row::clear_needs_reregister(entity)

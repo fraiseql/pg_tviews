@@ -276,7 +276,7 @@ impl Walker<'_> {
                 }
             }
             self.note_functions(query.cast());
-            self.note_time(query.cast());
+            self.note_time(query.cast())?;
             if identity_level {
                 let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
                 self.graph.identity = Some(self.identity(query, &tles));

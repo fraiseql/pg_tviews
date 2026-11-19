@@ -182,6 +182,15 @@ const RAISED_ELSEWHERE: &[(&str, PgSqlErrorCode, &str)] = &[
          fails. Call `pg_tviews_resume_triggers()` before committing.",
     ),
     (
+        "src/guard.rs",
+        PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+        "An `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` of a TVIEW's table from outside \
+         pg_tviews, its owner's included: pg_tviews is the only writer of `tv_*`. The \
+         owner's `TRUNCATE` is allowed, followed by `pg_tviews_refresh()`. A data-only restore \
+         leaves out the TVIEW tables' data, which is refilled; a session in \
+         `session_replication_role = replica` bypasses the guard, as every ordinary trigger.",
+    ),
+    (
         "src/revision.rs",
         PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
         "The library's catalog revision does not match the installed extension, or cannot be \

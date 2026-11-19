@@ -27,7 +27,8 @@ CREATE FUNCTION kinds(e text) RETURNS text LANGUAGE sql AS $$
     SELECT cascade_kinds::text || ' uncascaded=' || uncascaded_tables::text
     FROM tviews.registry WHERE entity = e $$;
 CREATE FUNCTION triggers_on(t regclass) RETURNS bigint LANGUAGE sql AS $$
-    SELECT count(*) FROM pg_trigger WHERE tgrelid = t AND NOT tgisinternal $$;
+    SELECT count(*) FROM pg_trigger
+    WHERE tgrelid = t AND NOT tgisinternal AND tgname <> 'trg_tview_guard' $$;
 
 CREATE TABLE tb_order (pk_order bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), name text, deleted_at timestamptz);
 CREATE TABLE tb_line (pk_line bigint PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),

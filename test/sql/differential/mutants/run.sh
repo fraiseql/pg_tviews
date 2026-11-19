@@ -46,14 +46,14 @@ for m in "${mutants[@]}"; do
   GEN_FEATURES="$features" GEN_PGOPTIONS="-c pg_tviews.test_mutant=$m" \
     "$here/../gen/run.sh" "$shapes" "$seeds" >"$log" 2>&1
   diverged="$(grep -c '^FAIL' "$log")"
-  other="$(grep -A6 '^FAIL' "$log" | grep 'ERROR' | grep -cvE 'DIVERGED|STALE')"
+  other="$(grep -A6 '^FAIL' "$log" | grep 'ERROR' | grep -cvE 'DIVERGED|STALE|LEAKED')"
   total="$(tail -1 "$log")"
   if [[ "$diverged" -gt 0 && "$other" -eq 0 ]]; then
     echo "KILLED   $m: $diverged case(s) diverged (${total})"
   elif [[ "$diverged" -gt 0 ]]; then
     survived=$((survived+1))
     echo "ERROR    $m: $other case(s) failed otherwise than by a divergence"
-    grep -A6 '^FAIL' "$log" | grep 'ERROR' | grep -vE 'DIVERGED|STALE' | head -3 | sed 's/^/      /'
+    grep -A6 '^FAIL' "$log" | grep 'ERROR' | grep -vE 'DIVERGED|STALE|LEAKED' | head -3 | sed 's/^/      /'
   else
     survived=$((survived+1))
     echo "SURVIVED $m: no case diverged (${total})"
