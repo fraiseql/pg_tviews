@@ -11,6 +11,17 @@ RETURNS TRIGGER
 LANGUAGE c
 AS 'MODULE_PATHNAME', 'pg_tview_guard_trigger_wrapper';
 
+-- The id of a row of a TVIEW created from a SELECT without one (E1-14): derived
+-- from the entity and the key, the same on every evaluation. A TVIEW created
+-- that way before keeps gen_random_uuid() in its backing view, which the
+-- re-derivation below refuses (volatile, 0A000): it is named in the WARNING and
+-- created again with pg_tviews_create_or_replace.
+CREATE FUNCTION @extschema@.pg_tviews_row_id(name TEXT, key TEXT)
+RETURNS uuid
+IMMUTABLE STRICT PARALLEL SAFE
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'pg_tviews_row_id_wrapper';
+
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
 RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE

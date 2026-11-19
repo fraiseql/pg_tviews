@@ -189,6 +189,12 @@ unsafe extern "C" {
         typ_by_val: bool,
         typ_len: i32,
     ) -> bool;
+
+    /// `PostgreSQL`'s `contain_aggs_of_level` (`src/backend/rewrite/rewriteManip.c`),
+    /// exported but absent from the pgrx bindings: whether `node` holds an aggregate
+    /// or `GROUPING()` of the query `levelsup` levels above it.
+    #[link_name = "contain_aggs_of_level"]
+    pub(crate) fn contain_aggs_of_level(node: *mut pg_sys::Node, levelsup: i32) -> bool;
 }
 
 /// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).

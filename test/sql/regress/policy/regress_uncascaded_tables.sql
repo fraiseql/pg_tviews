@@ -54,7 +54,7 @@ INSERT INTO tb_line (fk_order, pos, sku) VALUES (1, 1, 'a'), (1, 2, 'b'), (2, 1,
 
 SELECT pg_tviews_create('tv_order', $$
     SELECT o.pk_order, o.id,
-           ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_order ORDER BY l.pos) AS skus,
+           ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_order ORDER BY l.pos, l.pk_line) AS skus,
            jsonb_build_object('ref', o.ref) AS data
     FROM tb_order o $$);
 
@@ -72,7 +72,7 @@ CREATE TABLE tb_invoice_line (
 INSERT INTO tb_invoice (ref) VALUES ('i1');
 INSERT INTO tb_invoice_line (fk_invoice, pos, sku) VALUES (1, 1, 'a'), (1, 2, 'b');
 CREATE VIEW v_invoice_lines AS
-    SELECT l.fk_invoice, jsonb_agg(jsonb_build_object('sku', l.sku) ORDER BY l.pos) AS lines
+    SELECT l.fk_invoice, jsonb_agg(jsonb_build_object('sku', l.sku) ORDER BY l.pos, l.pk_invoice_line) AS lines
     FROM tb_invoice_line l GROUP BY l.fk_invoice;
 
 SELECT pg_tviews_create('tv_invoice', $$

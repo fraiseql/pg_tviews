@@ -64,7 +64,7 @@ CREATE TRIGGER a_cascade_full_label AFTER UPDATE OF full_label ON tb_node
 CREATE VIEW v_node AS
 SELECT n.pk_node, n.id,
        jsonb_build_object('full_label', n.full_label,
-                          'ancestors', (SELECT array_agg(a.name ORDER BY cardinality(a.path))
+                          'ancestors', (SELECT array_agg(a.name ORDER BY cardinality(a.path), a.pk_node)
                                           FROM tb_node a WHERE a.path <@ n.path)) AS data
   FROM tb_node n;
 

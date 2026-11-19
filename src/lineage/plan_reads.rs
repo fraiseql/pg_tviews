@@ -15,7 +15,8 @@ struct Scan {
     relid: Oid,
     relation: String,
     alias: String,
-    /// Its output is every column of the table, in order.
+    /// Its output is every column of the table, in order (of its index, for an
+    /// index-only scan).
     physical: bool,
 }
 
@@ -152,7 +153,14 @@ fn collect_scans(node: &serde_json::Value, out: &mut Vec<Scan>) -> TViewResult<(
                         .and_then(serde_json::Value::as_array)
                         .map(|o| o.iter().filter_map(serde_json::Value::as_str).collect())
                         .unwrap_or_default();
-                    let physical = !output.is_empty() && output == every_column(relid, alias)?;
+                    // An index-only scan's physical target list is its index's columns.
+                    let whole = match (field("Node Type"), field("Index Name")) {
+                        (Some("Index Only Scan"), Some(index)) => {
+                            index_columns(schema, index, alias)?
+                        }
+                        _ => every_column(relid, alias)?,
+                    };
+                    let physical = !output.is_empty() && output == whole;
                     out.push(Scan {
                         relid,
                         relation: format!("{schema}.{relation}"),
@@ -198,6 +206,25 @@ fn collect_texts<'a>(
         serde_json::Value::String(s) => out.push(s),
         _ => {}
     }
+}
+
+/// The columns of index `index` in schema `schema` (its keys, then its `INCLUDE`
+/// columns), as a plan prints them under the alias `alias`; empty when one is an
+/// expression.
+fn index_columns(schema: &str, index: &str, alias: &str) -> TViewResult<Vec<String>> {
+    let prefix = quote(alias);
+    crate::utils::spi::strings(
+        "SELECT pg_catalog.quote_ident(a.attname) FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) i.indexrelid \
+         JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace \
+         CROSS JOIN LATERAL pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY k(attnum, ord) \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid \
+          AND a.attnum OPERATOR(pg_catalog.=) k.attnum \
+         WHERE n.nspname OPERATOR(pg_catalog.=) $1 AND c.relname OPERATOR(pg_catalog.=) $2 \
+           AND i.indexprs IS NULL ORDER BY k.ord",
+        &[crate::utils::spi::text(schema), crate::utils::spi::text(index)],
+    )
+    .map(|names| names.into_iter().map(|n| format!("{prefix}.{n}")).collect())
 }
 
 /// Every live column of table `relid`, in order, as a plan prints them under

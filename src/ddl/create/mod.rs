@@ -22,7 +22,7 @@ pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
 #[cfg(test)]
 mod tests;
 
-pub use select::ViewColumns;
+pub use select::{ViewColumns, row_id};
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};

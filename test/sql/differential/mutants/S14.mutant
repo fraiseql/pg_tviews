@@ -1,4 +1,4 @@
 # S14, guard: a full_refresh table's change meeting no unlinked read's condition
 # is mapped instead.
 # Mutant: the guard is never met.
-features:
+features: lookup

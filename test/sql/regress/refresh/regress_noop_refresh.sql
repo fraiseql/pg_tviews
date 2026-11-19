@@ -109,7 +109,7 @@ SELECT pg_tviews_create('tv_contract', $TV$
            jsonb_build_object('status', c.status, 'version', c.version_no) AS data
     FROM tb_contract c
     WHERE c.note IS DISTINCT FROM 'hidden'
-    ORDER BY c.id_contract, c.version_no DESC
+    ORDER BY c.id_contract, c.version_no DESC, c.pk_contract
 $TV$);
 
 -- Bookkeeping: tuple updates per tview since the last mark, plus the rows'

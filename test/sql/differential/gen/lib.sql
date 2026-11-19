@@ -45,8 +45,11 @@ END $f$;
 -- Create one generated TVIEW. It is created and fresh, or refused with one of the
 -- SQLSTATEs below (reported as REFUSED, not failed); any other error fails the run
 -- with the definition. A definition embedding a TVIEW that was refused is skipped.
+-- With `expect`, the definition is outside the dialect: it must be refused with that
+-- SQLSTATE, and being created fails the run. Each outcome is reported as a REACHED
+-- line naming the dialect.toml `productions` it exercises (coverage.py reads them).
 CREATE FUNCTION gen_create(tv text, key text, def text, options jsonb, needs text[],
-                           keys_only boolean)
+                           keys_only boolean, productions text[], expect text)
 RETURNS void LANGUAGE plpgsql AS $f$
 DECLARE
     -- The refusals docs/reference/api.md ("Errors") and docs/reference/shapes.md
@@ -78,13 +81,23 @@ BEGIN
         PERFORM set_config('role', 'none', true);
     EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS state = RETURNED_SQLSTATE, msg = MESSAGE_TEXT;
+        IF expect IS NOT NULL AND state <> expect THEN
+            RAISE EXCEPTION 'UNEXPECTED % creating % (want its refusal, %): %', state, tv,
+                expect, msg USING DETAIL = format('definition:%s', def);
+        END IF;
         IF state = ANY (refusals) THEN
             RAISE WARNING 'REFUSED % (%): %', tv, state, msg;
+            RAISE WARNING 'REACHED refused:% %', state, array_to_string(productions, ',');
             RETURN;
         END IF;
         RAISE EXCEPTION 'UNEXPECTED % creating %: %', state, tv, msg
             USING DETAIL = format('options %s, definition:%s', options, def);
     END;
+    IF expect IS NOT NULL THEN
+        RAISE EXCEPTION 'ACCEPTED % (want its refusal, %)', tv, expect
+            USING DETAIL = format('definition:%s', def);
+    END IF;
+    RAISE WARNING 'REACHED created %', array_to_string(productions, ',');
     INSERT INTO gen_shape VALUES (tv::regclass, key, keys_only);
     PERFORM assert_fresh(tv::regclass, key, 'creation');
     PERFORM gen_expose(tv::regclass);

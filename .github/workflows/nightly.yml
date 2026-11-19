@@ -88,7 +88,16 @@ jobs:
         run: |
           source test/lib/modes.sh
           day="$(date -u +%Y%m%d)"
-          MODES="$MODES_ALL" ./test/sql/differential/gen/run.sh 20 "${day}1 ${day}2 ${day}3" 60
+          GEN_COVERAGE="$RUNNER_TEMP/gen-coverage.txt" MODES="$MODES_ALL" \
+            ./test/sql/differential/gen/run.sh 20 "${day}1 ${day}2 ${day}3" 60
+
+      # Every production of docs/reference/dialect.toml the generator draws is reached:
+      # created, or refused with its SQLSTATE. Fixed seeds known to reach each, with
+      # the night's seeds above.
+      - name: Generator coverage of the dialect
+        run: |
+          GEN_COVERAGE="$RUNNER_TEMP/gen-coverage.txt" ./test/sql/differential/gen/run.sh 30 "1 2 3 4" 40
+          python3 -I test/sql/differential/gen/coverage.py "$RUNNER_TEMP/gen-coverage.txt"
 
       # Each skip decision switched to decide wrongly, one at a time, on fixed seeds:
       # a mutant the generator does not see fails the run.

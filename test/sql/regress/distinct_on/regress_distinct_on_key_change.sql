@@ -23,7 +23,7 @@ INSERT INTO tb_contract (id_contract, version_no, status)
 SELECT pg_tviews_create('tv_contract', $$
   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
          jsonb_build_object('status', c.status, 'version', c.version_no) AS data
-  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract $$);
 
 -- The only row of group 300 moves to 400: 300 disappears, 400 appears.
 UPDATE tb_contract SET id_contract = 400 WHERE id_contract = 300;
@@ -44,7 +44,7 @@ CREATE TABLE tb_doc (pk_doc int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 INSERT INTO tb_doc (id, rev, body) VALUES ('00000000-0000-0000-0000-000000000001', 1, 'a');
 SELECT pg_tviews_create('tv_doc', $$
   SELECT DISTINCT ON (d.id) d.pk_doc, d.id, jsonb_build_object('body', d.body) AS data
-  FROM tb_doc d ORDER BY d.id, d.rev DESC $$);
+  FROM tb_doc d ORDER BY d.id, d.rev DESC, d.pk_doc $$);
 UPDATE tb_doc SET id = '00000000-0000-0000-0000-000000000009';
 SELECT assert_fresh('tv_doc', 'id', 'moving a group to a new uuid');
 

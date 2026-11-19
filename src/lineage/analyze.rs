@@ -443,9 +443,12 @@ pub fn analyze(
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
+    walk::dialect::check(view_oid)?;
     refuse_inheritance(&graph.inherited_reads)?;
     let identity = identity_of(entity, view_oid, &graph)?;
     check_tables_agree(entity, &graph, base_tables)?;
+    // After the shape's own refusals, which name what to change more precisely.
+    walk::order::check(view_oid)?;
 
     let functions = function_signatures(&graph.untracked_functions).map_err(catalog)?;
 

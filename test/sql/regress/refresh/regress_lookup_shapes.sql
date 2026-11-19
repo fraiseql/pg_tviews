@@ -66,7 +66,7 @@ SELECT tviews.pg_tviews_create('tv_tally', $$
 SELECT tviews.pg_tviews_create('tv_badge', $$
     SELECT DISTINCT ON (i.id) i.id, i.pk_item AS pk_badge,
            jsonb_build_object('category', c.name, 'deleted', i.deleted_at IS NOT NULL) AS data
-    FROM tb_item i JOIN tb_cat c ON c.pk_cat = i.fk_cat ORDER BY i.id $$);
+    FROM tb_item i JOIN tb_cat c ON c.pk_cat = i.fk_cat ORDER BY i.id, i.pk_item $$);
 ANALYZE tb_cat, tb_item, tv_cat, tv_item, tv_card, tv_tally, tv_badge;
 
 CREATE FUNCTION all_fresh(label text) RETURNS void LANGUAGE plpgsql AS $$

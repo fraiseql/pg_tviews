@@ -40,18 +40,18 @@ SELECT pg_tviews_create('tv_customer', $$
 SELECT pg_tviews_create('tv_contract', $$
   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
          jsonb_build_object('v', c.version_no) AS data
-  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract $$);
 SELECT pg_tviews_create('tv_doc', $$
   SELECT DISTINCT ON (d.id) d.pk_doc, d.id, jsonb_build_object('rev', d.rev) AS data
-  FROM tb_doc d ORDER BY d.id, d.rev DESC $$);
+  FROM tb_doc d ORDER BY d.id, d.rev DESC, d.pk_doc $$);
 SELECT pg_tviews_create('tv_country', $$
   SELECT DISTINCT ON (c.identifier) c.pk_country, c.id, c.identifier,
          jsonb_build_object('rev', c.rev) AS data
-  FROM tb_country c ORDER BY c.identifier, c.rev DESC $$);
+  FROM tb_country c ORDER BY c.identifier, c.rev DESC, c.pk_country $$);
 SELECT pg_tviews_create('tv_price', $$
   SELECT DISTINCT ON (p.fk_product) p.pk_price, p.id, p.fk_product,
          jsonb_build_object('amount', p.amount) AS data
-  FROM tb_price p ORDER BY p.fk_product, p.valid_from DESC $$);
+  FROM tb_price p ORDER BY p.fk_product, p.valid_from DESC, p.pk_price $$);
 SELECT pg_tviews_create('tv_task', $$
   SELECT pk_task, id, jsonb_build_object('title', title) AS data FROM tb_task
   UNION ALL

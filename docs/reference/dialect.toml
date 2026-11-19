@@ -13,3 +13,456 @@ visits = "PostgreSQL's expression_tree_walker descends into the node's children,
 [leaf.walked-inside]
 description = "A whole-row or column read of a subquery, CTE or function entry, rather than of a table."
 visits = "The read-set walk (src/lineage/walk/wholerow.rs) visits every Var of every query level, those of the subquery or CTE included, whether the level above reads its outputs or not."
+
+# [[production]]: one construct a definition may contain, on one of six axes:
+#   A  statement and output        B  relations read
+#   C  how a column is read        D  what a value depends on besides rows
+#   E  time                        F  declared staleness
+# Each says how pg_tviews maintains it (`maintained`), or refuses it (`sqlstate`,
+# with `maintained` saying why), and names its evidence: regression tests under
+# test/sql/regress/ (`tests`), TVIEWs of the differential suite's schema.sql
+# (`differential`), and the source files that decide it (`walker`). The generator
+# (test/sql/differential/gen/gen.py) draws it with the kinds in `gen` (a definition
+# it creates) and `gen_refused` (one it must refuse), or says in `gen_exempt` why
+# not; gen/coverage.py checks both, and that a nightly run reached each.
+# docs/reference/shapes.md is generated from these entries by
+# scripts/gen-shapes.py, which CI runs with --check.
+
+# ── A. Statement and output ──────────────────────────────────────────────────
+
+[[production]]
+id = "plain"
+axis = "A"
+shape = "Plain projection of one table"
+example = "`SELECT pk_post, id, jsonb_build_object(…) AS data FROM tb_post`"
+maintained = "row by row (`local`)"
+tests = ["refresh/regress_incremental_refresh.sql"]
+differential = ["tv_customer"]
+walker = ["src/lineage/analyze.rs"]
+gen = ["plain", "derived", "fence"]
+
+[[production]]
+id = "join"
+axis = "A"
+shape = "Joins (inner, outer, chains, non-equality conditions)"
+example = "`FROM tb_line l JOIN tb_order o ON o.pk_order = l.fk_order JOIN tb_customer c …`"
+maintained = "row by row (`mapped`): one mapping query per statement; a row moved to another parent refreshes both"
+tests = ["lineage/regress_key_mapping_queries.sql", "lineage/regress_outer_join_links.sql", "cascade/regress_parent_change.sql"]
+differential = ["tv_purchase", "tv_line"]
+walker = ["src/lineage/walk/links.rs", "src/delta/mapping.rs"]
+gen = ["join"]
+
+[[production]]
+id = "copied-parent"
+axis = "A"
+shape = "Copied parent columns"
+example = "`'author', jsonb_build_object('name', u.name)` over a join on `fk_user`"
+maintained = "row by row: the changed value is written into every row holding the parent's key, in one statement; a parent read with a condition of its own (`AND o.deleted_at IS NULL`), or whose key changes, recomputes the rows instead"
+tests = ["cascade/regress_fanout_patch.sql", "cascade/regress_nested_fanout.sql", "cascade/regress_fanout_patch_soundness.sql"]
+walker = ["src/lineage/walk/data.rs", "src/lineage/query_graph.rs"]
+gen = ["join"]
+
+[[production]]
+id = "group-by"
+axis = "A"
+shape = "Aggregate (`GROUP BY`)"
+example = "`SELECT o.fk_user AS pk_user_summary, … GROUP BY o.fk_user, …`"
+maintained = "group by group: each touched group is recomputed. The `group_keys` option declares the column of each table that is the group key, checked against the query tree; with it, a window function, a set operation or a key that is not a plain `GROUP BY` column is refused (`22023`)"
+tests = ["cascade/regress_aggregate_tviews.sql", "cascade/regress_aggregate_query_tree.sql", "cascade/regress_aggregate_embed.sql"]
+differential = ["tv_custstat", "tv_nsrf"]
+walker = ["src/lineage/walk/level.rs", "src/ddl/create/derive.rs"]
+gen = ["group"]
+
+[[production]]
+id = "distinct-on"
+axis = "A"
+shape = "`DISTINCT ON`"
+example = "`SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, … ORDER BY c.id_contract, c.version_no DESC, c.pk_contract`"
+maintained = "row by row, keyed on the `DISTINCT ON` key ([ADR 0169](../adr/0169-tview-row-identity.md)); a row changing its key refreshes the old and the new group. Its `ORDER BY` must determine every row (the order rule, below). A composite key, an expression or a key not projected is refused (`0A000`)"
+tests = ["distinct_on/regress_distinct_on_key_change.sql", "distinct_on/regress_distinct_on_key_types.sql", "distinct_on/regress_distinct_on_composite.sql"]
+differential = ["tv_order", "tv_contract", "tv_doc", "tv_lastline"]
+walker = ["src/lineage/identity.rs", "src/lineage/walk/order.rs"]
+gen = ["last", "top"]
+
+[[production]]
+id = "union"
+axis = "A"
+shape = "`UNION` / `UNION ALL`"
+example = "`SELECT pk_task, … FROM tb_task UNION ALL SELECT -pk_task, … FROM tb_task_archive`"
+maintained = "row by row, branch by branch, each branch keyed by a column or immutable expression of its own table. Two rows for one key fail with `21000` (at the create, the write, the refresh)"
+tests = ["lineage/regress_union_cascade.sql", "lineage/regress_union_keys.sql", "lineage/regress_union_duplicate_keys.sql"]
+differential = ["tv_task", "tv_anytask"]
+walker = ["src/lineage/walk/level.rs", "src/lineage/identity.rs"]
+gen = ["union"]
+
+[[production]]
+id = "intersect-except"
+axis = "A"
+shape = "`INTERSECT` / `EXCEPT`"
+example = "`(SELECT … FROM tb_a) INTERSECT (SELECT … FROM tb_b)`"
+maintained = "row by row, branch by branch"
+tests = ["lineage/regress_top_level_opaque_shapes.sql"]
+walker = ["src/lineage/walk/level.rs", "src/lineage/identity.rs"]
+gen_exempt = "the regression tests named"
+
+[[production]]
+id = "cte"
+axis = "A"
+shape = "CTE (`WITH`)"
+example = "`WITH ids AS (SELECT … FROM tb_node n) SELECT … FROM ids x JOIN …`"
+maintained = "row by row through the CTE: chains, multi-table bodies, set operations"
+tests = ["lineage/regress_cte_cascade.sql", "lineage/regress_complex_cte.sql", "lineage/regress_cte_levels.sql"]
+differential = ["tv_ncast"]
+walker = ["src/lineage/walk/level.rs"]
+gen = ["cte"]
+
+[[production]]
+id = "recursive-cte"
+axis = "A"
+shape = "Recursive CTE (`WITH RECURSIVE`), in the definition or a view"
+example = "a category path read by an item view"
+maintained = "the tables read inside it go through the policy (`full_refresh` for a small tree); the tables outside stay row by row"
+tests = ["lineage/regress_recursive_cte.sql"]
+differential = ["tv_item"]
+walker = ["src/lineage/walk/level.rs"]
+gen_exempt = "the generated schemas have no tree; differential tv_item"
+
+[[production]]
+id = "correlated-subquery"
+axis = "A"
+shape = "Correlated subqueries, `LATERAL`"
+example = "`(SELECT jsonb_agg(… ORDER BY c.pk_comment) FROM tb_comment c WHERE c.fk_post = p.pk_post)`"
+maintained = "row by row when a condition links the subquery to the key"
+tests = ["lineage/regress_key_mapping_queries.sql", "lineage/regress_statement_mapping.sql", "arrays/regress_array_path_joins.sql"]
+differential = ["tv_nlat"]
+walker = ["src/lineage/walk/level.rs"]
+gen = ["subagg", "array", "pick", "filter", "exists", "ordinality"]
+
+[[production]]
+id = "uncorrelated-subquery"
+axis = "A"
+shape = "Uncorrelated subquery"
+example = "`(SELECT count(*) FROM tb_flag)`"
+maintained = "through the policy"
+tests = ["policy/regress_uncascaded_policy_default.sql", "policy/regress_uncascaded_policy_option.sql"]
+walker = ["src/lineage/walk/level.rs"]
+gen = ["lookup"]
+
+[[production]]
+id = "key-arrays"
+axis = "A"
+shape = "Arrays of keys"
+example = "`a.pk_node = ANY (<array>)`, `unnest(<array>)`, `LATERAL unnest(…)`"
+maintained = "row by row, mapped through `<array> @> ARRAY[<key>]`"
+tests = ["arrays/regress_array_path_joins.sql", "arrays/regress_unnest_cast.sql"]
+differential = ["tv_nsrf", "tv_nlat", "tv_nany", "tv_ncast"]
+walker = ["src/lineage/walk/expr.rs", "src/lineage/walk/links.rs"]
+gen_exempt = "the generated schemas keep no key arrays; differential tv_nsrf, tv_nlat, tv_nany, tv_ncast"
+
+[[production]]
+id = "computed-join"
+axis = "A"
+shape = "Join on a computed column"
+example = "`x.code = s.upper_name`, `upper(n.name) AS upper_name` in a subquery"
+maintained = "row by row when the expression is immutable; a stable one goes through the policy"
+differential = ["tv_nbadge"]
+walker = ["src/lineage/walk/links.rs", "src/delta/mapping.rs"]
+gen_exempt = "differential tv_nbadge"
+
+[[production]]
+id = "window-partition"
+axis = "A"
+shape = "Window function partitioned by a linked column (\"first row per key\")"
+example = "`row_number() OVER (PARTITION BY o.fk_customer ORDER BY o.placed_on, o.pk_order) … WHERE rn = 1`"
+maintained = "row by row: a write refreshes the partitions it leaves and enters"
+tests = ["lineage/regress_window_partition.sql", "lineage/regress_first_row_join.sql"]
+differential = ["tv_custfirst", "tv_custline"]
+walker = ["src/lineage/walk/links.rs", "src/lineage/walk/order.rs"]
+gen = ["firstrow"]
+
+[[production]]
+id = "opaque-top-level"
+axis = "A"
+shape = "Other windows, `LIMIT`/`OFFSET`, `GROUPING SETS`, a set-returning function in the top-level `SELECT`"
+example = "`count(*) OVER ()`, `ORDER BY …, pk_top LIMIT 10`"
+maintained = "through the policy"
+tests = ["lineage/regress_top_level_opaque_shapes.sql", "lineage/regress_window_partition.sql"]
+walker = ["src/lineage/walk/level.rs"]
+gen_exempt = "the regression tests named"
+
+[[production]]
+id = "key-not-integer"
+axis = "A"
+shape = "`pk_<entity>` not an integer"
+example = "`SELECT pk_x, …` with `pk_x uuid`"
+maintained = "refused: keep the uuid in `id` ([Keys](ddl.md#keys))"
+sqlstate = "42804"
+tests = ["identity/regress_key_type.sql"]
+walker = ["src/lineage/identity.rs"]
+gen_exempt = "the generator writes integer keys; the regression test named"
+
+[[production]]
+id = "raw-select"
+axis = "A"
+shape = "No `pk_*` column"
+example = "`SELECT * FROM tb_thing`"
+maintained = "rewritten to `pk_<entity>, id, data` from a `pk` column, else the first integer column, else `id`; with none, refused (`42601`). The `id` is the source's `uuid` column `id` when it has one, else `tviews.pg_tviews_row_id(entity, key)`, a UUIDv5 the same at every evaluation"
+tests = ["freshness/regress_raw_select_stable_id.sql"]
+walker = ["src/ddl/create/select.rs"]
+gen_exempt = "the generator writes pk_<entity>; the regression test named"
+
+[[production]]
+id = "cycle"
+axis = "A"
+shape = "TVIEWs reading each other in a cycle"
+example = "`tv_a` reads `tv_b`, which reads `tv_a`"
+maintained = "refused"
+sqlstate = "42P17"
+tests = ["operations/regress_error_codes.sql"]
+walker = ["src/catalog/graph.rs"]
+gen_exempt = "the regression test named"
+
+[[production]]
+id = "deep-nesting"
+axis = "A"
+shape = "Deep nesting"
+example = "views, subqueries and CTEs more than 32 query levels deep; views more than 64 deep"
+maintained = "refused (`0A000`; `54001`)"
+sqlstate = "0A000"
+tests = ["lineage/regress_recursive_cte.sql"]
+walker = ["src/lineage/walk/level.rs"]
+gen_exempt = "the regression test named"
+
+[[production]]
+id = "one-select"
+axis = "A"
+shape = "Not exactly one `SELECT`"
+example = "two statements, a `DO` block"
+maintained = "refused"
+sqlstate = "42601"
+tests = ["operations/regress_error_codes.sql"]
+walker = ["src/ddl/create/select.rs"]
+gen_exempt = "the regression test named"
+
+# ── B. Relations read ────────────────────────────────────────────────────────
+
+[[production]]
+id = "embedded-tview"
+axis = "B"
+shape = "Embedded TVIEW (cascade)"
+example = "`JOIN tv_user u ON u.pk_user = p.fk_user`, `'author', u.data`"
+maintained = "row by row (`propagated`): a refresh of `tv_user` refreshes the posts embedding it, in the same flush"
+tests = ["cascade/regress_refresh_cascades_to_dependents.sql", "cascade/regress_embeds_by_oid.sql"]
+differential = ["tv_deal", "tv_desk", "tv_note"]
+walker = ["src/lineage/analyze.rs"]
+gen = ["embed"]
+
+[[production]]
+id = "tview-table-read"
+axis = "B"
+shape = "Another TVIEW's table read otherwise (an aggregating view over `tv_line`)"
+example = "`LEFT JOIN v_line_totals t ON t.fk_order = o.pk_order`"
+maintained = "row by row (`mapped`), like a base table; a read nothing links goes through the policy"
+tests = ["lineage/regress_tview_table_reads.sql"]
+differential = ["tv_ordsum"]
+walker = ["src/lineage/analyze.rs"]
+gen_exempt = "differential tv_ordsum"
+
+[[production]]
+id = "materialized-view"
+axis = "B"
+shape = "Materialized view"
+example = "`LEFT JOIN mv_line_count m ON m.fk_order = o.pk_order`"
+maintained = "through the policy; under `full_refresh`, `REFRESH MATERIALIZED VIEW` refreshes the whole TVIEW in the same transaction"
+tests = ["policy/regress_materialized_view.sql"]
+differential = ["tv_ordcount"]
+walker = ["src/ddl/uncascaded.rs", "src/hooks/mod.rs"]
+gen_exempt = "differential tv_ordcount"
+
+[[production]]
+id = "untrackable-source"
+axis = "B"
+shape = "Foreign table, sequence"
+example = "`JOIN tb_remote r …`, `SELECT last_value FROM s_counter`"
+maintained = "through the policy, except that `full_refresh` is refused (`22023`): nothing tells pg_tviews when they change. Declare `warn` and call `pg_tviews_refresh()`"
+tests = ["ddl/regress_untrackable_sources.sql"]
+walker = ["src/ddl/uncascaded.rs"]
+gen_exempt = "the regression test named"
+
+[[production]]
+id = "inheritance"
+axis = "B"
+shape = "Table read with its inheritance children (no `ONLY`)"
+example = "`FROM tb_animal` with a child table"
+maintained = "refused; `FROM ONLY` is row by row, and the table gets no new child"
+sqlstate = "0A000"
+tests = ["ddl/regress_untrackable_sources.sql"]
+walker = ["src/lineage/analyze.rs"]
+gen_exempt = "the regression test named"
+
+[[production]]
+id = "partitioned"
+axis = "B"
+shape = "Partitioned base table"
+example = "`tb_event` partitioned by range"
+maintained = "row by row through a row trigger on the root; every partition gets the flush and `TRUNCATE` triggers, so writes naming a partition refresh too. `DROP`, `DETACH` and `ATTACH` of a partition refresh the rows it carries"
+tests = ["refresh/regress_partition_direct_write.sql", "refresh/regress_partitioned_entity_table.sql", "ddl/regress_partition_truncate_attach.sql", "ddl/regress_issue_261_partition_drop.sql"]
+walker = ["src/dependency/triggers.rs"]
+gen_exempt = "the regression tests named"
+
+[[production]]
+id = "subscribed"
+axis = "B"
+shape = "Table a logical replication subscription writes"
+example = "a TVIEW over a subscribed table"
+maintained = "refused: the apply worker fires no statement trigger. Create the TVIEW on the publisher and publish its table"
+sqlstate = "0A000"
+evidence = "`test/replication/logical_subscriber.sh`"
+walker = ["src/dependency/triggers.rs"]
+gen_exempt = "the replication test named"
+
+[[production]]
+id = "temporary"
+axis = "B"
+shape = "Temporary table"
+example = "`FROM pg_temp.tb_scratch`"
+maintained = "refused by PostgreSQL (`cannot create temporary relation in non-temporary schema`)"
+evidence = "not covered by a regression test"
+gen_exempt = "refused by PostgreSQL"
+
+[[production]]
+id = "row-security-owner"
+axis = "B"
+shape = "Row security that applies to the TVIEW's owner on a table it reads"
+example = "a table the owner does not own with row security enabled, or one it owns that is forced"
+maintained = "refused, at create, at re-derivation, and at the write that finds it set since: a refresh must read every row. Filter readers with a policy on `tv_*` instead ([Row-level security on tv_*](ddl.md#row-level-security-on-tv_))"
+sqlstate = "42P16"
+tests = ["privileges/regress_row_security_refused_at_create.sql", "privileges/regress_row_security_refused_after_create.sql", "privileges/regress_row_security_exempt_owner.sql", "privileges/regress_tv_row_security.sql"]
+walker = ["src/guard.rs", "src/catalog/stopgap.rs"]
+gen_exempt = "every generated case has row security the owner is exempt from (run.sh, Roles); the refusals are regression-tested"
+
+# ── C. How a column is read ──────────────────────────────────────────────────
+
+[[production]]
+id = "generated-column"
+axis = "C"
+shape = "Generated columns"
+example = "`code text GENERATED ALWAYS AS (upper(name))`"
+maintained = "`STORED`: an ordinary column. Virtual (PostgreSQL 18's default): followed through its inputs, also as a key or join column"
+tests = ["lineage/regress_virtual_generated_columns.sql"]
+differential = ["tv_vnote"]
+walker = ["src/lineage/walk/level.rs"]
+gen_exempt = "differential tv_vnote"
+
+[[production]]
+id = "whole-row"
+axis = "C"
+shape = "A table's whole row"
+example = "`to_jsonb(t)`, `jsonb_agg(c ORDER BY c.pk_c)`, `t::text`, `f(t)`"
+maintained = "row by row, every column of the table read: any UPDATE of it refreshes, none is patched in place. A view's whole row reads the view's columns"
+tests = ["lineage/regress_wholerow_root.sql", "lineage/regress_wholerow_child_collection.sql", "lineage/regress_wholerow_function_argument.sql", "lineage/regress_wholerow_text_cast.sql"]
+walker = ["src/lineage/walk/wholerow.rs"]
+gen = ["wholerow"]
+
+[[production]]
+id = "xmin-tableoid"
+axis = "C"
+shape = "System columns `xmin`, `tableoid`"
+example = "`v.xmin::text AS version`, the partition a row is in"
+maintained = "row by row: every UPDATE of the table refreshes (each changes `xmin`); `tableoid` follows a row moved to another partition"
+tests = ["lineage/regress_system_column_read.sql", "freshness/regress_tableoid_cross_partition.sql"]
+walker = ["src/lineage/walk/wholerow.rs"]
+gen = ["syscol"]
+
+[[production]]
+id = "unstable-system-column"
+axis = "C"
+shape = "System columns `ctid`, `xmax`, `cmin`, `cmax`"
+example = "`t.ctid::text`"
+maintained = "refused: they change with no write pg_tviews sees (`VACUUM FULL`, `CLUSTER`, a row lock). Read the key, or `xmin` for a row version"
+sqlstate = "0A000"
+tests = ["lineage/regress_dialect_refusals.sql"]
+walker = ["src/lineage/walk/dialect.rs"]
+gen_refused = ["refused"]
+
+# ── D. What a value depends on besides rows ──────────────────────────────────
+
+[[production]]
+id = "function-reads"
+axis = "D"
+shape = "Function that reads tables (not `IMMUTABLE`, outside `pg_catalog`)"
+example = "`name || label_suffix()`"
+maintained = "the tables declared in `function_reads` go through the policy. Undeclared, refused (`22023`) under `error` and `full_refresh`"
+tests = ["policy/regress_function_reads.sql", "freshness/regress_aggregate_function_reads.sql", "freshness/regress_operator_function_reads.sql"]
+differential = ["tv_custbadge"]
+walker = ["src/lineage/analyze.rs", "src/ddl/uncascaded.rs"]
+gen_exempt = "differential tv_custbadge"
+
+[[production]]
+id = "volatile"
+axis = "D"
+shape = "Volatile function, wherever it is called"
+example = "`random()`, `gen_random_uuid()`, `nextval()`, a `VOLATILE` function of yours, an operator or cast it backs"
+maintained = "refused: two evaluations over the same rows may differ, and pg_tviews stores one. Compute the value when the row is written and store it in a column"
+sqlstate = "0A000"
+tests = ["lineage/regress_dialect_refusals.sql"]
+walker = ["src/lineage/walk/dialect.rs"]
+gen_refused = ["refused"]
+
+[[production]]
+id = "session-reader"
+axis = "D"
+shape = "Built-in that reads the session, the transaction, the server, privileges or statistics"
+example = "`SESSION_USER`, `pg_backend_pid()`, `inet_client_addr()`, `txid_current()`, `has_table_privilege(…)`, `pg_stat_get_live_tuples(…)`"
+maintained = "refused: its value changes with no write, and no refresh follows it. Built-ins that read only their arguments and the settings the owner frame pins (`to_char`, casts, `current_database()`) are accepted"
+sqlstate = "0A000"
+tests = ["lineage/regress_dialect_refusals.sql"]
+walker = ["src/lineage/walk/dialect.rs"]
+gen_refused = ["refused"]
+
+[[production]]
+id = "reader-function"
+axis = "D"
+shape = "Who reads the TVIEW"
+example = "`CURRENT_USER`, `CURRENT_ROLE`, `USER`, `current_user()`"
+maintained = "refused: a TVIEW's rows are the same for every reader, refreshed as its owner. Filter readers with a policy on `tv_*`"
+sqlstate = "0A000"
+tests = ["freshness/regress_reader_functions_refused.sql"]
+walker = ["src/lineage/walk/time.rs"]
+gen_refused = ["refused"]
+
+[[production]]
+id = "order-rule"
+axis = "D"
+shape = "Row order reaching the output: `jsonb_agg`, `array_agg`, `string_agg`… (any user aggregate, `sum`/`avg` of a float), `LIMIT`/`OFFSET`, `ARRAY(SELECT …)`, `DISTINCT ON`, `row_number()`, `first_value()`…"
+example = "`jsonb_agg(c.label ORDER BY c.pos, c.pk_c)`"
+maintained = "accepted when its `ORDER BY`, with the level's equalities and the tables' unique keys, determines every row (or every value the aggregate reads); when at most one row reaches it; when an aggregate is ordered by the values it aggregates and they render as they compare (not `numeric`, floats, `jsonb`); when a `UNION ALL` is ordered by a constant rank. Otherwise refused, the hint naming a key to append"
+sqlstate = "0A000"
+tests = ["lineage/regress_order_rule.sql", "freshness/regress_unordered_aggregate.sql"]
+walker = ["src/lineage/walk/order.rs"]
+gen = ["array", "last", "top", "pick", "filter", "ordinality", "firstrow"]
+gen_refused = ["unordered"]
+
+# ── E. Time ──────────────────────────────────────────────────────────────────
+
+[[production]]
+id = "time-dependent"
+axis = "E"
+shape = "Time-dependent (`now()`, `CURRENT_DATE`, …)"
+example = "`end_date >= CURRENT_DATE AS is_current`"
+maintained = "row by row on writes; refreshed whole by `pg_tviews_refresh_time_dependent()`, called at the boundary, when declared `\"time_refresh\": \"external\"`. Undeclared, refused (`22023`) under `error` and `full_refresh`. `clock_timestamp()` and `timeofday()` are volatile, refused (`0A000`)"
+tests = ["policy/regress_time_dependent.sql"]
+walker = ["src/lineage/walk/time.rs"]
+gen = ["time"]
+
+# ── F. Declared staleness ────────────────────────────────────────────────────
+
+[[production]]
+id = "warn-policy"
+axis = "F"
+shape = "Tables declared `warn`"
+example = "`{\"uncascaded_policy\": \"warn\"}`, or `\"uncascaded_tables\": {\"tb_locale\": \"warn\"}`"
+maintained = "the rows stay stale after a write to such a table until something else refreshes them; every other write keeps them fresh. `tviews.registry` lists the tables, those of embedded TVIEWs included"
+tests = ["policy/regress_uncascaded_tables.sql", "policy/regress_per_table_policy.sql", "policy/regress_uncascaded_manual_refresh.sql"]
+walker = ["src/lineage/analyze.rs"]
+gen_exempt = "the differential suite creates its TVIEWs under warn (schema.sql)"

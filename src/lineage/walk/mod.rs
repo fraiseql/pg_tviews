@@ -360,11 +360,13 @@ fn list_len(list: *mut pg_sys::List) -> usize {
 mod collect;
 mod data;
 mod deparse;
+pub mod dialect;
 mod expr;
 mod guard;
 mod level;
 mod links;
 mod nodes;
+pub mod order;
 mod predicate;
 mod time;
 mod wholerow;

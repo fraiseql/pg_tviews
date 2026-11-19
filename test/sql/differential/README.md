@@ -28,7 +28,14 @@ value columns of six types, `fk_<entity>` with or without a foreign key) and 3 t
 TVIEWs drawn from a grammar: plain projections, inner and LEFT joins up to three
 levels, embedded TVIEWs, scalar subquery aggregates, `jsonb_agg` arrays of children,
 `UNION ALL`, CTEs, `GROUP BY` keyed by the group, `DISTINCT ON` (last child per
-parent, first row per root), soft-delete filters. Then random writes: multi-row
+parent, first row per root), whole-row reads, `xmin`, `LATERAL … LIMIT 1` picks,
+`FILTER` and `string_agg`, `EXISTS`, `OFFSET 0` fences, `WITH ORDINALITY`,
+`ROW_NUMBER() … rn = 1`, `CURRENT_DATE` under `time_refresh`, soft-delete filters; and
+definitions outside the dialect (an unordered aggregate or pick, a volatile function,
+a session reader, `ctid`, `CURRENT_USER`), which must be refused with `0A000`. Each
+kind names the productions of `docs/reference/dialect.toml` it exercises:
+`gen/coverage.py` checks every production names a kind or why none draws it, and,
+given the `REACHED` lines a run appends to `GEN_COVERAGE`, that each was reached. Then random writes: multi-row
 inserts, updates, deletes, rows moving between parents, key changes, transactions,
 and mutation functions (one `SELECT fn()` writing in a few statements, then reading
 a TVIEW back: the read must see fresh rows).
@@ -72,10 +79,11 @@ a TVIEW back: the read must see fresh rows).
   (a restrictive policy on it), a `tv_*` granted to reader C, who may not select a
   column it copies. For each, some case must leak. It proves the visibility oracle
   sees a reader reading more than its definition returns to it.
-- `GEN_FEATURES` turns on shape kinds and value forms left out of the default run
-  while their defect is open (`OPT_IN` in `gen.py`): `wholerow` (a row read whole),
-  `syscol` (a system column), `unordered` (an output depending on row order) and
-  `exact` (numerics with 30 digits or trailing zeros). A named kind is half the draws.
+- `GEN_FEATURES` turns on value forms left out of the default run while their defect
+  is open (`OPT_IN` in `gen.py`): `exact` (numerics with 30 digits or trailing
+  zeros). It also takes the name of any shape kind, which is then half the draws
+  (`readset-checks.sh` weights `wholerow,syscol`). The kinds `wholerow`, `syscol` and
+  `unordered` started as opt-in and are now in the default grammar.
   The generator found #288 (an `UPDATE` of a
   referenced `pk_<entity>` left its children's fan-out unwritten) and #289 (a fan-out
   into the children of a parent a LEFT JOIN's `ON` filters out), both now in the

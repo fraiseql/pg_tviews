@@ -34,7 +34,7 @@ INSERT INTO tb_post (pk_post, title) VALUES (1, 'Test Post');
 SELECT pg_tviews_create('tv_post', $$
 SELECT p.pk_post, p.id, jsonb_build_object('comments', COALESCE((
     SELECT jsonb_agg(jsonb_build_object('id', c.id, 'text', c.text,
-                     'author', jsonb_build_object('id', u.id, 'name', u.name, 'email', u.email)))
+                     'author', jsonb_build_object('id', u.id, 'name', u.name, 'email', u.email)) ORDER BY c.pk_comment)
     FROM tb_comment c JOIN tb_user u ON c.fk_user = u.pk_user
     WHERE c.fk_user IS NOT NULL), '[]'::jsonb)) AS data
 FROM tb_post p

@@ -49,7 +49,7 @@ CREATE VIEW v_first_order_ranks AS
 SELECT fk_customer, label, last_label FROM (
   SELECT o.fk_customer, o.label,
          RANK() OVER w AS r, DENSE_RANK() OVER w AS dr,
-         FIRST_VALUE(o.label) OVER (PARTITION BY o.fk_customer ORDER BY o.placed_on DESC) AS last_label
+         FIRST_VALUE(o.label) OVER (PARTITION BY o.fk_customer ORDER BY o.placed_on DESC, o.pk_order) AS last_label
   FROM tb_order o WHERE o.deleted_at IS NULL
   WINDOW w AS (PARTITION BY o.fk_customer ORDER BY o.placed_on, o.pk_order)) s
 WHERE r = 1 AND dr = 1;

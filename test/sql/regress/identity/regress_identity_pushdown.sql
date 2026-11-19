@@ -36,7 +36,7 @@ ANALYZE tb_contract, tb_order, tb_line;
 SELECT pg_tviews_create('tv_contract', $$
   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
          jsonb_build_object('status', c.status) AS data
-  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract $$);
 -- The #169 shape: keyed on a uuid, tables read through a join.
 SELECT pg_tviews_create('tv_order', $$
   SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('ref', o.ref, 'n', v.n) AS data

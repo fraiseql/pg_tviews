@@ -50,7 +50,7 @@ SELECT pg_tviews_create('order', $TVIEW$
     SELECT o.pk_order, o.id,
         jsonb_build_object('customer', o.customer,
             'items', COALESCE(jsonb_agg(jsonb_build_object(
-                'product', i.product, 'qty', i.qty, 'group', g.label))
+                'product', i.product, 'qty', i.qty, 'group', g.label) ORDER BY g.pk_group, i.pk_item)
                 FILTER (WHERE i.pk_item IS NOT NULL), '[]'::jsonb)) AS data
     FROM tb_order o
     LEFT JOIN tb_group g ON g.fk_order = o.pk_order

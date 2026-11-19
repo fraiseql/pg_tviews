@@ -10,9 +10,12 @@ Usage: python3 -I gen.py <seed> <shapes> <statements> <out_dir> [features]
 
 Writes <out_dir>/case<N>.sql until <shapes> TVIEW definitions are written, and
 prints one line per case: its file name and its number of shapes. `features`
-is a comma-separated list of the opt-in writes of OPT_IN.
+is a comma-separated list of the opt-in value forms of OPT_IN, and of kinds to draw
+half the time.
 
-The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data):
+The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data),
+each kind tagged with the productions of docs/reference/dialect.toml it exercises
+(KIND_PRODUCTIONS; coverage.py checks every production is reached):
   plain     one table, jsonb_build_object of its columns
   join      inner and LEFT joins up the fk_ chain (depth <= 3), parent columns
             copied flat or as a nested object
@@ -26,17 +29,25 @@ The grammar (one TVIEW per draw, every one selecting pk_<entity>, id and data):
   top       DISTINCT ON the root's pk over a LEFT JOIN of its children
   lookup    a count of another table's rows filtered by constants (=, IN, IS
             NULL, ANDed), linked to no key, under uncascaded_policy full_refresh
+  wholerow  a row read whole: to_jsonb(t), jsonb_agg(c ORDER BY ...) of child
+            rows, a function of the row type, md5(t::text)
+  syscol    a system column that changes only with a write: xmin::text
+  pick      one child per parent by LATERAL ... ORDER BY ..., pk LIMIT 1
+  filter    count and jsonb_agg with FILTER, string_agg ordered by its values
+  exists    EXISTS of a parent's children
+  fence     a subquery fenced by OFFSET 0
+  ordinality  unnest(...) WITH ORDINALITY, aggregated in its order
+  firstrow  ROW_NUMBER() OVER (PARTITION BY fk_ ORDER BY ..., pk) ... rn = 1
+  time      a value read against CURRENT_DATE, declared time_refresh external
 Any of them may filter soft-deleted rows (deleted_at IS NULL). An embedding TVIEW
 may carry a user trigger writing back, during the flush, to the row it embeds;
 a `derived` TVIEW reads a copied column again in an expression.
 
-Opt-in kinds (named in `features`, drawn only then, so a run without them writes
-the same cases as before), each a form of reading the analysis must account for:
-  wholerow  a row read whole: to_jsonb(t), jsonb_agg(c ORDER BY ...) of child
-            rows, a function of the row type, md5(t::text)
-  syscol    a system column: xmin::text
+Kinds outside the dialect, whose creation must fail with 0A000 (Shape.expect):
   unordered an output that depends on row order: an aggregate without ORDER BY,
             LIMIT 1 without ORDER BY, DISTINCT ON and row_number() over ties
+  refused   a volatile function in the output or a filter, a built-in reading
+            the session, ctid, CURRENT_USER
 Every table carries a tenant_id, and every row references parents of its own
 tenant only (inserts and moves pick parents of the row's tenant; a flip moves a
 row with no children to the other tenant, with its parents). Every TVIEW projects
@@ -54,8 +65,14 @@ scale on the way into a document is seen (the oracle compares binary images).
 import json
 import random
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# The productions of docs/reference/dialect.toml: every shape names those it
+# exercises, and coverage.py checks each production is reached.
+DIALECT = Path(__file__).resolve().parents[4] / "docs/reference/dialect.toml"
+PRODUCTIONS = {p["id"] for p in tomllib.loads(DIALECT.read_text())["production"]}
 
 ENTITIES = [
     "org",
@@ -88,7 +105,7 @@ SUMMABLE = ("int", "numeric")
 # filtering its parent) were found this way and are in the default run.
 # The opt-in kinds and value forms (the module docstring), until the defects
 # they reproduce are fixed.
-OPT_IN_KINDS = ["wholerow", "syscol", "unordered"]
+OPT_IN_KINDS: list[str] = []
 OPT_IN: set[str] = {*OPT_IN_KINDS, "exact"}
 # the share of the writes made by a mutation function, and in a transaction
 MUTATION_SHARE = 0.2
@@ -110,7 +127,46 @@ KINDS = [
     "top",
     "lookup",
     "derived",
+    "wholerow",
+    "syscol",
+    "unordered",
+    "pick",
+    "filter",
+    "exists",
+    "fence",
+    "ordinality",
+    "firstrow",
+    "time",
+    "refused",
 ]
+# The productions each kind exercises (a kind with forms adds its form's own).
+KIND_PRODUCTIONS = {
+    "plain": ["plain"],
+    "join": ["join", "copied-parent"],
+    "embed": ["embedded-tview"],
+    "subagg": ["correlated-subquery"],
+    "array": ["correlated-subquery", "order-rule"],
+    "union": ["union"],
+    "cte": ["cte"],
+    "group": ["group-by"],
+    "last": ["distinct-on", "order-rule"],
+    "top": ["distinct-on", "order-rule"],
+    "lookup": ["uncorrelated-subquery"],
+    "derived": ["plain"],
+    "wholerow": ["whole-row"],
+    "syscol": ["xmin-tableoid"],
+    "unordered": ["order-rule"],
+    "pick": ["correlated-subquery", "order-rule"],
+    "filter": ["correlated-subquery", "order-rule"],
+    "exists": ["correlated-subquery"],
+    "fence": ["plain"],
+    "ordinality": ["correlated-subquery", "order-rule"],
+    "firstrow": ["window-partition", "order-rule"],
+    "time": ["time-dependent"],
+    "refused": [],
+}
+assert set(KIND_PRODUCTIONS) == set(KINDS), "every kind names its productions"
+assert all(p in PRODUCTIONS for ps in KIND_PRODUCTIONS.values() for p in ps)
 
 
 def lit(s: str) -> str:
@@ -163,6 +219,10 @@ class Shape:
     keys_only: bool = False
     # statements run after the TVIEW is created (when it is)
     after: list[str] = field(default_factory=list)
+    # the dialect.toml productions it exercises
+    productions: list[str] = field(default_factory=list)
+    # the SQLSTATE its creation must fail with, None when it must be created
+    expect: str | None = None
 
 
 class Case:
@@ -182,9 +242,11 @@ class Case:
         self.shapes: list[Shape] = []
         self.out: list[str] = []
         self.functions = 0
-        # An enabled opt-in kind is half the draws: it is what the run is for.
-        opted = [k for k in OPT_IN_KINDS if k in features]
-        self.kinds = KINDS + opted * (len(KINDS) // max(len(opted), 1))
+        # A kind named in `features` (an opt-in one, or any other to weight it) is
+        # half the draws: it is what the run is for.
+        opted = [k for k in [*KINDS, *OPT_IN_KINDS] if k in features]
+        self.kinds = KINDS + [k for k in opted if k in OPT_IN_KINDS]
+        self.kinds += opted * (len(KINDS) // max(len(opted), 1))
 
     # ── schema ──────────────────────────────────────────────────────────────
     def make_tables(self) -> None:
@@ -416,7 +478,11 @@ class Case:
         return ""
 
     def shape(self, kind: str) -> Shape | None:
-        return getattr(self, f"shape_{kind}")()
+        s = getattr(self, f"shape_{kind}")()
+        if s:
+            s.productions = list(dict.fromkeys(KIND_PRODUCTIONS[kind] + s.productions))
+            assert all(p in PRODUCTIONS for p in s.productions), s.productions
+        return s
 
     def shape_plain(self) -> Shape:
         t = self.rng.choice(self.tables)
@@ -491,7 +557,7 @@ class Case:
             for t in self.tables
             for fk in t.fks
             for s in self.shapes
-            if s.keyed_by is fk.parent
+            if s.keyed_by is fk.parent and s.expect is None
         ]
         if not options:
             return None
@@ -863,7 +929,176 @@ class Case:
             f"{self.obj('t', p)}, 'o', {value}) AS data\n"
             f"  FROM {p.name} t" + self.where([self.soft("t", p)])
         )
+        return Shape(tv, key, sql, {}, [], p, expect="0A000")
+
+    def shape_pick(self) -> Shape | None:
+        """One child per parent, picked by LATERAL … ORDER BY … LIMIT 1."""
+        r = self.rng
+        pairs = self.child_pairs()
+        if not pairs:
+            return None
+        p, c, fk = r.choice(pairs)
+        tv = self.tv_name(f"{p.entity}_pick")
+        key = "pk_" + tv[3:]
+        order = r.choice(c.cols_of(ORDERABLE))
+        col = r.choice(c.cols)[0]
+        cond = " AND ".join(
+            x for x in [f"c.{fk.column} = t.{p.pk}", self.soft("c", c)] if x
+        )
+        sql = (
+            f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', p)}, 'pick', f.{col}) AS data\n"
+            f"  FROM {p.name} t\n  LEFT JOIN LATERAL (SELECT c.{col} FROM {c.name} c "
+            f"WHERE {cond}\n    ORDER BY c.{order} DESC NULLS LAST, c.{c.pk} LIMIT 1) f ON true"
+            + self.where([self.soft("t", p)])
+        )
         return Shape(tv, key, sql, {}, [], p)
+
+    def shape_filter(self) -> Shape | None:
+        """Aggregates with FILTER, and string_agg, ordered by the key."""
+        r = self.rng
+        pairs = self.child_pairs()
+        if not pairs:
+            return None
+        p, c, fk = r.choice(pairs)
+        tv = self.tv_name(f"{p.entity}_f")
+        key = "pk_" + tv[3:]
+        text = c.cols_of(("text",))[0]
+        cond = r.choice(
+            [f"c.{text} LIKE 'a%'", f"c.{text} IS NOT NULL"]
+            + [f"c.{n} > 10" for n in c.cols_of(("int",))]
+        )
+        sel = (
+            f"jsonb_build_object('n', count(*) FILTER (WHERE {cond}), "
+            f"'l', jsonb_agg(c.{text} ORDER BY c.{c.pk}) FILTER (WHERE {cond}), "
+            f"'s', string_agg(c.{text}, ',' ORDER BY c.{text}))"
+        )
+        sql = (
+            f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', p)}, 'f', {self.child_subquery(p, c, fk, sel)}) AS data\n"
+            f"  FROM {p.name} t" + self.where([self.soft("t", p)])
+        )
+        return Shape(tv, key, sql, {}, [], p)
+
+    def shape_exists(self) -> Shape | None:
+        """Whether a parent has children: EXISTS, and NOT EXISTS in a filter."""
+        r = self.rng
+        pairs = self.child_pairs()
+        if not pairs:
+            return None
+        p, c, fk = r.choice(pairs)
+        tv = self.tv_name(f"{p.entity}_x")
+        key = "pk_" + tv[3:]
+        has = f"EXISTS {self.child_subquery(p, c, fk, '1')}"
+        sql = (
+            f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', p)}, 'has_{c.entity}', {has}) AS data\n"
+            f"  FROM {p.name} t" + self.where([self.soft("t", p)])
+        )
+        return Shape(tv, key, sql, {}, [], p)
+
+    def shape_fence(self) -> Shape:
+        """A subquery fenced by OFFSET 0 (the planner does not pull it up)."""
+        t = self.rng.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_o0")
+        key = "pk_" + tv[3:]
+        inner = ", ".join(f"t.{c}" for c, _ in t.cols)
+        where = self.where([self.soft("t", t)]).replace("\n  ", " ")
+        sql = (
+            f"SELECT x.{t.pk} AS {key}, x.id{self.tenant_col('x')}, jsonb_build_object("
+            f"{self.obj('x', t)}) AS data\n"
+            f"  FROM (SELECT t.{t.pk}, t.id, t.tenant_id, {inner} FROM {t.name} t{where} "
+            "OFFSET 0) x"
+        )
+        return Shape(tv, key, sql, {}, [], t)
+
+    def shape_ordinality(self) -> Shape:
+        """The words of a text column, WITH ORDINALITY, joined in their order."""
+        t = self.rng.choice(self.tables)
+        text = t.cols_of(("text",))[0]
+        tv = self.tv_name(f"{t.entity}_w")
+        key = "pk_" + tv[3:]
+        words = (
+            f"(SELECT string_agg(w.part, '/' ORDER BY w.n) FROM unnest(string_to_array("
+            f"t.{text}, '_')) WITH ORDINALITY w(part, n))"
+        )
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', t)}, 'parts', {words}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {}, [], t)
+
+    def shape_firstrow(self) -> Shape | None:
+        """Each parent's first child: ROW_NUMBER() … rn = 1, joined back."""
+        r = self.rng
+        pairs = self.child_pairs()
+        if not pairs:
+            return None
+        p, c, fk = r.choice(pairs)
+        tv = self.tv_name(f"{p.entity}_first_{c.entity}")
+        key = "pk_" + tv[3:]
+        order = r.choice(c.cols_of(ORDERABLE))
+        col = r.choice(c.cols)[0]
+        soft = self.where([self.soft("c", c)]).replace("\n  ", " ")
+        sql = (
+            f"SELECT t.{p.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', p)}, 'first', f.{col}) AS data\n"
+            f"  FROM {p.name} t\n  LEFT JOIN (SELECT c.{fk.column}, c.{col}, row_number() OVER "
+            f"(PARTITION BY c.{fk.column} ORDER BY c.{order} NULLS FIRST, c.{c.pk}) AS rn "
+            f"FROM {c.name} c{soft}) f\n    ON f.{fk.column} = t.{p.pk} AND f.rn = 1"
+            + self.where([self.soft("t", p)])
+        )
+        return Shape(tv, key, sql, {}, [], p)
+
+    def shape_time(self) -> Shape:
+        """A value read against the current date, declared refreshed externally.
+        The written times are in 2026, far from any boundary the run crosses."""
+        t = self.rng.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_t")
+        key = "pk_" + tv[3:]
+        times = t.cols_of(("timestamptz",))
+        test = (
+            f"t.{times[0]} < CURRENT_DATE + 36500"
+            if times
+            else "CURRENT_DATE > DATE '2000-01-01'"
+        )
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', t)}, 'current', {test}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        return Shape(tv, key, sql, {"time_refresh": "external"}, [], t)
+
+    def shape_refused(self) -> Shape:
+        """A definition outside the dialect (Axes C and D): refused with 0A000."""
+        r = self.rng
+        t = r.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_r")
+        key = "pk_" + tv[3:]
+        production, value = r.choice(
+            [
+                ("volatile", "random() < 2"),
+                ("volatile", "gen_random_uuid()"),
+                ("session-reader", "pg_backend_pid()"),
+                ("session-reader", "SESSION_USER"),
+                ("unstable-system-column", "t.ctid::text"),
+                ("reader-function", "CURRENT_USER"),
+            ]
+        )
+        if production == "volatile" and self.chance(0.3):
+            # in a filter rather than the output
+            cond, value = "random() >= 0", "1"
+        else:
+            cond = None
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', t)}, 'v', {value}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t), cond])
+        )
+        return Shape(
+            tv, key, sql, {}, [], None, productions=[production], expect="0A000"
+        )
 
     def make_shapes(self) -> None:
         r = self.rng
@@ -878,9 +1113,13 @@ class Case:
         for s in self.shapes:
             options = json.dumps(s.options, sort_keys=True)
             needs = "ARRAY[" + ", ".join(lit(n) for n in s.needs) + "]::text[]"
+            productions = (
+                "ARRAY[" + ", ".join(lit(p) for p in s.productions) + "]::text[]"
+            )
+            expect = lit(s.expect) if s.expect else "NULL"
             self.out.append(
                 f"SELECT gen_create({lit(s.tv)}, {lit(s.key)}, $def$\n{s.sql}\n$def$,\n"
-                f"  {lit(options)}, {needs}, {str(s.keys_only).lower()});"
+                f"  {lit(options)}, {needs}, {str(s.keys_only).lower()}, {productions}, {expect});"
             )
             self.out.extend(s.after)
 
@@ -1067,9 +1306,9 @@ def main() -> None:
     seed, shapes, statements = (int(a) for a in sys.argv[1:4])
     out_dir = Path(sys.argv[4])
     features = set(filter(None, ",".join(sys.argv[5:6]).split(",")))
-    unknown = features - set(OPT_IN)
+    unknown = features - set(OPT_IN) - set(KINDS)
     if unknown:
-        sys.exit(f"unknown feature(s) {sorted(unknown)}: {sorted(OPT_IN)}")
+        sys.exit(f"unknown feature(s) {sorted(unknown)}: {sorted(OPT_IN | set(KINDS))}")
     rng = random.Random(f"pg_tviews-gen:{seed}")
     case_no, left = 0, shapes
     while left > 0:

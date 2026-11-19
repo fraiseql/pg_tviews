@@ -37,7 +37,7 @@ INSERT INTO public.tb_doc VALUES (1, DEFAULT, 1, 'd1');
 INSERT INTO public.tb_note VALUES (1, 1, 'n1');
 SELECT tviews.pg_tviews_create('public.tv_doc', $q$
     SELECT d.pk_doc, d.id, jsonb_build_object('id', d.id, 'title', d.title, 'tag', t.label,
-        'notes', (SELECT jsonb_agg(n.body) FROM public.tb_note n
+        'notes', (SELECT jsonb_agg(n.body ORDER BY n.pk_note) FROM public.tb_note n
                   WHERE n.fk_doc = d.pk_doc OPERATOR(pg_catalog.+) public.folded('derive') - 1)) AS data
     FROM public.tb_doc d LEFT JOIN public.tb_tag t ON t.pk_tag = d.fk_tag $q$);
 RESET ROLE;

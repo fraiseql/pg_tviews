@@ -43,17 +43,25 @@ SELECT must(outcome LIKE '%reads the time (' || named || ')%', expr || ': ' || o
 FROM (VALUES ('CURRENT_DATE', 'CURRENT_DATE'), ('CURRENT_TIMESTAMP', 'CURRENT_TIMESTAMP'),
              ('CURRENT_TIMESTAMP(0)', 'CURRENT_TIMESTAMP'), ('CURRENT_TIME', 'CURRENT_TIME'),
              ('LOCALTIMESTAMP', 'LOCALTIMESTAMP'), ('LOCALTIME(2)', 'LOCALTIME'),
-             ('now()', 'now()'), ('clock_timestamp()', 'clock_timestamp()'),
+             ('now()', 'now()'),
              ('statement_timestamp()', 'statement_timestamp()'),
-             ('transaction_timestamp()', 'transaction_timestamp()'), ('timeofday()', 'timeofday()'),
+             ('transaction_timestamp()', 'transaction_timestamp()'),
              ('age(ends_at)', 'age()'), ('age(end_date::timestamp)', 'age()')) AS c(expr, named),
      LATERAL (SELECT error_of(format($$SELECT tviews.pg_tviews_create_or_replace('tv_contract',
          'SELECT pk_contract, id, (%s)::text AS t FROM tb_contract', '{"uncascaded_policy": "full_refresh"}')$$,
          expr)) AS outcome) o;
--- Not the time: age() of two values, a date literal, SESSION_USER (CURRENT_USER
--- is refused: it names the reader, regress_reader_functions_refused).
+-- The clock read twice in one statement differs: volatile, refused whatever
+-- time_refresh says (dialect.md Axis E).
+SELECT must(outcome LIKE '%calls ' || expr || '%volatile%', expr || ': ' || outcome)
+FROM (VALUES ('clock_timestamp()'), ('timeofday()')) AS c(expr),
+     LATERAL (SELECT error_of(format($$SELECT tviews.pg_tviews_create_or_replace('tv_contract',
+         'SELECT pk_contract, id, (%s)::text AS t FROM tb_contract', '{"time_refresh": "external"}')$$,
+         expr)) AS outcome) o;
+-- Not the time: age() of two values, a date literal, the database's name
+-- (CURRENT_USER and SESSION_USER are refused: regress_reader_functions_refused,
+-- regress_dialect_refusals).
 SELECT tviews.pg_tviews_create('tv_contract', $$SELECT pk_contract, id, age(ends_at, ends_at) AS a,
-    DATE '2026-01-01' AS d, SESSION_USER AS u FROM tb_contract$$);
+    DATE '2026-01-01' AS d, current_database() AS u FROM tb_contract$$);
 SELECT must(NOT time_dependent AND options->>'time_refresh' IS NULL, 'a TVIEW reading no time')
 FROM tviews.registry WHERE entity = 'contract';
 SELECT tviews.pg_tviews_drop('tv_contract');

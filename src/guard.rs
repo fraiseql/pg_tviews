@@ -41,7 +41,10 @@ fn pg_tview_guard_trigger<'a>(
             .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the table's policies"))
         {
             let table = format!("{}.{}", relation.namespace(), relation.name());
-            TViewError::WrongState { reason: filtered_message(&table, owner, &why) }.raise();
+            TViewError::WrongState {
+                reason: filtered_message(&table, owner, &why),
+            }
+            .raise();
         }
         return Ok(None);
     }
@@ -120,10 +123,7 @@ pub fn owner_filtered(relid: pg_sys::Oid, role: pg_sys::Oid) -> TViewResult<Opti
                                 AND (checks IS NULL OR checks OPERATOR(pg_catalog.=) 'true')) THEN \
                  'no policy lets it read and write every row' \
              END",
-        &[
-            crate::utils::spi::oid(relid),
-            crate::utils::spi::oid(role),
-        ],
+        &[crate::utils::spi::oid(relid), crate::utils::spi::oid(role)],
     )
 }
 
@@ -194,7 +194,11 @@ pub fn refuse_filtered_owner(table: pg_sys::Oid) -> TViewResult<()> {
     match owner_filtered(table, owner)? {
         None => Ok(()),
         Some(why) => Err(TViewError::WrongState {
-            reason: filtered_message(&crate::utils::qualified_relname_from_oid(table)?, owner, &why),
+            reason: filtered_message(
+                &crate::utils::qualified_relname_from_oid(table)?,
+                owner,
+                &why,
+            ),
         }),
     }
 }

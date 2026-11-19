@@ -5,7 +5,6 @@
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_unordered_aggregate.sql
 --
--- known-failing: #321 (order, D13)
 -- expect-output: unordered aggregate: PASS
 
 \set ON_ERROR_STOP on

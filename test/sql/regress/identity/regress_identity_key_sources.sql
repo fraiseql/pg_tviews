@@ -45,7 +45,7 @@ INSERT INTO tb_signup VALUES (1, '00000000-0000-0000-0000-000000000007', 1),
 SELECT pg_tviews_create('tv_user', $$
   SELECT DISTINCT ON (s.user_uuid) s.user_uuid AS id, u.pk_user,
          jsonb_build_object('name', u.name, 'at', s.at) AS data
-  FROM tb_signup s JOIN tb_user u ON u.id = s.user_uuid ORDER BY s.user_uuid, s.at DESC $$);
+  FROM tb_signup s JOIN tb_user u ON u.id = s.user_uuid ORDER BY s.user_uuid, s.at DESC, s.pk_signup $$);
 UPDATE tb_user SET name = 'renamed';
 SELECT assert_fresh('tv_user', 'id', 'an UPDATE of the joined tb_user');
 INSERT INTO tb_signup VALUES (3, '00000000-0000-0000-0000-000000000007', 3);

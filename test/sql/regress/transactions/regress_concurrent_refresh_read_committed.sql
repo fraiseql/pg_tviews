@@ -88,7 +88,7 @@ INSERT INTO tb_rev VALUES (1, '00000000-0000-0000-0000-000000000001', 1, 1, 'r1'
 SELECT pg_tviews_create('tv_rev', $$
     SELECT DISTINCT ON (r.id) r.pk_rev, r.id, r.fk_user,
            jsonb_build_object('title', r.title, 'author', u.name) AS data
-    FROM tb_rev r JOIN tb_user u ON u.pk_user = r.fk_user ORDER BY r.id, r.rev DESC $$);
+    FROM tb_rev r JOIN tb_user u ON u.pk_user = r.fk_user ORDER BY r.id, r.rev DESC, r.pk_rev $$);
 
 DO $$
 DECLARE run int;

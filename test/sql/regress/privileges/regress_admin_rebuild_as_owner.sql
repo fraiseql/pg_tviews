@@ -23,15 +23,16 @@ CREATE ROLE regress_rebuild_low;
 CREATE ROLE regress_rebuild_other;
 GRANT CREATE ON SCHEMA public TO regress_rebuild_low;
 
--- Every call of spy() records who ran it, and through which entry point.
-CREATE TABLE public.who_ran (u text, via text);
-GRANT INSERT ON public.who_ran TO regress_rebuild_low;
+-- spy() names who evaluates the view and in which transaction: each entry
+-- point, run in a transaction of its own, must leave the owner's name and a new
+-- transaction in tv_thing (a definition may not call a volatile function, nor
+-- read current_user itself: its body is not visible).
+CREATE TABLE public.seen (s text);
 
 SET ROLE regress_rebuild_low;
-CREATE FUNCTION public.spy() RETURNS int LANGUAGE plpgsql VOLATILE AS $$
+CREATE FUNCTION public.spy() RETURNS text LANGUAGE plpgsql STABLE AS $$
 BEGIN
-    INSERT INTO public.who_ran VALUES (current_user, current_setting('regress.via', true));
-    RETURN 1;
+    RETURN current_user || ':' || txid_current();
 END $$;
 CREATE TABLE public.tb_thing (pk_thing int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), n text);
 INSERT INTO public.tb_thing VALUES (1, DEFAULT, 'x');
@@ -41,18 +42,37 @@ SELECT pg_tviews_create_or_replace('public.tv_thing',
   options => '{"logged": false, "function_reads": {"public.spy()": []}}');
 RESET ROLE;
 
+-- Raise unless tv_thing was just evaluated again, as its owner.
+CREATE FUNCTION ran(entry text) RETURNS void LANGUAGE plpgsql AS $f$
+DECLARE now_s text := (SELECT data->>'s' FROM public.tv_thing WHERE pk_thing = 1);
+BEGIN
+    IF split_part(now_s, ':', 1) <> 'regress_rebuild_low' THEN
+        RAISE EXCEPTION '% ran the view of tv_thing as %, not as its owner', entry, now_s;
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.seen WHERE s = now_s) THEN
+        RAISE EXCEPTION '% did not rebuild tv_thing (still %)', entry, now_s;
+    END IF;
+    INSERT INTO public.seen VALUES (now_s);
+END $f$;
+-- The value its creation computed.
+INSERT INTO public.seen SELECT data->>'s' FROM public.tv_thing;
+
 -- Each entry point, called by the superuser.
 SET regress.via = 'refresh_all';
 SELECT (pg_tviews_refresh_all()->>'refreshed_count')::int AS refreshed;
+SELECT ran('refresh_all');
 SET regress.via = 'rebuild_all';
 SELECT entity FROM pg_tviews_rebuild_all(false);
+SELECT ran('rebuild_all');
 SET regress.via = 'refresh';
 SELECT pg_tviews_refresh('thing');
+SELECT ran('refresh');
 -- A crash empties tv_thing and its row in pg_tview_valid.
 TRUNCATE public.tv_thing;
 DELETE FROM tviews.pg_tview_valid;
 SET regress.via = 'rebuild_all_only_empty';
 SELECT entity FROM pg_tviews_rebuild_all(true);
+SELECT ran('rebuild_all_only_empty');
 -- A deploy re-applying the definition: the same columns (rows reconciled in
 -- place), then a new column (the table rebuilt).
 SET regress.via = 'replace';
@@ -60,31 +80,16 @@ SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, jsonb_build_object('id', id, 'n', n || '!', 's', public.spy()) AS data
      FROM public.tb_thing$q$,
   options => '{"logged": false, "function_reads": {"public.spy()": []}}');
+SELECT ran('replace');
 SET regress.via = 'replace_rebuild';
 SELECT pg_tviews_create_or_replace('public.tv_thing',
   $q$SELECT pk_thing, id, n, jsonb_build_object('id', id, 'n', n, 's', public.spy()) AS data
      FROM public.tb_thing$q$,
   options => '{"logged": false, "function_reads": {"public.spy()": []}}');
+SELECT ran('replace_rebuild');
 RESET regress.via;
 
-DO $$
-DECLARE
-    want text[] := ARRAY['refresh_all', 'rebuild_all', 'refresh',
-                         'rebuild_all_only_empty', 'replace',
-                         'replace_rebuild'];
-    entry text;
-    users text;
-BEGIN
-    FOREACH entry IN ARRAY want LOOP
-        SELECT string_agg(DISTINCT w.u, ',') INTO users FROM public.who_ran w WHERE w.via = entry;
-        IF users IS NULL THEN
-            RAISE EXCEPTION '% did not rebuild tv_thing', entry;
-        END IF;
-        IF users <> 'regress_rebuild_low' THEN
-            RAISE EXCEPTION '% ran the view of tv_thing as %, not as its owner', entry, users;
-        END IF;
-    END LOOP;
-END $$;
+SELECT count(*) = 7 AS every_entry_point_checked FROM public.seen;
 
 -- An explicit refresh of a TVIEW the caller does not own is refused.
 SET ROLE regress_rebuild_other;

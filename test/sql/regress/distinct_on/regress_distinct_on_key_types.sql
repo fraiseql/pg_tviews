@@ -36,19 +36,19 @@ END $$;
 SELECT pg_tviews_create('tv_bycode', $$
   SELECT DISTINCT ON (i."Code") i.pk_bycode, i.id, i."Code",
          jsonb_build_object('label', i.label) AS data
-  FROM tb_bycode i ORDER BY i."Code", i.rev DESC $$);
+  FROM tb_bycode i ORDER BY i."Code", i.rev DESC, i.pk_bycode $$);
 SELECT pg_tviews_create('tv_bygrp', $$
   SELECT DISTINCT ON (i.grp) i.pk_bygrp, i.id, i.grp,
          jsonb_build_object('label', i.label) AS data
-  FROM tb_bygrp i ORDER BY i.grp, i.rev DESC $$);
+  FROM tb_bygrp i ORDER BY i.grp, i.rev DESC, i.pk_bygrp $$);
 SELECT pg_tviews_create('tv_byprice', $$
   SELECT DISTINCT ON (i.price) i.pk_byprice, i.id, i.price,
          jsonb_build_object('label', i.label) AS data
-  FROM tb_byprice i ORDER BY i.price, i.rev DESC $$);
+  FROM tb_byprice i ORDER BY i.price, i.rev DESC, i.pk_byprice $$);
 SELECT pg_tviews_create('tv_byday', $$
   SELECT DISTINCT ON (i.day) i.pk_byday, i.id, i.day,
          jsonb_build_object('label', i.label) AS data
-  FROM tb_byday i ORDER BY i.day, i.rev DESC $$);
+  FROM tb_byday i ORDER BY i.day, i.rev DESC, i.pk_byday $$);
 
 -- The same statement on every table.
 CREATE FUNCTION on_all(stmt text) RETURNS void LANGUAGE plpgsql AS $$

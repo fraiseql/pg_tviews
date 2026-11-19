@@ -4,7 +4,6 @@
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/freshness/regress_raw_select_stable_id.sql
 --
--- known-failing: #321 (E1-14)
 -- expect-output: raw select stable id: PASS
 
 \set ON_ERROR_STOP on
@@ -33,6 +32,18 @@ SELECT tviews.pg_tviews_refresh('tv_tag');
 SELECT must((SELECT bool_and(t.id = i.id) FROM tv_tag t JOIN ids i USING (pk_tag)),
             'every row kept its id across a full refresh');
 SELECT assert_fresh('tv_tag', 'pk_tag', 'an UPDATE and a full refresh');
+
+-- A source with its own uuid id keeps it; another TVIEW with the same keys gets
+-- other ids (the entity is part of the name).
+CREATE TABLE tb_doc (pk int PRIMARY KEY, id uuid NOT NULL, title text);
+INSERT INTO tb_doc VALUES (1, '00000000-0000-4000-8000-000000000001', 't');
+SELECT tviews.pg_tviews_create('tv_doc', $$ SELECT pk, id, title FROM tb_doc $$) IS NOT NULL AS created;
+SELECT must((SELECT id = '00000000-0000-4000-8000-000000000001' FROM tv_doc), 'the source id is kept');
+CREATE TABLE tb_twin (pk int PRIMARY KEY, label text);
+INSERT INTO tb_twin VALUES (1, 'a');
+SELECT tviews.pg_tviews_create('tv_twin', $$ SELECT pk, label FROM tb_twin $$) IS NOT NULL AS created;
+SELECT must((SELECT t.id <> w.id FROM tv_tag t, tv_twin w WHERE t.pk_tag = 1 AND w.pk_twin = 1),
+            'the entity is part of the derived id');
 
 SELECT 'raw select stable id: PASS' AS result;
 DROP EXTENSION pg_tviews CASCADE;

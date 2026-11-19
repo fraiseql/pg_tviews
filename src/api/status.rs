@@ -10,6 +10,14 @@ fn pg_tviews_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// The `id` of row `key` of a TVIEW created from a SELECT without one: a `UUIDv5` of
+/// `name` (the entity) and the key's text, the same on every evaluation, so a row
+/// keeps its `id` across refreshes. Runs no SQL.
+#[pg_extern(immutable, strict, parallel_safe)]
+fn pg_tviews_row_id(name: &str, key: &str) -> pgrx::Uuid {
+    pgrx::Uuid::from_bytes(crate::ddl::create::row_id(name, key))
+}
+
 /// The entity of the TVIEW `tview` names (ADR 0211): its entity, `tv_<entity>`
 /// or `schema.tv_<entity>`, quoted or not. 42704 when it names no TVIEW.
 #[pg_extern(stable, parallel_safe, name = "pg_tviews_resolve")]

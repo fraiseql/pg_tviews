@@ -68,7 +68,8 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- SESSION_USER names the session, not the reader: not refused here.
+-- The definition without them is accepted (SESSION_USER, which names the
+-- session, is refused as such: regress_dialect_refusals).
 SELECT tviews.pg_tviews_create('tv_doc', $$
     SELECT d.pk_doc, d.id, jsonb_build_object('title', d.title) AS data FROM tb_doc d $$)
     IS NOT NULL AS created;

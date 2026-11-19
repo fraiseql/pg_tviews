@@ -147,7 +147,7 @@ SELECT pg_tviews_create('tv_doc', $v$
            v.status     AS "order",
            jsonb_build_object('status', v.status) AS data
     FROM tb_doc v
-    ORDER BY v.id_doc, v.version_no DESC $v$);
+    ORDER BY v.id_doc, v.version_no DESC, v.pk_doc $v$);
 
 UPDATE tb_doc SET status = 'signed' WHERE id_doc = 100 AND version_no = 2;
 INSERT INTO tb_doc (id_doc, version_no, status) VALUES (200, 2, 'active');

@@ -54,7 +54,7 @@ SELECT tviews.pg_tviews_create('tv_post', $$
     FROM tb_post p JOIN tv_user u ON u.pk_user = p.fk_user $$);
 SELECT tviews.pg_tviews_create('tv_team', $$
     SELECT t.pk_team, t.id, jsonb_build_object('label', t.label,
-        'members', (SELECT jsonb_agg(u.name ORDER BY u.pk_user)
+        'members', (SELECT jsonb_agg(u.name ORDER BY u.pk_user, m.pk_member)
                     FROM tb_member m JOIN tb_user u ON u.pk_user = m.fk_user
                     WHERE m.fk_team = t.pk_team)) AS data
     FROM tb_team t $$);

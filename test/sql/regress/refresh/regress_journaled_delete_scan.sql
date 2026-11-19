@@ -125,7 +125,7 @@ INSERT INTO tb_price
     FROM generate_series(1, 20) g;
 SELECT tviews.pg_tviews_create('tv_price', $$
     SELECT DISTINCT ON (p.id) p.pk_price, p.id, jsonb_build_object('amount', p.amount) AS data
-    FROM tb_price p ORDER BY p.id, p.valid_from DESC $$);
+    FROM tb_price p ORDER BY p.id, p.valid_from DESC, p.pk_price $$);
 
 CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                       body text NOT NULL);

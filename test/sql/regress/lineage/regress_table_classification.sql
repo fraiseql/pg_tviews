@@ -55,7 +55,7 @@ BEGIN
 END $$;
 
 CREATE VIEW v_order_lines AS
-    SELECT l.fk_order, jsonb_agg(l.sku ORDER BY l.pos) AS lines FROM tb_line l GROUP BY l.fk_order;
+    SELECT l.fk_order, jsonb_agg(l.sku ORDER BY l.pos, l.pk_line) AS lines FROM tb_line l GROUP BY l.fk_order;
 CREATE VIEW v_order_lines_2 AS SELECT * FROM v_order_lines;
 CREATE FUNCTION label_of(t text) RETURNS text LANGUAGE sql STABLE AS $$ SELECT upper(t) $$;
 
@@ -68,7 +68,7 @@ INSERT INTO expected VALUES ('user', 'tb_user', 'local');
 SELECT pg_tviews_create('tv_order', $$
     SELECT o.pk_order, o.id, o.fk_user,
            jsonb_build_object('ref', o.ref, 'user', u.data,
-                              'skus', COALESCE(jsonb_agg(s.name) FILTER (WHERE s.pk_sku IS NOT NULL), '[]')) AS data
+                              'skus', COALESCE(jsonb_agg(s.name ORDER BY l.pk_line) FILTER (WHERE s.pk_sku IS NOT NULL), '[]')) AS data
     FROM tb_order o
     JOIN tviews.public__tv_user u ON u.pk_user = o.fk_user
     LEFT JOIN tb_line l ON l.fk_order = o.pk_order
@@ -80,9 +80,9 @@ INSERT INTO expected VALUES ('order', 'tb_order', 'local'), ('order', 'tb_line',
 -- #157: correlated subqueries in the select list
 SELECT pg_tviews_create_or_replace('tv_basket', $$
     SELECT o.pk_basket, o.id,
-           ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_basket ORDER BY l.pos) AS skus,
+           ARRAY(SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_basket ORDER BY l.pos, l.pk_line) AS skus,
            jsonb_build_object(
-               'skun', (SELECT string_agg(s.name, ',') FROM tb_line l2 JOIN tb_sku s ON s.pk_sku = l2.fk_sku
+               'skun', (SELECT string_agg(s.name, ',' ORDER BY l2.pk_line) FROM tb_line l2 JOIN tb_sku s ON s.pk_sku = l2.fk_sku
                         WHERE l2.fk_order = o.pk_basket),
                'flags', (SELECT count(*) FROM tb_flag)) AS data
     FROM tb_basket o $$, '{"uncascaded_policy": "warn"}');
@@ -110,7 +110,7 @@ INSERT INTO expected VALUES ('invoice', 'tb_invoice', 'local'), ('invoice', 'tb_
 SELECT pg_tviews_create('tv_lat', $$
     SELECT o.pk_lat, o.id, jsonb_build_object('first', f.sku) AS data
     FROM tb_lat o
-    LEFT JOIN LATERAL (SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_lat ORDER BY l.pos LIMIT 1) f ON true $$, '{"uncascaded_policy": "warn"}');
+    LEFT JOIN LATERAL (SELECT l.sku FROM tb_line l WHERE l.fk_order = o.pk_lat ORDER BY l.pos, l.pk_line LIMIT 1) f ON true $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('lat', 'tb_lat', 'local'), ('lat', 'tb_line', 'local');
 SELECT pg_tviews_create('tv_cte', $$
     WITH lines AS (SELECT l.fk_order, l.fk_sku FROM tb_line l)
@@ -121,7 +121,7 @@ INSERT INTO expected VALUES ('cte', 'tb_cte', 'local'), ('cte', 'tb_line', 'loca
 SELECT pg_tviews_create('tv_rank', $$
     SELECT o.pk_rank, o.id, jsonb_build_object('rank', r.rn) AS data
     FROM tb_rank o
-    LEFT JOIN (SELECT l.fk_order, row_number() OVER (ORDER BY l.pos) AS rn FROM tb_line l) r
+    LEFT JOIN (SELECT l.fk_order, row_number() OVER (ORDER BY l.pos, l.pk_line) AS rn FROM tb_line l) r
            ON r.fk_order = o.pk_rank $$, '{"uncascaded_policy": "warn"}');
 INSERT INTO expected VALUES ('rank', 'tb_rank', 'local'), ('rank', 'tb_line', 'all_keys');
 

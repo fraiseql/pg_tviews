@@ -166,8 +166,10 @@ own: a definition can project a `created_at` or `updated_at` of the domain under
 names. Name columns in queries rather than relying on `SELECT *` order.
 
 A definition with no `pk_*` column is rewritten to the shape `pk_<entity>, id, data`:
-its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, `id`
-is generated, and every column goes into `data` under its own name. With none of
+its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, and
+every column goes into `data` under its own name. `id` is the source's `uuid` column
+`id` when it has one, else `tviews.pg_tviews_row_id('<entity>', <key>::text)`, a UUIDv5
+of the entity and the key: the same at every evaluation, and different across entities. With none of
 these, it fails (`no column to key the rows on`, `42601`). `tviews.registry.query`
 shows the definition as stored.
 
@@ -441,8 +443,77 @@ A definition is refused, nothing created, when:
   its view chain (`0A000`): a TVIEW's rows are the same for every reader and are
   refreshed as its owner. Filter what each role reads with a row security policy on
   `tv_<entity>` ([Row-level security on `tv_*`](#row-level-security-on-tv_));
+- it reads a system column that changes with no write pg_tviews sees, `ctid`,
+  `xmax`, `cmin` or `cmax` (`VACUUM FULL`, `CLUSTER`, a row lock change them;
+  `0A000`): read the key instead, or `xmin` for a row version (every `UPDATE`
+  changes `xmin`, so a TVIEW reading it refreshes on every `UPDATE`);
+- it calls a volatile function anywhere, in its output, a filter or a join, at any
+  level of its view chain, an operator or a cast backed by one included
+  (`random()`, `gen_random_uuid()`, `nextval()`, `clock_timestamp()`, a function of
+  yours declared `VOLATILE`; `0A000`): two evaluations over the same rows may differ,
+  and the TVIEW stores one. Compute the value when the row is written and store it
+  in a column;
+- it calls a built-in that reads something other than the rows: the session
+  (`SESSION_USER`, `SYSTEM_USER`, `pg_backend_pid()`, `inet_client_addr()`), the
+  transaction (`txid_current()`, `pg_current_xact_id()`), the server
+  (`pg_postmaster_start_time()`), privileges (`has_table_privilege(…)`,
+  `pg_has_role(…)`), statistics (`pg_stat_*`) or relations it does not name
+  (`table_to_xml(…)`; `0A000`). Its value changes with no write, and no refresh
+  follows it. Built-ins that read only their arguments and the settings the owner
+  frame pins (`to_char`, casts, `current_database()`) are accepted. A function of
+  yours is judged by its declared volatility, and its body is not read;
+- the order of rows reaches its output and nothing fixes it (`0A000`, below);
 - it reads a temporary table: PostgreSQL refuses the backing view it would need
   (`cannot create temporary relation in non-temporary schema`).
+
+#### Row order
+
+A TVIEW stores one result of its definition; where the definition's result depends on
+the order rows are read in, an `UPDATE` that moves a row in the heap would change it
+with no column changed. So wherever row order reaches the output, it must be total:
+
+- an order-sensitive aggregate (`jsonb_agg`, `array_agg`, `json_agg`, `string_agg`,
+  `jsonb_object_agg`, `xmlagg`, any aggregate of yours, `sum`/`avg` of a float);
+- `LIMIT`, a non-zero `OFFSET`, and `ARRAY(SELECT …)`, whose rows become elements in
+  order;
+- `DISTINCT ON`, which keeps the first row of each group;
+- `row_number()`, `ntile()`, `first_value()`, `last_value()`, `nth_value()`, `lag()`,
+  `lead()`, and an order-sensitive aggregate used as a window function.
+  (`rank()`, `dense_rank()`, `count()`, `min()`, `max()` are not order-sensitive.)
+
+Such a place is accepted when one of these holds:
+
+1. its `ORDER BY` determines every row it orders: with the `GROUP BY` or `PARTITION
+   BY` keys and the outer query's columns, and the level's equalities (`WHERE` and
+   inner `JOIN … ON` conditions `a.x = b.y`, `a.x = <constant>`, `a.x = (SELECT …)`
+   reading known columns), it reaches a unique key of every table read there: its
+   primary key, or a unique index (partial when the `WHERE`, or the `LEFT JOIN`
+   condition the table is joined by, implies its predicate; over nullable columns when
+   they are equated or filtered `IS NOT NULL`, since rows NULL in a sort key tie). A
+   view, subquery or CTE counts as keyed by the outputs its own rows are determined by,
+   or that fix its `GROUP BY` or `DISTINCT` columns; its other outputs are known where
+   its known outputs fix them; a function `WITH ORDINALITY` by its ordinality. For an
+   aggregate, `LIMIT`, `ARRAY(SELECT …)` or `DISTINCT ON`, it is enough that the rows
+   the `ORDER BY` leaves tied are identical in what it reads;
+2. at most one row reaches it (`WHERE c.pk_c = p.fk_c`);
+3. an aggregate is ordered by every value it aggregates (or is `DISTINCT`), and equal
+   values of their type render the same: integers, `bool`, `uuid`, `date`,
+   `timestamp`, `timestamptz`, `bytea`, and text under a deterministic collation; not
+   `numeric` (`1.0 = 1.00`), floats, `jsonb` or `interval`;
+4. a `UNION ALL` of branches each keyed by its own rows is ordered by an output that
+   holds a different constant in each branch, written there or in the subquery or CTE
+   the branch reads (`SELECT 1 AS rank, … UNION ALL SELECT 2, … ORDER BY rank LIMIT 1`).
+
+Otherwise the definition is refused, the message naming the place and a key to append:
+
+```text
+jsonb_agg() in the definition aggregates rows in an order nothing fixes, so the stored
+document is one of several the view may return: give it an ORDER BY that determines
+every row: public.tb_comment c (append c.pk_comment)
+```
+
+`ORDER BY c.created_at` becomes `ORDER BY c.created_at, c.pk_comment`. A top-level
+`ORDER BY` is not such a place: the TVIEW is a set keyed by `pk_<entity>`.
 
 The [error reference](../error-reference.md) lists every SQLSTATE.
 

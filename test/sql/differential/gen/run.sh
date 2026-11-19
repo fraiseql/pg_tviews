@@ -20,8 +20,12 @@
 #
 # MODES (test/lib/modes.sh) runs every case once per mode, as run.sh does.
 # GEN_PGOPTIONS adds settings to every session (mutants/run.sh names its mutant).
-# GEN_FEATURES (comma-separated) adds the opt-in kinds and value forms of gen.py's
-# OPT_IN (wholerow, syscol, unordered, exact), each left out while its defect is open.
+# GEN_FEATURES (comma-separated) adds the opt-in value forms of gen.py's
+# OPT_IN (exact), each left out while its defect is open, and weights the kinds it
+# names (half the draws).
+# GEN_COVERAGE names a file the REACHED lines of every case are appended to: the
+# dialect.toml productions each created or refused definition exercised, which
+# coverage.py checks.
 # GEN_SELFTEST=1 writes with session_replication_role = replica, so no pg_tviews
 # trigger fires: every case must then fail, which proves the oracle sees a refresh
 # that does not happen. GEN_SELFTEST=2 lets the oracle read in the session's
@@ -153,6 +157,8 @@ for seed in $seeds; do
         echo "      regenerate: python3 -I $here/gen.py $seed $shapes $statements <dir> $features"
       fi
       grep -E 'REFUSED|SKIPPED' "$out" | sed 's/^.*WARNING: */      /'
+      # The dialect productions each case reached, for coverage.py.
+      [[ -n "${GEN_COVERAGE-}" ]] && grep -o 'REACHED .*' "$out" >>"$GEN_COVERAGE"
     done
     done
   done <"$work/$seed/index"

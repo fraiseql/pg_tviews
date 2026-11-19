@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The two independent checks of the read sets, each shown to catch a wrong one.
-# On the generator's opt-in kinds reading tables whole and by system columns
+# On the generator's kinds reading tables whole and by system columns, weighted
 # (GEN_FEATURES=wholerow,syscol):
 #
 #   - as built, every case passes;

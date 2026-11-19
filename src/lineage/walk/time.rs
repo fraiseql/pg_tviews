@@ -71,7 +71,8 @@ impl Walker<'_> {
 }
 
 /// How a SQL value function naming the reader is written, `None` for another
-/// one. `SESSION_USER` names the session, not the role reading: not one.
+/// one. `SESSION_USER` names the session, not the role reading: refused as such
+/// (`dialect`).
 const fn reader_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Option<&'static str> {
     use pg_sys::SQLValueFunctionOp as Op;
     match op {
