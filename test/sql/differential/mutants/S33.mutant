@@ -1,0 +1,3 @@
+# S33, delete: a chunk whose keys all produced a row deletes nothing.
+# Mutant: keys the view no longer produces are kept.
+features:

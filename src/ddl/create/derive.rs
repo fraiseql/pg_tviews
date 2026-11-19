@@ -91,6 +91,12 @@ fn derive(
     aggregate_embeds(&lineage, entity_name)?;
     let undeclared_functions =
         crate::ddl::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;
+    // Test builds check the read sets against PostgreSQL's plan of the view.
+    // Mutant W02 skips it, for the generator's perturbation to catch alone.
+    #[cfg(feature = "test-hooks")]
+    if undeclared_functions.is_empty() && !crate::mutant::on("W02") {
+        crate::lineage::plan_reads::check(frame, entity_name, view_oid, &lineage)?;
+    }
     let mut paths = local_paths(entity_name, &lineage);
     if let Some(keys) = group_keys {
         crate::ddl::aggregate::check_group_keys(entity_name, keys, &paths)?;
@@ -123,6 +129,7 @@ pub(crate) fn local_paths(entity_name: &str, lineage: &crate::lineage::Lineage) 
                 entity_name: entity_name.to_string(),
                 initial_col: column.clone(),
                 source_columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
+                read_set: t.read_set.clone(),
                 root: t.root,
                 initial_attnum: t.columns.iter().find(|(n, _)| n == column).map(|(_, a)| *a),
             }),

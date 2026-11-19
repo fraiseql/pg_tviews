@@ -9,3 +9,7 @@
 # Benchmark results
 test/sql/comprehensive_benchmarks/results/
 *.log
+
+# The standalone build of src/decide/ (decide/Cargo.toml)
+/decide/target/
+/decide/Cargo.lock

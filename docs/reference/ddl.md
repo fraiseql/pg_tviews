@@ -751,7 +751,8 @@ TVIEW's rows (creation, refreshes on writes, `pg_tviews_refresh()`, the time ref
 | `default_text_search_config` | the creating session's, kept with the TVIEW |
 
 so a TVIEW's rows don't depend on who wrote last, nor on settings a role carries
-(`ALTER ROLE … SET`). The session's own settings are left
+(`ALTER ROLE … SET`). The frame as a whole (role, `search_path`, these settings) is specified in
+[owner-frame.md](owner-frame.md). The session's own settings are left
 as they were. The definition itself is parsed under the caller's settings, as `CREATE
 VIEW` parses it; a text-to-date conversion inside it runs at refresh time and reads
 `ISO, YMD`.

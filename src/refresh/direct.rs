@@ -89,10 +89,11 @@ fn apply_direct_patch(
                                              pg_catalog.unnest($2::pg_catalog.jsonb[])) AS f(pk, v)), \
          changed AS ( \
              UPDATE {qi_tv} t SET data = {patch_expr} FROM f \
-             WHERE t.{qi_pk} = f.pk AND t.data IS DISTINCT FROM {patch_expr} \
+             WHERE t.{qi_pk} = f.pk AND {} \
              RETURNING t.{qi_pk}) \
          SELECT t.{qi_pk}, t.{qi_pk} IN (SELECT {qi_pk} FROM changed), {} \
          FROM {qi_tv} t WHERE t.{qi_pk} = ANY($1)",
+        super::rows_differ(&["t.data".to_string()], std::slice::from_ref(&patch_expr)),
         meta.returned_keys("t")
     );
 
@@ -268,8 +269,9 @@ fn write_fanout(
     });
     let sql = format!(
         "UPDATE {qi_tv} t SET data = {patched}{from} \
-         WHERE {filter} AND t.data IS DISTINCT FROM {patched} \
+         WHERE {filter} AND {} \
          RETURNING t.{qi_pk}::pg_catalog.int8, {}",
+        super::rows_differ(&["t.data".to_string()], std::slice::from_ref(&patched)),
         meta.returned_keys("t")
     );
     let mut args = lookup.args();

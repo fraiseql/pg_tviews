@@ -64,6 +64,8 @@ impl Walker<'_> {
                         .is_some_and(|tle| {
                             in_clause((**tle).ressortgroupref, (*query).groupClause)
                         }),
+                    // walk: U no identity found: the level counts as not grouped by it, and
+                    // every column it reads is a link
                     _ => false,
                 };
             if !grouped_by_identity {
@@ -189,6 +191,7 @@ unsafe fn link_nodes(query: *mut pg_sys::Query) -> Vec<*mut pg_sys::Node> {
                 }
                 pg_sys::RTEKind::RTE_TABLEFUNC => nodes.push((*rte).tablefunc.cast()),
                 pg_sys::RTEKind::RTE_VALUES => nodes.push((*rte).values_lists.cast()),
+                // walk: n/a(another entry holds no expression of this level)
                 _ => {}
             }
         }
@@ -218,6 +221,7 @@ unsafe fn jointree_quals(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::Nod
                 jointree_quals((*join).rarg, out);
                 out.push((*join).quals);
             }
+            // walk: n/a(a range table reference holds no condition)
             _ => {}
         }
     }
@@ -265,6 +269,7 @@ unsafe fn aggregate_filters(node: *mut pg_sys::Node, out: &mut Vec<*mut pg_sys::
                     pg_sys::expression_tree_walker(node, Some(walker), ctx)
                 }
                 Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }

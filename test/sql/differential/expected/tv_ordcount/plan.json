@@ -10,6 +10,11 @@
       "entity_name": "ordcount",
       "initial_attnum": "public.tb_order.pk_order",
       "initial_col": "pk_order",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_order",
@@ -40,6 +45,11 @@
         "public.tb_order.pk_order",
         "public.tb_order.fk_customer"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_order",
       "table": "public.tb_order"
     },
@@ -59,6 +69,10 @@
       "kind": "mapped",
       "links": [
         "public.tb_customer.pk_customer"
+      ],
+      "read_set": [
+        1,
+        3
       ],
       "reads": [
         {
@@ -82,6 +96,10 @@
       "kind": "all_keys",
       "links": [
         "public.mv_line_count.fk_order"
+      ],
+      "read_set": [
+        1,
+        2
       ],
       "reason": "a materialized view: REFRESH MATERIALIZED VIEW replaces its rows without firing triggers",
       "relid": "public.mv_line_count",

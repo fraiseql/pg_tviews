@@ -31,6 +31,8 @@ default = ["pg18"]
 pg18 = ["pgrx/pg18"]
 # Test builds only: pg_tviews.test_skip_ctas_intercept (regress_missed_interception).
 test-hooks = []
+# Test builds only: pg_tviews.test_mutant, one wrong skip decision (src/mutant.rs).
+test-mutants = []
 
 [profile.dev]
 panic = "unwind"

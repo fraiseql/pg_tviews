@@ -103,10 +103,14 @@ impl ParentKeys {
 /// this flush changed nothing. A scalar embed that follows the child's
 /// FK to a deeper relationship always propagates.
 fn prune_edge(graph: &crate::catalog::EntityDepGraph, child: &str, parent: &str, pk: i64) -> bool {
-    let prune = graph
+    let document_edge = graph
         .document_edges
-        .contains(&(child.to_string(), parent.to_string()))
-        && !crate::queue::log::changed_in_flush(child, pk);
+        .contains(&(child.to_string(), parent.to_string()));
+    // Mutant S27: the child row counts as unchanged.
+    let changed = document_edge
+        && !crate::mutant::on("S27")
+        && crate::queue::log::changed_in_flush(child, pk);
+    let prune = crate::decide::edge_prune(document_edge, changed);
     if prune {
         crate::stats::record_propagation_pruned(parent);
     }

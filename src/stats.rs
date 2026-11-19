@@ -508,21 +508,36 @@ pub fn record_stopgap(reasons: &[&str], entity: &str, relid: u32) {
     }
 }
 
-/// Whether a write to table `relid` may patch `meta`'s TVIEW on the columns its
-/// plan names ([`crate::catalog::stopgap::columns_known`]). Test builds count
-/// why not, as [`record_stopgap`] does, when it may not.
+/// Whether a patch of `meta`'s TVIEW may stand on what its plan says it reads
+/// of table `relid`: its read set is complete and holds under
+/// [`crate::catalog::facts::patch_env`]. Test builds count a refusal
+/// ([`count_refusal`]).
 #[must_use]
-pub fn patch_columns_known(meta: &crate::catalog::TviewMeta, relid: u32) -> bool {
-    let known = crate::catalog::stopgap::columns_known(meta, relid);
+pub fn patch_reads_known(meta: &crate::catalog::TviewMeta, relid: u32) -> bool {
+    use crate::catalog::facts;
+    let known = crate::decide::trusted_read_set(
+        &facts::read_set(meta, relid),
+        facts::patch_env(meta, relid),
+    )
+    .is_some();
     #[cfg(feature = "test-hooks")]
     if !known {
-        record_stopgap(
-            &crate::catalog::stopgap::reasons(meta, relid),
-            &meta.entity_name,
-            relid,
-        );
+        count_refusal(meta, relid);
     }
     known
+}
+
+/// Test builds: a decision refused to skip or patch `meta`'s TVIEW for a write
+/// to table `relid` that the columns its definition names would have allowed:
+/// count why, as [`record_stopgap`] does
+/// ([`crate::catalog::stopgap::reasons`]).
+#[cfg(feature = "test-hooks")]
+pub fn count_refusal(meta: &crate::catalog::TviewMeta, relid: u32) {
+    record_stopgap(
+        &crate::catalog::stopgap::reasons(meta, relid),
+        &meta.entity_name,
+        relid,
+    );
 }
 
 /// Test builds: the refreshes [`record_stopgap`] counted in this session.

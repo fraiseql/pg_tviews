@@ -88,6 +88,9 @@ static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(
 static TEST_DIAG_21000_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 #[cfg(feature = "test-hooks")]
 static TEST_DUPLICATE_SOURCE_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+#[cfg(feature = "test-mutants")]
+static TEST_MUTANT_GUC: GucSetting<Option<std::ffi::CString>> =
+    GucSetting::<Option<std::ffi::CString>>::new(None);
 static AUTO_REBUILD_DATABASES_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"*"));
 
@@ -191,6 +194,17 @@ fn register_diagnostics() {
         &MAX_QUEUE_SIZE_GUC,
         1,
         i32::MAX,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    #[cfg(feature = "test-mutants")]
+    GucRegistry::define_string_guc(
+        c"pg_tviews.test_mutant",
+        c"TEST ONLY: the skip decision that decides wrongly (S03, S09, ...).",
+        c"Builds with the test-mutants feature only: the differential generator must \
+          see the stale TVIEW it leaves (test/sql/differential/mutants/). Never set it \
+          in production.",
+        &TEST_MUTANT_GUC,
         GucContext::Suset,
         GucFlags::NO_SHOW_ALL,
     );
@@ -338,6 +352,16 @@ pub fn test_diag_21000() -> bool {
 #[must_use]
 pub fn test_duplicate_source() -> bool {
     TEST_DUPLICATE_SOURCE_GUC.get()
+}
+
+/// TEST ONLY: the mutant `pg_tviews.test_mutant` names, if any.
+#[cfg(feature = "test-mutants")]
+#[must_use]
+pub fn test_mutant() -> Option<String> {
+    TEST_MUTANT_GUC
+        .get()
+        .and_then(|s| s.to_str().ok().map(str::to_string))
+        .filter(|s| !s.is_empty())
 }
 
 /// The databases whose reset UNLOGGED TVIEWs are rebuilt after recovery.

@@ -462,7 +462,8 @@ impl QueryGraph {
             return None;
         }
         let lookup = self.output_equal_to(std::slice::from_ref(other))?;
-        let data = self.data.as_ref()?;
+        // A part of `data` the walk does not follow may read what changed.
+        let data = self.data.as_ref().filter(|d| !d.opaque)?;
         let fields: CopiedPaths = data
             .fields
             .iter()
@@ -777,6 +778,7 @@ impl QueryGraph {
                     sql,
                     reads,
                     columns: Vec::new(),
+                    read_set: None,
                     lookups,
                     index_hints,
                     hop,

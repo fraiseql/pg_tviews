@@ -1,0 +1,3 @@
+# S27, propagation: a document edge from a child unchanged in this flush is pruned.
+# Mutant: every document edge is pruned.
+features:

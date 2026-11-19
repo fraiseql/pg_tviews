@@ -39,6 +39,8 @@ impl Walker<'_> {
                         return;
                     }
                     let [column, array] = super::elements::<pg_sys::Node>((*op).args)[..] else {
+                        // walk: U not a guard: the table counts as unguarded and is refreshed
+                        // more
                         return;
                     };
                     let array = strip_relabel(array);
@@ -47,6 +49,8 @@ impl Walker<'_> {
                         Some(pg_sys::NodeTag::T_ArrayExpr) if constant_list(array) => {
                             (Some(strip_relabel(column)), Some((column, array)))
                         }
+                        // walk: U not a guard: the table counts as unguarded and is refreshed
+                        // more
                         _ => return,
                     }
                 }
@@ -60,6 +64,8 @@ impl Walker<'_> {
                         return;
                     }
                     let Some(column) = self.own_column(var.cast()) else {
+                        // walk: U not a guard: the table counts as unguarded and is refreshed
+                        // more
                         return;
                     };
                     // Not strict: a row an outer join below NULL-extends meets it,
@@ -75,12 +81,15 @@ impl Walker<'_> {
                     }
                     return;
                 }
+                // walk: U not a guard: the table counts as unguarded and is refreshed more
                 _ => return,
             };
             let Some(var) = var.filter(|v| tag(*v) == Some(pg_sys::NodeTag::T_Var)) else {
+                // walk: U not a guard: the table counts as unguarded and is refreshed more
                 return;
             };
             let Some(column) = self.own_column(var.cast()) else {
+                // walk: U not a guard: the table counts as unguarded and is refreshed more
                 return;
             };
             if nullable.is_some_and(|n| !n.contains(&column.occ)) {
@@ -146,10 +155,12 @@ impl Walker<'_> {
             let level = self.levels.last()?;
             let occ = match level.rtes.get(rtindex.checked_sub(1)?)? {
                 RteInfo::Base(occ) | RteInfo::Tview { occ, .. } => *occ,
+                // walk: U not a guard: the table counts as unguarded and is refreshed more
                 _ => return None,
             };
             match self.resolve_var(var, 0) {
                 Resolved::Col(column) if column.occ == occ => Some(column),
+                // walk: U not a guard: the table counts as unguarded and is refreshed more
                 _ => None,
             }
         }
@@ -176,11 +187,13 @@ unsafe fn constant_list(array: *mut pg_sys::Node) -> bool {
 unsafe fn constant_comparison(args: &[*mut pg_sys::Node]) -> Option<*mut pg_sys::Node> {
     // SAFETY: tags read from valid nodes.
     unsafe {
+        // walk: U not a guard: the table counts as unguarded and is refreshed more
         let [l, r] = *args else { return None };
         let (l, r) = (strip_relabel(l), strip_relabel(r));
         match (tag(l), tag(r)) {
             (Some(pg_sys::NodeTag::T_Var), Some(pg_sys::NodeTag::T_Const)) => Some(l),
             (Some(pg_sys::NodeTag::T_Const), Some(pg_sys::NodeTag::T_Var)) => Some(r),
+            // walk: U not a guard: the table counts as unguarded and is refreshed more
             _ => None,
         }
     }

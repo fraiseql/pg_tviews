@@ -657,11 +657,14 @@ pub(super) unsafe fn resolve_relation_oid(rv: *const pg_sys::RangeVar) -> pg_sys
 /// A statement that changes values a TVIEW reads without firing a trigger,
 /// resolved before it runs.
 pub(super) enum ValueRewrite {
-    /// `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`:
-    /// the table and the columns whose generation expression changes.
+    /// `ALTER TABLE … ALTER COLUMN … SET EXPRESSION`: the table and the
+    /// columns whose generation expression changes. `ADD COLUMN`, `DROP COLUMN`
+    /// or `RENAME COLUMN` (`row_type`): the table's row type changes, and with
+    /// it every whole-row read of it (`to_jsonb(t)`).
     Expression {
         table: pg_sys::Oid,
         columns: Vec<String>,
+        row_type: bool,
     },
     /// `ALTER TYPE … RENAME VALUE`: the enum.
     EnumLabel(pg_sys::Oid),
@@ -692,23 +695,48 @@ pub(super) unsafe fn value_rewrite_of(pstmt: *const pg_sys::PlannedStmt) -> Opti
                 };
                 (oid != pg_sys::InvalidOid).then_some(ValueRewrite::EnumLabel(oid))
             }
-            pg_sys::NodeTag::T_AlterTableStmt => {
-                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
-                let mut columns = Vec::new();
-                for i in 0..pg_sys::list_length(stmt.cmds) {
-                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
-                    if !cmd.is_null()
-                        && (*cmd).subtype == pg_sys::AlterTableType::AT_SetExpression
-                        && !(*cmd).name.is_null()
-                    {
-                        columns.push(CStr::from_ptr((*cmd).name).to_string_lossy().into_owned());
-                    }
-                }
-                if columns.is_empty() || stmt.relation.is_null() {
+            pg_sys::NodeTag::T_RenameStmt => {
+                let stmt = &*node.cast::<pg_sys::RenameStmt>();
+                if stmt.renameType != pg_sys::ObjectType::OBJECT_COLUMN || stmt.relation.is_null() {
                     return None;
                 }
                 let table = resolve_relation_oid(stmt.relation);
-                (table != pg_sys::InvalidOid).then_some(ValueRewrite::Expression { table, columns })
+                (table != pg_sys::InvalidOid).then_some(ValueRewrite::Expression {
+                    table,
+                    columns: Vec::new(),
+                    row_type: true,
+                })
+            }
+            pg_sys::NodeTag::T_AlterTableStmt => {
+                let stmt = &*node.cast::<pg_sys::AlterTableStmt>();
+                let mut columns = Vec::new();
+                let mut row_type = false;
+                for i in 0..pg_sys::list_length(stmt.cmds) {
+                    let cmd = pg_sys::list_nth(stmt.cmds, i).cast::<pg_sys::AlterTableCmd>();
+                    if cmd.is_null() {
+                        continue;
+                    }
+                    match (*cmd).subtype {
+                        pg_sys::AlterTableType::AT_SetExpression if !(*cmd).name.is_null() => {
+                            columns
+                                .push(CStr::from_ptr((*cmd).name).to_string_lossy().into_owned());
+                        }
+                        pg_sys::AlterTableType::AT_AddColumn
+                        | pg_sys::AlterTableType::AT_DropColumn => row_type = true,
+                        // Another subcommand leaves the values and the row type
+                        // as they are, or is hooked elsewhere.
+                        _ => {}
+                    }
+                }
+                if (columns.is_empty() && !row_type) || stmt.relation.is_null() {
+                    return None;
+                }
+                let table = resolve_relation_oid(stmt.relation);
+                (table != pg_sys::InvalidOid).then_some(ValueRewrite::Expression {
+                    table,
+                    columns,
+                    row_type,
+                })
             }
             _ => None,
         }

@@ -13,10 +13,12 @@ impl Walker<'_> {
         // SAFETY: fields of a valid Var; RTE lists of valid levels.
         unsafe {
             let Some(index) = self.levels.len().checked_sub(1 + levelsup) else {
+                // walk: U a Var of a level the walk is not in: opaque
                 return Resolved::Opaque;
             };
             let level = &self.levels[index];
             let (Ok(rtindex), attno) = (usize::try_from((*var).varno), (*var).varattno) else {
+                // walk: U a Var PostgreSQL would not build: opaque
                 return Resolved::Opaque;
             };
             if attno <= 0 {
@@ -34,14 +36,18 @@ impl Walker<'_> {
                 Some(RteInfo::Outputs(outputs)) => outputs
                     .get(super::index(attno).wrapping_sub(1))
                     .cloned()
+                    // walk: U an output the entry does not have: opaque
                     .unwrap_or(Resolved::Opaque),
                 Some(RteInfo::Join(aliases)) => {
                     let alias = elements::<pg_sys::Node>(*aliases)
                         .get(super::index(attno).wrapping_sub(1))
                         .copied()
+                        // walk: U an alias the join does not have: resolve_alias reads null as
+                        // opaque
                         .unwrap_or(std::ptr::null_mut());
                     self.resolve_alias(alias, index)
                 }
+                // walk: U an entry of no known outputs (RteInfo::Other): opaque
                 _ => Resolved::Opaque,
             }
         }
@@ -85,6 +91,8 @@ impl Walker<'_> {
                 return match unnest_array(inner) {
                     Some(array) => match self.computed(array, true) {
                         Resolved::Expr(e) => self.cast_element(e, &casts),
+                        // walk: U a set-returning function other than unnest of an array:
+                        // opaque
                         _ => Resolved::Opaque,
                     },
                     None => Resolved::Opaque,
@@ -124,6 +132,8 @@ impl Walker<'_> {
             for var in vars {
                 match self.resolve_var(var, (*var).varlevelsup as usize) {
                     term @ (Resolved::Col(_) | Resolved::Expr(_)) => terms.push(term),
+                    // walk: U an input that is neither a column nor an expression over them:
+                    // opaque
                     _ => return Resolved::Opaque,
                 }
             }
@@ -190,6 +200,7 @@ impl Walker<'_> {
         // SAFETY: forwarded.
         match unsafe { self.resolve_expr(inner) } {
             Resolved::Expr(e) if e.element => Some(e),
+            // walk: U no element under the casts: the caller treats the expression as opaque
             _ => None,
         }
     }
@@ -261,6 +272,7 @@ impl Walker<'_> {
                         return Some(self.membership((*op).opno, &l, &r));
                     }
                 }
+                // walk: n/a(any other condition is written whole just below)
                 _ => {}
             }
             Some((self.deparse(expr, term_of, next_var)?, Vec::new()))
@@ -284,6 +296,8 @@ impl Walker<'_> {
             let (bare, casts) = strip_casts(arg);
             let term_at = |node: *mut pg_sys::Node| match tag(node) {
                 Some(pg_sys::NodeTag::T_Var | pg_sys::NodeTag::T_Param) => term_of(node),
+                // walk: n/a(only a Var or a Param stands for a term; anything else is written
+                // whole below)
                 _ => None,
             };
             if let Some(Resolved::Expr(e)) = term_at(bare)
@@ -293,6 +307,8 @@ impl Walker<'_> {
                     return None;
                 }
                 let Resolved::Expr(e) = self.cast_element(e, &casts) else {
+                    // walk: U a cast an element cannot take: the condition is not written, as
+                    // for deparse
                     return None;
                 };
                 if tag(bare) == Some(pg_sys::NodeTag::T_Var) {

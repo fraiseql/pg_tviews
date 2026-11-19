@@ -39,17 +39,37 @@ a TVIEW back: the read must see fresh rows).
   any other error, a divergence after a top-level statement or a stale read inside a
   mutation fails the case, printing its seed and keeping its SQL to replay. `MODES`
   as above.
+- **Roles.** Every TVIEW is created by a role that is no superuser and owns no base
+  table (granted `SELECT` and `TRIGGER`), every write is made by a third role (from
+  which every other table hides some rows by row security the owner bypasses), and
+  the oracle reads as the owner, in the frame of `docs/reference/owner-frame.md`.
+  `run.sh` creates the two roles for the run and drops them.
 - `GEN_SELFTEST=1` writes with `session_replication_role = replica`, so no pg_tviews
   trigger fires: every case must then diverge. It proves the oracle sees a refresh
-  that does not happen.
-- `GEN_FEATURES` turns on writes left out of the default run while their defect is
-  open (`OPT_IN` in `gen.py`); none is. The generator found #288 (an `UPDATE` of a
+  that does not happen. `GEN_SELFTEST=2` lets the oracle read in the session's
+  settings (another time zone) instead of the frame's: a case rendering a
+  timestamptz must then diverge, and one must. It proves the oracle reads in the
+  frame.
+- `GEN_FEATURES` turns on shape kinds and value forms left out of the default run
+  while their defect is open (`OPT_IN` in `gen.py`): `wholerow` (a row read whole),
+  `syscol` (a system column), `unordered` (an output depending on row order) and
+  `exact` (numerics with 30 digits or trailing zeros). A named kind is half the draws.
+  The generator found #288 (an `UPDATE` of a
   referenced `pk_<entity>` left its children's fan-out unwritten) and #289 (a fan-out
   into the children of a parent a LEFT JOIN's `ON` filters out), both now in the
   default grammar and in `regress/cascade/regress_fanout_patch_soundness.sql`.
 
+**Skip mutants** (`mutants/`): eleven skip decisions of pg_tviews (each `S<nn>.mutant`
+file says what its decision skips and how its mutant breaks it), switched one at a
+time to decide wrongly in a build with the `test-mutants` feature
+(`pg_tviews.test_mutant`, `src/mutant.rs`): a column-set decision misses the last
+column of its set, a predicate decision skips one class of inputs it must not. The
+generator must see each one; `mutants/run.sh` fails on a survivor, or on a case
+failing otherwise than by a divergence. The generator's `derived` kind and its
+write-back triggers exist to kill S41 and S24.
+
 CI's pg18 job runs 5 shapes on seed 1; the nightly run 20 shapes on three new seeds
-(the date and 1 to 3), in every mode.
+(the date and 1 to 3), in every mode, and the mutants on seeds 1 to 3.
 
 ## What this net does not cover
 

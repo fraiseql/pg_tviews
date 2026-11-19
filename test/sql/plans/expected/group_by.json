@@ -1,10 +1,5 @@
 {
-  "direct": [
-    [
-      "name",
-      "name"
-    ]
-  ],
+  "direct": [],
   "embeds": [],
   "key": {
     "column": "pk_org",
@@ -15,6 +10,11 @@
       "entity_name": "org",
       "initial_attnum": "public.tb_org.pk_org",
       "initial_col": "pk_org",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_org",
@@ -28,6 +28,10 @@
       "entity_name": "org",
       "initial_attnum": "public.tb_user.fk_org",
       "initial_col": "fk_org",
+      "read_set": [
+        1,
+        5
+      ],
       "root": false,
       "source_columns": [
         "pk_user",
@@ -56,6 +60,11 @@
       "links": [
         "public.tb_org.pk_org"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_org",
       "table": "public.tb_org"
     },
@@ -72,6 +81,10 @@
       "kind": "local",
       "links": [
         "public.tb_user.fk_org"
+      ],
+      "read_set": [
+        1,
+        5
       ],
       "relid": "public.tb_user",
       "table": "public.tb_user"

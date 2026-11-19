@@ -1,0 +1,3 @@
+# S12, pair filter: an updated row whose read columns are unchanged leaves the delta.
+# Mutant: the last column of the TVIEW's set is not compared.
+features:

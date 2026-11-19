@@ -28,7 +28,7 @@ fresh_copy() {
 # seed_template <template> <schema file>: create and seed <template> unless it holds
 # the seeded schema already.
 seed_template() {
-  if ! psql -X -d "$1" -tAc "SELECT 1 FROM bench.tv_comment, bench.tb_audit LIMIT 1" >/dev/null 2>&1; then
+  if ! psql -X -d "$1" -tAc "SELECT 1 FROM bench.tv_comment, bench.tb_audit, bench.tv_product LIMIT 1" >/dev/null 2>&1; then
     psql -X -q -d postgres -c "DROP DATABASE IF EXISTS $1" -c "CREATE DATABASE $1"
     psql -X -q -v ON_ERROR_STOP=1 -d "$1" -c "SET pg_tviews.max_queue_size = 1000000" -f "$2" >/dev/null
   fi

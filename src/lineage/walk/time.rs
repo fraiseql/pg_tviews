@@ -26,9 +26,13 @@ impl Walker<'_> {
                             | "timeofday"),
                         ) => Some(format!("{f}()")),
                         Some("age") if args == 1 => Some("age()".to_string()),
+                        // walk: n/a(another pg_catalog function reads no time; one outside it
+                        // is untracked, note_functions)
                         _ => None,
                     }
                 }
+                // A text read as a date or a time may be 'now', 'today'…
+                TimeNode::Cast(typid) => time_type_name(typid).map(|t| format!("a cast to {t}")),
             };
             if let Some(name) = name
                 && !self.graph.time_reads.contains(&name)
@@ -46,6 +50,23 @@ pub(super) enum TimeNode {
     Value(pg_sys::SQLValueFunctionOp::Type),
     /// A function call: the function and its argument count.
     Function(Oid, usize),
+    /// A cast through the input function of a type (`CoerceViaIO`), by the
+    /// type cast to.
+    Cast(Oid),
+}
+
+/// How a date or time type is written, `None` for another type: its input
+/// function reads the current time for `now`, `today`…
+const fn time_type_name(typid: Oid) -> Option<&'static str> {
+    match typid {
+        pg_sys::DATEOID => Some("date"),
+        pg_sys::TIMEOID => Some("time"),
+        pg_sys::TIMETZOID => Some("timetz"),
+        pg_sys::TIMESTAMPOID => Some("timestamp"),
+        pg_sys::TIMESTAMPTZOID => Some("timestamptz"),
+        // walk: n/a(the input of another type reads no clock)
+        _ => None,
+    }
 }
 
 /// How a SQL value function of the time is written, `None` for another one
@@ -58,6 +79,7 @@ pub(super) const fn time_value_name(op: pg_sys::SQLValueFunctionOp::Type) -> Opt
         Op::SVFOP_CURRENT_TIMESTAMP | Op::SVFOP_CURRENT_TIMESTAMP_N => Some("CURRENT_TIMESTAMP"),
         Op::SVFOP_LOCALTIME | Op::SVFOP_LOCALTIME_N => Some("LOCALTIME"),
         Op::SVFOP_LOCALTIMESTAMP | Op::SVFOP_LOCALTIMESTAMP_N => Some("LOCALTIMESTAMP"),
+        // walk: n/a(another SQL value function, CURRENT_USER and the like, reads no time)
         _ => None,
     }
 }
@@ -88,7 +110,14 @@ pub(super) unsafe fn collect_time(node: *mut pg_sys::Node, out: &mut Vec<TimeNod
                     out.push(TimeNode::Function((*f).funcid, list_len((*f).args)));
                     pg_sys::expression_tree_walker(node, Some(walker), ctx)
                 }
+                Some(pg_sys::NodeTag::T_CoerceViaIO) => {
+                    out.push(TimeNode::Cast(
+                        (*node.cast::<pg_sys::CoerceViaIO>()).resulttype,
+                    ));
+                    pg_sys::expression_tree_walker(node, Some(walker), ctx)
+                }
                 Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }

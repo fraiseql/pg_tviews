@@ -1,8 +1,9 @@
 # pre-commit.ci runs in a bare container that cannot build a pgrx extension
 # (no PostgreSQL headers / pg_config), so skip the clippy hook there. It still
-# runs locally on commit and as the dedicated `clippy` job in CI.
+# runs locally on commit and as the dedicated `clippy` job in CI. check-disclosure
+# needs the private process's untracked patterns file and runs on push only.
 ci:
-  skip: [clippy-strict]
+  skip: [clippy-strict, check-disclosure]
 
 repos:
   - repo: local
@@ -19,3 +20,10 @@ repos:
         language: system
         pass_filenames: false
         files: ^src/.*\.rs$
+      - id: check-disclosure
+        name: "No private finding before its release"
+        entry: scripts/check-disclosure.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

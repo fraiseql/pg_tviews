@@ -516,6 +516,7 @@ fn table(relid: u32, kind: TableKind, sql: Option<&str>) -> TableLineage {
         sql: sql.map(str::to_string),
         reads: vec![],
         columns: vec![],
+        read_set: None,
         lookups: vec![],
         index_hints: vec![],
         hop: None,

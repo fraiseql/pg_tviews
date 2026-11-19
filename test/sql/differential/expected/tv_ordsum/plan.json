@@ -10,6 +10,10 @@
       "entity_name": "ordsum",
       "initial_attnum": "public.tb_order.pk_order",
       "initial_col": "pk_order",
+      "read_set": [
+        1,
+        2
+      ],
       "root": true,
       "source_columns": [
         "pk_order",
@@ -36,6 +40,10 @@
       "links": [
         "public.tb_order.pk_order"
       ],
+      "read_set": [
+        1,
+        2
+      ],
       "relid": "public.tb_order",
       "table": "public.tb_order"
     },
@@ -51,6 +59,10 @@
       "kind": "mapped",
       "links": [
         "public.tv_line.fk_order"
+      ],
+      "read_set": [
+        3,
+        4
       ],
       "reads": [
         {

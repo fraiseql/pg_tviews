@@ -7,6 +7,7 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/transactions/regress_missed_flush_at_commit.sql
 --
+-- allow-output: queued refreshes for
 -- expect-output: missed flush at commit: PASS
 
 \set ON_ERROR_STOP on

@@ -100,6 +100,7 @@ impl Walker<'_> {
                 return;
             }
             let args = elements::<pg_sys::Node>((*qual.cast::<pg_sys::OpExpr>()).args);
+            // walk: U not an equality of two columns: it equates no TVIEW key
             let [l, r] = args[..] else { return };
             let (l, r) = (strip_relabel(l), strip_relabel(r));
             if tag(l) != Some(pg_sys::NodeTag::T_Var) || tag(r) != Some(pg_sys::NodeTag::T_Var) {
@@ -108,6 +109,7 @@ impl Walker<'_> {
             for (key, other) in [(l, r), (r, l)] {
                 let (key, other) = (key.cast::<pg_sys::Var>(), other.cast::<pg_sys::Var>());
                 let Some(entity) = self.tview_key_of(key) else {
+                    // walk: n/a(a column holding no TVIEW's key: nothing to record)
                     continue;
                 };
                 if let Resolved::Col(c) = self.resolve_var(other, (*other).varlevelsup as usize) {
@@ -131,6 +133,7 @@ impl Walker<'_> {
             let Some(RteInfo::Tview { entity, relid, .. }) =
                 self.levels[index].rtes.get(rtindex.wrapping_sub(1))
             else {
+                // walk: n/a(a column of no TVIEW: no key)
                 return None;
             };
             (cstr(pg_sys::get_attname(*relid, (*var).varattno, true))
@@ -198,6 +201,8 @@ impl Walker<'_> {
             collect_params(test, &mut param_sites);
             for param in &param_sites {
                 let Some(candidates) = param_column(*param) else {
+                    // walk: U the condition maps nothing: what it would map is found otherwise
+                    // or recomputed
                     return;
                 };
                 sites.push(Site {
@@ -280,10 +285,14 @@ impl Walker<'_> {
             let mut occs: Vec<usize> = chosen.iter().flat_map(|c| c.occs()).collect();
             occs.sort_unstable();
             occs.dedup();
+            // walk: U the condition maps nothing: what it would map is found otherwise or
+            // recomputed
             let [a, b] = occs[..] else { continue };
             let Some((a_to_b, b_to_a)) =
                 self.directions(sites, &chosen, a, b, origin, outer_to_inner)
             else {
+                // walk: U the condition maps nothing: what it would map is found otherwise or
+                // recomputed
                 continue;
             };
             let var_index = std::cell::Cell::new(0_usize);
@@ -295,6 +304,7 @@ impl Walker<'_> {
                     }
                     Some(pg_sys::NodeTag::T_Param) => param_site(node)
                         .and_then(|i| chosen.get(var_count + i).map(|c| (*c).clone())),
+                    // walk: n/a(only a Var or a Param stands for a term)
                     _ => None,
                 }
             };
@@ -303,6 +313,8 @@ impl Walker<'_> {
             let Some((sql, lookups)) =
                 (unsafe { self.conjunct_sql(expr, &term_of, &mut next_var) })
             else {
+                // walk: U the condition maps nothing: what it would map is found otherwise or
+                // recomputed
                 return;
             };
             // SAFETY: the same expression.
@@ -356,6 +368,7 @@ impl Walker<'_> {
             if l == usize::MAX {
                 -1_i64
             } else {
+                // walk: n/a(a level index fits in i64)
                 i64::try_from(l).unwrap_or(i64::MAX)
             }
         };
@@ -378,7 +391,10 @@ impl Walker<'_> {
                     Maps::No
                 }
             }
+            // walk: n/a(an inner condition that holds maps both ways)
             _ if holds => Maps::Yes,
+            // walk: U the condition maps nothing: what it would map is found otherwise or
+            // recomputed
             _ => Maps::No,
         };
         let (a_to_b, b_to_a) = (maps(a_to_b, a, b), maps(b_to_a, b, a));
@@ -397,6 +413,7 @@ impl Walker<'_> {
     /// only if every level below it, down to the innermost, returns a row: each is
     /// a required subquery expression of the level above.
     pub(super) fn levels_required(&self, outer: i64) -> bool {
+        // walk: n/a(an index fits in i64)
         let top = i64::try_from(self.levels.len()).unwrap_or(i64::MAX) - 1;
         (0..outer).all(|up| {
             usize::try_from(top - up).is_ok_and(|index| {

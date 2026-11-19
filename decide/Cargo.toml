@@ -1,0 +1,20 @@
+# `src/decide/` built alone, without pgrx: its tests run with a plain
+# `cargo test --manifest-path decide/Cargo.toml` (no PostgreSQL symbols to link),
+# as a model checker of the code as written will (D11). The extension builds the
+# same files as its module `decide`.
+[package]
+name = "pg_tviews_decide"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "../src/decide/mod.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }

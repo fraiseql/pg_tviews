@@ -28,6 +28,8 @@ mod analyze;
 mod classify;
 mod identity;
 pub mod plan;
+#[cfg(feature = "test-hooks")]
+pub mod plan_reads;
 mod query_graph;
 pub mod reads;
 mod references;

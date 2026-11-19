@@ -34,6 +34,8 @@ jobs:
         run: scripts/check-plan-readers.sh
       - name: Check the lower modules form layers (no dependency cycle)
         run: scripts/check-module-layers.sh
+      - name: Check every fallback of the lineage walker is tagged
+        run: scripts/check-walk-arms.sh
       - name: Check SPI is reached through src/utils/spi.rs only
         run: scripts/check-spi-facade.sh
       - name: Check the lock is tracked, tokens are least-privilege and refs are commits
@@ -45,6 +47,8 @@ jobs:
           "$(go env GOPATH)/bin/actionlint"
       - name: Check the docs make no claim the code no longer keeps
         run: scripts/check-doc-claims.sh
+      - name: Check the tests' owner frame is its specification's
+        run: scripts/check-owner-frame.sh
 
   unit:
     name: unit (pg${{ matrix.pg }})
@@ -76,6 +80,20 @@ jobs:
           # needs a server is tested by the SQL suites (ci.yml).
           RUSTFLAGS="-C link-arg=-fuse-ld=mold -C link-arg=-Wl,--unresolved-symbols=ignore-all" \
             cargo test --lib --no-default-features --features "pg${{ matrix.pg }}"
+
+  decide:
+    name: decide (no pgrx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Test and lint the decisions alone
+        run: |
+          # src/decide/ built as its own crate, without pgrx or PostgreSQL: its
+          # exhaustive tests need nothing else, as a model checker will (D11).
+          cargo test --manifest-path decide/Cargo.toml
+          cargo clippy --manifest-path decide/Cargo.toml --all-targets -- -D warnings
 
   clippy:
     name: clippy (pg${{ matrix.pg }})

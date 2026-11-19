@@ -26,7 +26,7 @@ while [[ $# -gt 0 && "$1" != -- ]]; do clients+=("$1"); shift; done
 [[ $# -gt 0 ]] && shift
 writes=("$@")
 [[ ${#clients[@]} -eq 0 ]] && clients=(1 16)
-[[ ${#writes[@]} -eq 0 ]] && writes=(bio username title comment_insert bio_bulk100 untracked_insert)
+[[ ${#writes[@]} -eq 0 ]] && writes=(bio username title comment_insert bio_bulk100 untracked_insert price)
 [[ ${#builds[@]} -lt 2 ]] && { echo "usage: $0 <label>=<port> <label>=<port> ... -- …" >&2; exit 2; }
 tpl=pg_tviews_write_bench; db=pg_tviews_write_bench_run
 load_max="${LOAD_MAX:-4}"; load_discard="${LOAD_DISCARD:-8}"; quiet_timeout="${QUIET_TIMEOUT:-7200}"
