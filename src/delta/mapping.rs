@@ -2,7 +2,7 @@
 //! query, or written into every row they reach as a fan-out patch.
 
 use super::Event;
-use super::render::{computed_columns, delta_sql, key_sql_type, row_pairing};
+use super::render::{computed_columns, delta_sql, images_select, key_sql_type, row_pairing};
 use super::transition::{
     changed_values, reads_unchanged, run_with_transition_tables, texts, with_transition_tables,
 };
@@ -463,13 +463,14 @@ fn fan_out(
         return Ok(false);
     }
     let read_attnums: Vec<i16> = trusted.iter().collect();
-    let Some((same_row, columns)) = row_pairing(table_oid, &read_attnums)? else {
+    let Some(pairing) = row_pairing(table_oid, &read_attnums)? else {
         return Ok(false);
     };
+    let columns = &pairing.columns;
     // The read columns `data` copies, each with whether the copy is exact.
     let copied: Vec<crate::decide::Copied> = read_attnums
         .iter()
-        .zip(&columns)
+        .zip(columns)
         .filter(|(_, name)| fanout.fields.iter().any(|(c, _)| c == *name))
         .map(|(&attnum, _)| crate::decide::Copied {
             attnum,
@@ -483,22 +484,17 @@ fn fan_out(
     // whose primary key changed: the children of its old key no longer join
     // it, which no patch of its new key writes (#288), so the rows are mapped
     // instead.
-    let compared = crate::mutant::drop_last("S16", &columns);
+    let compared = crate::mutant::drop_last("S16", columns);
     let n = compared.len();
-    let images: String = ["o", "n"]
-        .iter()
-        .flat_map(|side| {
-            compared
-                .iter()
-                .map(move |c| format!(", {side}.{}", crate::utils::ident::quoted(c)))
-        })
-        .collect();
-    let sql = format!(
-        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n){images} \
-         FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
-    );
+    let narrowed;
+    let sql: &str = if n == columns.len() {
+        &pairing.images
+    } else {
+        narrowed = images_select(&pairing.same_row, compared);
+        &narrowed
+    };
     let pairs = with_transition_tables(trigger, entity, |frame, client, table| {
-        let mut rows = crate::utils::spi::kept_update_over(frame, client, table, &sql, &[])?;
+        let mut rows = crate::utils::spi::kept_update_over(frame, client, table, sql, &[])?;
         let layout = column_layout(&rows, n)?;
         let mut pairs = Vec::new();
         while rows.next().is_some() {
@@ -541,7 +537,7 @@ fn fan_out(
         let mut fields = serde_json::Map::new();
         for (_, column) in read_attnums
             .iter()
-            .zip(&columns)
+            .zip(columns)
             .filter(|(attnum, _)| changed.contains(**attnum))
         {
             for (_, path) in fanout.fields.iter().filter(|(c, _)| c == column) {

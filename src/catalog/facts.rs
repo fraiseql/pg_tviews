@@ -19,9 +19,16 @@ use std::collections::HashMap;
 /// in, and the answer.
 type OwnerReads = HashMap<(u32, u32), (pg_sys::CommandId, bool)>;
 
+/// `(TVIEW table OID, relid, of a patch)` → the command and cache epoch
+/// ([`crate::cache::epoch`]) the facts were established in, and them
+/// (`direct_patch_enabled` aside: read each time).
+type Facts = HashMap<(u32, u32, bool), (pg_sys::CommandId, u64, Env)>;
+
 thread_local! {
     /// Forgotten at the end of the transaction ([`forget`]).
     static OWNER_READS: RefCell<OwnerReads> = RefCell::new(HashMap::new());
+    /// Forgotten at the end of the transaction ([`forget`]).
+    static FACTS: RefCell<Facts> = RefCell::new(HashMap::new());
 }
 
 /// A stored read set as the decisions take it: `None` is `Unknown`.
@@ -48,14 +55,10 @@ pub fn path_read_set(path: &crate::lineage::plan::LocalPath) -> ReadSet {
 }
 
 /// The facts a decision about `meta`'s TVIEW and a write to table `relid` takes.
+/// Established once per command and cache epoch ([`facts`]).
 #[must_use]
 pub fn env(meta: &super::TviewMeta, relid: u32) -> Env {
-    Env {
-        plan_current: super::stopgap::plan_reads_hold(meta),
-        chain_reads_named: !super::stopgap::read_beyond_columns(meta.view_oid, Oid::from(relid)),
-        owner_reads_all: owner_reads_all(meta, relid),
-        direct_patch_enabled: crate::config::direct_patch_enabled(),
-    }
+    facts(meta, relid, false)
 }
 
 /// The facts of a patch: [`env`], with `owner_reads_all` also requiring that
@@ -64,8 +67,44 @@ pub fn env(meta: &super::TviewMeta, relid: u32) -> Env {
 /// owner's read of all of them.
 #[must_use]
 pub fn patch_env(meta: &super::TviewMeta, relid: u32) -> Env {
-    let mut env = env(meta, relid);
-    env.owner_reads_all = env.owner_reads_all && super::owner_reads::patch_stands_for_read(meta);
+    facts(meta, relid, true)
+}
+
+/// [`env`] or [`patch_env`], established once per command and cache epoch: what
+/// they rest on (the plan, the views of the chain, the owner's privileges) is
+/// itself read once per command (the privileges) or until a view changes (the
+/// chain), and a catalog change in this backend starts a new command.
+/// `direct_patch_enabled` is read each time.
+fn facts(meta: &super::TviewMeta, relid: u32, patch: bool) -> Env {
+    // SAFETY: reads the transaction's current command id.
+    let command = unsafe { pg_sys::GetCurrentCommandId(false) };
+    let epoch = crate::cache::epoch();
+    let key = (meta.tview_oid.to_u32(), relid, patch);
+    let known = FACTS.with_borrow(|m| {
+        m.get(&key)
+            .filter(|(at, in_epoch, _)| *at == command && *in_epoch == epoch)
+            .map(|(_, _, env)| *env)
+    });
+    let mut env = known.unwrap_or_else(|| {
+        let mut env = Env {
+            plan_current: super::stopgap::plan_reads_hold(meta),
+            chain_reads_named: !super::stopgap::read_beyond_columns(
+                meta.view_oid,
+                Oid::from(relid),
+            ),
+            owner_reads_all: owner_reads_all(meta, relid),
+            direct_patch_enabled: false,
+        };
+        if patch {
+            env.owner_reads_all =
+                env.owner_reads_all && super::owner_reads::patch_stands_for_read(meta);
+        }
+        FACTS.with_borrow_mut(|m| {
+            m.insert(key, (command, epoch, env));
+        });
+        env
+    });
+    env.direct_patch_enabled = crate::config::direct_patch_enabled();
     env
 }
 
@@ -103,6 +142,7 @@ fn owner_reads_all(meta: &super::TviewMeta, relid: u32) -> bool {
 /// The transaction ended: forget the privilege checks run in it.
 pub fn forget() {
     OWNER_READS.with_borrow_mut(HashMap::clear);
+    FACTS.with_borrow_mut(HashMap::clear);
 }
 
 /// Whether column `attnum` of relation `relid`, copied into `data` by a patch,

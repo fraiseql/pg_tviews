@@ -268,17 +268,23 @@ fn enqueue_local_keys(
     // path whose read set is unknown (read whole, through a system column or a
     // declared function, or by a plan stored without it).
     for path in paths {
+        // The decisions below read the path's TVIEW's catalog row: on an UPDATE.
+        let meta = changed.and_then(|_| {
+            crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
+                .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))
+        });
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.
-        if let Some(changed) = changed
-            && column_skip(path, changed)
+        if let (Some(changed), Some(meta)) = (changed, meta.as_deref())
+            && column_skip(meta, path, changed)
         {
             continue;
         }
         // An UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
         if path.root
-            && let Some(fields) = try_capture_direct_patch(trigger, path, changed)
+            && let Some(meta) = meta.as_deref()
+            && let Some(fields) = try_capture_direct_patch(trigger, meta, path, changed)
             && let Some(new) = new_image(trigger)
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
                 // SAFETY: the new image of the trigger's row, of its relation's
@@ -300,19 +306,18 @@ fn enqueue_local_keys(
 
 /// Whether an UPDATE of a row of `path`'s table that changed `changed` may skip
 /// the path's TVIEW ([`crate::decide::column_skip`]).
-fn column_skip(path: &crate::lineage::plan::LocalPath, changed: &Changed) -> bool {
-    let Some(meta) = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))
-    else {
-        return false;
-    };
+fn column_skip(
+    meta: &crate::catalog::TviewMeta,
+    path: &crate::lineage::plan::LocalPath,
+    changed: &Changed,
+) -> bool {
     let relid = path.source_oid.to_u32();
     let stored = path
         .read_set
         .as_deref()
         .map(|read| crate::mutant::drop_last("S03", read));
     let read = crate::catalog::facts::stored(stored);
-    let env = crate::catalog::facts::env(&meta, relid);
+    let env = crate::catalog::facts::env(meta, relid);
     let skip =
         crate::decide::column_skip(crate::decide::Event::Update, &read, &changed.attnums, env);
     // Test builds: a skip the columns the definition names would have allowed.
@@ -324,7 +329,7 @@ fn column_skip(path: &crate::lineage::plan::LocalPath, changed: &Changed) -> boo
             .iter()
             .any(|c| changed.names().any(|n| n == c))
     {
-        crate::stats::count_refusal(&meta, relid);
+        crate::stats::count_refusal(meta, relid);
     }
     skip
 }
@@ -366,13 +371,12 @@ fn follow_local_path(
 /// a raw datum diff, typed value extraction and syscache lookups: no SPI.
 fn try_capture_direct_patch(
     trigger: &PgTrigger,
+    meta: &crate::catalog::TviewMeta,
     path: &crate::lineage::plan::LocalPath,
     changed: Option<&Changed>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     // `None` unless this is a row-level UPDATE (OLD and NEW both present).
     let changed = changed.filter(|c| !c.attnums.is_empty())?;
-    let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
     let relid = path.source_oid.to_u32();
     let direct = &meta.plan.direct;
     if direct.is_empty() {
@@ -391,10 +395,10 @@ fn try_capture_direct_patch(
         .collect();
     let key_changed = changed.names().any(|n| n == path.initial_col);
     let read = crate::catalog::facts::path_read_set(path);
-    let env = crate::catalog::facts::patch_env(&meta, relid);
+    let env = crate::catalog::facts::patch_env(meta, relid);
     #[cfg(feature = "test-hooks")]
     if crate::decide::trusted_read_set(&read, env).is_none() {
-        crate::stats::count_refusal(&meta, relid);
+        crate::stats::count_refusal(meta, relid);
     }
     let fields = crate::decide::direct_patch(
         crate::decide::Event::Update,

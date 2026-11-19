@@ -13,7 +13,7 @@ use pgrx::prelude::*;
 thread_local! {
     /// `(table, attnums)` → how its old and new transition rows pair up, and the
     /// names of those columns (`None`: they can't be paired).
-    static PAIRINGS: crate::cache::Memo<(Oid, Vec<i16>), Option<RowPairing>> =
+    static PAIRINGS: crate::cache::Memo<(Oid, Vec<i16>), Option<std::rc::Rc<RowPairing>>> =
         crate::cache::Memo::new();
     /// Table → its primary key columns, each with whether the equality operator
     /// of its type is in `pg_catalog`.
@@ -27,9 +27,33 @@ thread_local! {
     static COMPUTED: crate::cache::Memo<Oid, Option<String>> = crate::cache::Memo::new();
 }
 
-/// The condition pairing an updated row's two images in a mapped table's
-/// transition tables, and the names of the columns the TVIEW reads.
-type RowPairing = (String, Vec<String>);
+/// How an updated row's two images pair up in a mapped table's transition
+/// tables, and the columns the TVIEW reads.
+pub(super) struct RowPairing {
+    /// The condition pairing them, over the primary key.
+    pub same_row: String,
+    /// The names of the columns the TVIEW reads, in attnum order.
+    pub columns: Vec<String>,
+    /// [`images_select`] over all of them.
+    pub images: String,
+}
+
+/// The query of each updated row's two images, whole as `jsonb`, then the old
+/// and the new value of each of `compared`, paired by `same_row`.
+pub(super) fn images_select(same_row: &str, compared: &[String]) -> String {
+    let columns: String = ["o", "n"]
+        .iter()
+        .flat_map(|side| {
+            compared
+                .iter()
+                .map(move |c| format!(", {side}.{}", crate::utils::ident::quoted(c)))
+        })
+        .collect();
+    format!(
+        "SELECT pg_catalog.to_jsonb(o), pg_catalog.to_jsonb(n){columns} \
+         FROM {OLD_TABLE} o FULL JOIN {NEW_TABLE} n ON {same_row}"
+    )
+}
 
 /// The changed rows of a statement: the new rows of an INSERT, the old rows of a
 /// DELETE, both images of an UPDATE. An UPDATE row whose columns the TVIEW reads
@@ -108,9 +132,10 @@ pub(super) fn computed_columns(entity: &str, table_oid: Oid) -> TViewResult<Opti
 /// the TVIEW reads unchanged. `None` without a usable primary key or a known
 /// column list (then every row counts).
 fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>> {
-    let Some((same_row, columns)) = row_pairing(table_oid, attnums)? else {
+    let Some(pairing) = row_pairing(table_oid, attnums)? else {
         return Ok(None);
     };
+    let (same_row, columns) = (&pairing.same_row, &pairing.columns);
     let record = |alias: &str| {
         format!(
             "ROW({})::pg_catalog.record",
@@ -132,7 +157,10 @@ fn update_filter(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<String>>
 /// primary key, and the names of the columns `attnums` the TVIEW reads. `None`
 /// without a primary key whose types have a `pg_catalog` equality, or without a
 /// known column list.
-pub(super) fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<RowPairing>> {
+pub(super) fn row_pairing(
+    table_oid: Oid,
+    attnums: &[i16],
+) -> TViewResult<Option<std::rc::Rc<RowPairing>>> {
     if attnums.is_empty() {
         return Ok(None);
     }
@@ -145,7 +173,10 @@ pub(super) fn row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option
 }
 
 /// [`row_pairing`], read from the catalog.
-fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(String, Vec<String>)>> {
+fn read_row_pairing(
+    table_oid: Oid,
+    attnums: &[i16],
+) -> TViewResult<Option<std::rc::Rc<RowPairing>>> {
     let keys = primary_key(table_oid)?;
     let mut ordered = attnums.to_vec();
     ordered.sort_unstable();
@@ -176,7 +207,12 @@ fn read_row_pairing(table_oid: Oid, attnums: &[i16]) -> TViewResult<Option<(Stri
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    Ok(Some((same_row, columns)))
+    let images = images_select(&same_row, &columns);
+    Ok(Some(std::rc::Rc::new(RowPairing {
+        same_row,
+        columns,
+        images,
+    })))
 }
 
 /// The primary key columns of `table_oid`, each with whether the equality operator
