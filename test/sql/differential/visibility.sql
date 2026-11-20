@@ -106,6 +106,8 @@ DECLARE
     n_leaked bigint;
     keys text;
     evaluates boolean := true;
+    custom record;
+    caller_custom jsonb := '{}';
 BEGIN
     SELECT m.view_oid::pg_catalog.oid::pg_catalog.regclass INTO v
       FROM tviews.pg_tview_meta m WHERE m.table_oid::pg_catalog.oid OPERATOR(pg_catalog.=) tv::pg_catalog.oid;
@@ -114,6 +116,12 @@ BEGIN
                                      pg_catalog.format_type(atttypid, atttypmod)), ', ' ORDER BY attnum)
       INTO tv_cols
       FROM pg_catalog.pg_attribute WHERE attrelid OPERATOR(pg_catalog.=) v AND attnum > 0 AND NOT attisdropped;
+    -- The custom settings of the TVIEW's frame, not the checking session's.
+    FOR custom IN SELECT * FROM public.frame_custom_settings(tv) LOOP
+        caller_custom := caller_custom
+            || pg_catalog.jsonb_build_object(custom.name, pg_catalog.current_setting(custom.name, true));
+        PERFORM pg_catalog.set_config(custom.name, custom.value, true);
+    END LOOP;
     PERFORM pg_catalog.set_config('role', role, true);
     PERFORM pg_catalog.set_config('gen.tenant', tenant::pg_catalog.text, true);
     BEGIN
@@ -140,6 +148,9 @@ BEGIN
     END IF;
     PERFORM pg_catalog.set_config('role', caller, true);
     PERFORM pg_catalog.set_config('gen.tenant', '', true);
+    FOR custom IN SELECT e.key AS name, e.value FROM pg_catalog.jsonb_each_text(caller_custom) e LOOP
+        PERFORM pg_catalog.set_config(custom.name, COALESCE(custom.value, ''), true);
+    END LOOP;
     IF coalesce(n_leaked, 0) = 0 THEN
         RETURN NULL;
     END IF;

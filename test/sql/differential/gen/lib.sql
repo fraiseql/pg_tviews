@@ -154,6 +154,8 @@ DECLARE
     k text;
     from_tv jsonb;
     from_view jsonb;
+    custom record;
+    caller_custom jsonb := '{}';
 BEGIN
     SELECT tv, key INTO s FROM gen_shape ORDER BY tv::text
      OFFSET pick % greatest((SELECT count(*) FROM gen_shape), 1) LIMIT 1;
@@ -169,7 +171,15 @@ BEGIN
         RETURN;
     END IF;
     EXECUTE format('SELECT data FROM %s WHERE %I::text = $1', s.tv, s.key) INTO from_tv USING k;
+    -- The view read under the frame's custom settings, as fresh_diff reads it.
+    FOR custom IN SELECT * FROM public.frame_custom_settings(s.tv) LOOP
+        caller_custom := caller_custom || jsonb_build_object(custom.name, current_setting(custom.name, true));
+        PERFORM set_config(custom.name, custom.value, true);
+    END LOOP;
     EXECUTE format('SELECT data FROM %s WHERE %I::text = $1', v, s.key) INTO from_view USING k;
+    FOR custom IN SELECT e.key AS name, e.value FROM jsonb_each_text(caller_custom) e LOOP
+        PERFORM set_config(custom.name, coalesce(custom.value, ''), true);
+    END LOOP;
     -- As text: a number keeps its scale there, as in a binary comparison.
     IF from_tv::text IS DISTINCT FROM from_view::text THEN
         RAISE EXCEPTION 'STALE READ inside %: % % = % holds %, its view %',

@@ -143,6 +143,14 @@ SET LOCAL row_security = off;
 UPDATE public.tb_contract SET name = 'c3z' WHERE pk_contract = 3;
 COMMIT;
 SELECT owner_fresh('public.tv_contract', 'pk_contract', 'a write with row_security off');
+-- A writer's tenant setting does not reach the owner's frame (E1-01): the
+-- maintenance of another tenant's row reads what the owner reads.
+BEGIN;
+SET LOCAL ROLE regress_trs_writer;
+SET LOCAL app.tenant_id = '10';
+UPDATE public.tb_contract SET name = 'c3t' WHERE pk_contract = 3;
+COMMIT;
+SELECT owner_fresh('public.tv_contract', 'pk_contract', 'a write under a writer''s tenant setting');
 SELECT must(status = 'OK', format('tv_policies with an owner policy: %s %s', status, message))
 FROM tv_policies();
 

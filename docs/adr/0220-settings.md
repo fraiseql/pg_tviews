@@ -57,6 +57,7 @@ changes them.
 | `function_reads` | `{}` | tables a non-immutable function reads |
 | `time_refresh` | none | `external` for a definition that reads the current time |
 | `typename` | `PascalCase(entity)` | the GraphQL type name in `pg_tviews_flush_and_report()` |
+| `settings` | `{}` | custom settings pinned in the owner frames |
 
 - The options passed are the whole declaration. An option not passed is at its default,
   including on an existing TVIEW: `pg_tviews_create_or_replace` puts back a default a

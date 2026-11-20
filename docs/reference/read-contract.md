@@ -202,6 +202,7 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
 | `function_reads` | `object` | each function the definition calls that may read tables, `schema.name(argument types)` → the tables it reads (as `regclass` text), as declared; `{}` for most TVIEWs |
 | `time_refresh` | `text` or `null` | `external` when a time-dependent TVIEW declared it; `null` otherwise |
 | `typename` | `text` or `null` | the declared GraphQL type name; `null`: the PascalCase of the entity |
+| `settings` | `object` | the custom settings pinned in the TVIEW's owner frames, name → value, as declared; `{}` for most TVIEWs |
 
 Values come from the system catalogs where they can, so the view reports the truth
 after a manual `ALTER TABLE`. A registration whose table is gone (dropped without pg_tviews
@@ -284,6 +285,7 @@ TVIEW is created and **also when it exists**. Pass every option the TVIEW should
 | `function_reads` | object: function → array of tables | `{}`: the tables each non-immutable function the definition calls reads (`[]` for none), the function named with its argument types (`"public.price(bigint, date)"`); every such function must be declared under `error` and `full_refresh`, and every declared one called |
 | `time_refresh` | `"external"` or `null` | `null`: `"external"` accepts a definition that reads the time, brought up to date by `pg_tviews_refresh_time_dependent()`; refused for one that reads none |
 | `typename` | string or `null` | `null`: the GraphQL type name `pg_tviews_flush_and_report()` reports, the PascalCase of the entity when `null` |
+| `settings` | object: setting → string | `{}`: custom settings (a dot in the name, not `pg_tviews.*`) pinned in the TVIEW's owner frames, which every refresh reads instead of the server's value ([owner frame](owner-frame.md#custom-settings)) |
 
 **What counts as the same.** The definition goes through the creation pipeline, is
 created as a temporary view, and is the same when `pg_get_viewdef` renders it like the
@@ -299,11 +301,12 @@ under the current `search_path` does. An invalid definition raises its error. Pa
   transaction.
 - `altered`: only `logged`, `fillfactor`, `data_gin_index`, `data_compression`,
   `data_storage`, `toast_tuple_target`, `indexes`, `uncascaded_policy`,
-  `uncascaded_tables`, `function_reads`, `time_refresh` or `typename` differ, or a
-  declared index is missing; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a
+  `uncascaded_tables`, `function_reads`, `time_refresh`, `typename` or `settings`
+  differ, or a declared index is missing; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a
   reset UNLOGGED TVIEW filled first, `SET (fillfactor = n)`, pg_tviews' GIN index and
   declared indexes created or dropped, never a user's, the declarations stored and the
-  TVIEW re-registered), rows kept. A change of `data_compression`, `data_storage` or
+  TVIEW re-registered), rows kept, except after a change of `settings`, which computes
+  them again under the new values. A change of `data_compression`, `data_storage` or
   `toast_tuple_target` writes the rows again: PostgreSQL stores only new values the new
   way, and the declared storage is the stored one.
 - `replaced`: the definition differs but produces the same columns (names and types,

@@ -34,6 +34,9 @@ pub(crate) struct Declarations {
     pub function_reads: Vec<(String, Vec<Oid>)>,
     /// How the TVIEW is brought up to date when it reads the current time.
     pub time_refresh: TimeRefresh,
+    /// The custom settings its owner frames pin (the `settings` option), sorted
+    /// by name.
+    pub settings: Vec<(String, String)>,
 }
 
 /// How a TVIEW that reads the current time is brought up to date.
@@ -88,7 +91,16 @@ impl Declarations {
             tables,
             function_reads,
             time_refresh,
+            settings: Vec::new(),
         }
+    }
+
+    /// These declarations, with the custom settings the owner frames pin.
+    pub(crate) fn with_settings(mut self, mut settings: Vec<(String, String)>) -> Self {
+        settings.sort();
+        settings.dedup_by(|(a, _), (b, _)| a == b);
+        self.settings = settings;
+        self
     }
 
     /// As the catalog would store them: what this call's options declared is
@@ -115,6 +127,7 @@ impl Declarations {
                 TimeRefresh::None
             },
         )
+        .with_settings(meta.frame_settings.clone())
     }
 
     /// `(function, table)` pairs, a function that reads no table paired with
@@ -168,6 +181,12 @@ impl Declarations {
             function_read_functions,
             function_read_tables,
             time_refresh,
+            frame_settings: serde_json::Value::Object(
+                self.settings
+                    .iter()
+                    .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+                    .collect(),
+            ),
         }
     }
 }

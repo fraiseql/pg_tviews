@@ -269,7 +269,13 @@ fn create_tview_inner(
     let rows = if rebuilt_for.is_some() {
         0
     } else {
-        fill_new(&schema_name, &tv_table_name, view_oid, lineage)?
+        fill_new(
+            &schema_name,
+            &tv_table_name,
+            view_oid,
+            lineage,
+            &declarations.settings,
+        )?
     };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
@@ -318,6 +324,7 @@ fn fill_new(
     table: &str,
     view_oid: pg_sys::Oid,
     lineage: &crate::lineage::Lineage,
+    settings: &[(String, String)],
 ) -> TViewResult<u64> {
     if lineage.set_operation {
         // The current user, the creator or a replace's owner frame, owns the new
@@ -339,7 +346,7 @@ fn fill_new(
             )
         })?;
     }
-    populate_initial_data(table, schema, view_oid)
+    populate_initial_data(table, schema, view_oid, settings)
 }
 
 /// What follows a new TVIEW's registration: its indexes recorded, its backing

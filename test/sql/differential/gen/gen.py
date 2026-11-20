@@ -39,6 +39,8 @@ each kind tagged with the productions of docs/reference/dialect.toml it exercise
   ordinality  unnest(...) WITH ORDINALITY, aggregated in its order
   firstrow  ROW_NUMBER() OVER (PARTITION BY fk_ ORDER BY ..., pk) ... rn = 1
   time      a value read against CURRENT_DATE, declared time_refresh external
+  setting   a custom setting read for a value (nullif(current_setting(...), '')),
+            pinned by the settings option or not; or deciding the rows (refused)
 Any of them may filter soft-deleted rows (deleted_at IS NULL). An embedding TVIEW
 may carry a user trigger writing back, during the flush, to the row it embeds;
 a `derived` TVIEW reads a copied column again in an expression.
@@ -107,6 +109,8 @@ SUMMABLE = ("int", "numeric")
 # they reproduce are fixed.
 OPT_IN_KINDS: list[str] = []
 OPT_IN: set[str] = {*OPT_IN_KINDS, "exact"}
+# the custom settings the `setting` shapes read and the writers set
+SETTINGS = ["gen_set.locale", "gen_set.tenant"]
 # the share of the writes made by a mutation function, and in a transaction
 MUTATION_SHARE = 0.2
 TRANSACTION_SHARE = 0.1
@@ -137,6 +141,7 @@ KINDS = [
     "ordinality",
     "firstrow",
     "time",
+    "setting",
     "refused",
 ]
 # The productions each kind exercises (a kind with forms adds its form's own).
@@ -163,6 +168,7 @@ KIND_PRODUCTIONS = {
     "ordinality": ["correlated-subquery", "order-rule"],
     "firstrow": ["window-partition", "order-rule"],
     "time": ["time-dependent"],
+    "setting": ["custom-setting"],
     "refused": [],
 }
 assert set(KIND_PRODUCTIONS) == set(KINDS), "every kind names its productions"
@@ -233,6 +239,8 @@ class Case:
         # The tenant choices: their own stream, so the shapes and writes drawn
         # from `rng` are those a seed drew before tenants existed.
         self.vr = random.Random(repr(rng.getstate()[1][:8]))
+        # The writers' settings: a stream of their own too.
+        self.sr = random.Random(repr(rng.getstate()[1][8:16]))
         # The column the reader without a policy-free column cannot select.
         self.revoked: tuple[Table, str] | None = None
         self.features = features
@@ -1070,6 +1078,64 @@ class Case:
         )
         return Shape(tv, key, sql, {"time_refresh": "external"}, [], t)
 
+    def shape_setting(self) -> Shape:
+        """A custom setting read for a value, which the writers set in their
+        sessions, transactions and mutation functions: the refreshes read the
+        frame's value (the settings option's, else unset), never theirs. A quarter
+        filter the rows on one instead, refused (0A000)."""
+        r = self.rng
+        t = r.choice(self.tables)
+        tv = self.tv_name(f"{t.entity}_s")
+        key = "pk_" + tv[3:]
+        read = f"nullif(current_setting({lit(SETTINGS[0])}, true), '')"
+        if self.chance(0.25):
+            sql = (
+                f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, "
+                f"jsonb_build_object({self.obj('t', t)}) AS data\n  FROM {t.name} t"
+                + self.where(
+                    [
+                        self.soft("t", t),
+                        f"t.tenant_id::text = coalesce({read}, '1')",
+                    ]
+                )
+            )
+            return Shape(
+                tv,
+                key,
+                sql,
+                {},
+                [],
+                None,
+                productions=["custom-setting-filter"],
+                expect="0A000",
+            )
+        sql = (
+            f"SELECT t.{t.pk} AS {key}, t.id{self.tenant_col('t')}, jsonb_build_object("
+            f"{self.obj('t', t)}, 'locale', {read}) AS data\n"
+            f"  FROM {t.name} t" + self.where([self.soft("t", t)])
+        )
+        options = (
+            {"settings": {SETTINGS[0]: r.choice(["fr-FR", "de-DE"])}}
+            if self.chance(0.5)
+            else {}
+        )
+        return Shape(tv, key, sql, options, [], t, productions=["custom-setting"])
+
+    def session_setting(self, local: bool) -> str | None:
+        """A writer's setting before a write, drawn from its own stream (so the
+        shapes and writes of a seed stay those it drew before), or None."""
+        if self.sr.random() >= 0.25:
+            return None
+        name = self.sr.choice(SETTINGS)
+        value = f"w{self.sr.randint(1, 99)}"
+        return self.sr.choice(
+            [
+                f"SET {'LOCAL ' if local else ''}{name} = {lit(value)}",
+                f"SELECT set_config({lit(name)}, {lit(value)}, {str(local).lower()})",
+                f"RESET {name}",
+            ]
+        )
+
     def shape_refused(self) -> Shape:
         """A definition outside the dialect (Axes C and D): refused with 0A000."""
         r = self.rng
@@ -1257,6 +1323,9 @@ class Case:
                 fn = f"gen_mutation_{self.functions}"
                 body = []
                 for _ in range(r.randint(2, 4)):
+                    setting = self.session_setting(local=True)
+                    if setting:
+                        body.append(setting.replace("SELECT ", "PERFORM ", 1) + ";")
                     body.append(self.statement(i) + ";")
                     i += 1
                 label = f"{fn} (#{i - len(body)}..#{i - 1})"
@@ -1272,6 +1341,9 @@ class Case:
                 # a transaction of a few statements, committed or rolled back
                 self.out.append("BEGIN;")
                 for _ in range(r.randint(2, 3)):
+                    setting = self.session_setting(local=True)
+                    if setting:
+                        self.out.append(setting + ";")
                     stmt = self.statement(i)
                     self.out.append(stmt + ";")
                     self.out.append(self.check(f"#{i} {stmt} (in a transaction)"))
@@ -1282,6 +1354,9 @@ class Case:
                     self.check(f"the transaction ending at #{i - 1}: {end}")
                 )
             else:
+                setting = self.session_setting(local=False)
+                if setting:
+                    self.out.append(setting + ";")
                 stmt = self.statement(i)
                 self.out.append(stmt + ";")
                 self.out.append(self.check(f"#{i} {stmt}"))

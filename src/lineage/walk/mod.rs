@@ -368,6 +368,7 @@ mod links;
 mod nodes;
 pub mod order;
 mod predicate;
+pub mod settings;
 mod time;
 mod wholerow;
 

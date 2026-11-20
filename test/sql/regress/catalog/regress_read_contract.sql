@@ -80,7 +80,7 @@ SELECT must(
                             "data_storage": "main", "toast_tuple_target": null, "indexes": [],
                             "group_keys": null, "uncascaded_policy": "error",
                             "uncascaded_tables": {}, "function_reads": {},
-                            "time_refresh": null, "typename": null}'::jsonb
+                            "time_refresh": null, "typename": null, "settings": {}}'::jsonb
      FROM tviews.registry WHERE entity = 'user'),
     'tv_user row: ' || (SELECT row(schema, name, options)::text
                         FROM tviews.registry WHERE entity = 'user'));

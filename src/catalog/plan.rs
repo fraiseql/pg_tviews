@@ -184,6 +184,7 @@ mod tests {
                 type_name: "bigint".into(),
             },
             text_search: Some("pg_catalog.english".into()),
+            settings_read: vec!["app.locale".into()],
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(TviewPlan::decode("post", json).unwrap(), plan);

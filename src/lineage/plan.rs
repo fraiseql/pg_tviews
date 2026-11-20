@@ -47,6 +47,11 @@ pub struct TviewPlan {
     /// refreshes run under (`to_tsvector(text)` reads it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_search: Option<String>,
+    /// The custom settings its definition reads by name with `current_setting()`,
+    /// which its refreshes read in the owner frame (the health check's
+    /// `frame_settings`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_read: Vec<String>,
 }
 
 /// A TVIEW's row key: the integer column `pk_<entity>` (ADR 0169; smallint,
@@ -242,6 +247,7 @@ pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>, key: Pla
         references: lineage.references.clone(),
         key,
         text_search: None,
+        settings_read: lineage.settings.clone(),
     }
 }
 

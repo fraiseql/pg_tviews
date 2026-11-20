@@ -23,11 +23,13 @@ use std::ffi::{CStr, CString};
 
 /// The role an owner frame runs as: a TVIEW's owner, named by its table or
 /// entity, or the extension's owner, for writes to its catalog. A TVIEW's owner
-/// carries the TVIEW's text search configuration, which its frames pin.
+/// carries the TVIEW's text search configuration and the custom settings of its
+/// `settings` option, which its frames pin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Owner {
     role: Oid,
     text_search: Option<&'static CStr>,
+    settings: &'static [(CString, CString)],
 }
 
 impl Owner {
@@ -98,6 +100,7 @@ impl Owner {
         Self {
             role,
             text_search: None,
+            settings: &[],
         }
     }
 
@@ -116,6 +119,43 @@ impl Owner {
     pub fn text_search(self) -> Option<&'static str> {
         self.text_search.and_then(|c| c.to_str().ok())
     }
+
+    /// This owner, with the custom settings `settings` (name, value) pinned in
+    /// its frames, after the session's are set back (a TVIEW's `settings`
+    /// option).
+    #[must_use]
+    pub fn with_settings(self, settings: &[(String, String)]) -> Self {
+        Self {
+            settings: intern_settings(settings),
+            ..self
+        }
+    }
+}
+
+/// `settings` as a list that lives as long as the backend: one per distinct
+/// list, a handful in a database.
+fn intern_settings(settings: &[(String, String)]) -> &'static [(CString, CString)] {
+    if settings.is_empty() {
+        return &[];
+    }
+    let settings: Vec<(CString, CString)> = settings
+        .iter()
+        .filter_map(|(name, value)| {
+            Some((
+                CString::new(name.as_str()).ok()?,
+                CString::new(value.as_str()).ok()?,
+            ))
+        })
+        .collect();
+    INTERNED_SETTINGS.with(|interned| {
+        let mut interned = interned.borrow_mut();
+        if let Some(found) = interned.iter().find(|s| **s == settings.as_slice()) {
+            return *found;
+        }
+        let leaked: &'static [(CString, CString)] = Box::leak(settings.into_boxed_slice());
+        interned.push(leaked);
+        leaked
+    })
 }
 
 /// Refuse `function`, which changes a TVIEW (its definition, triggers,
@@ -417,6 +457,9 @@ impl OwnerFrame {
             if let Some(config) = spec.text_search {
                 pin(c"default_text_search_config", config);
             }
+            for (name, value) in spec.settings {
+                custom::pin(name, value);
+            }
             level
         };
         // The owner resolves no name the caller wrote.
@@ -586,6 +629,18 @@ impl RenderPin {
         };
         Self { guc_level }
     }
+
+    /// As [`RenderPin::new`], with the custom settings `settings` (name, value)
+    /// pinned after the session's are set back: a TVIEW's `settings` option.
+    #[must_use]
+    pub fn with_settings(settings: &[(String, String)]) -> Self {
+        let pin = Self::new();
+        for (name, value) in intern_settings(settings) {
+            // SAFETY: `new` opened the nest level, which Drop closes.
+            unsafe { custom::pin(name, value) };
+        }
+        pin
+    }
 }
 
 impl Default for RenderPin {
@@ -687,6 +742,24 @@ impl Drop for CatalogPath {
     }
 }
 
+/// The value the setting `name` has now, `None` when it is unset (missing, or
+/// `''`, a placeholder PostgreSQL keeps once seen). Inside an owner frame, the
+/// value a TVIEW's refreshes read.
+#[must_use]
+pub fn setting_value(name: &str) -> Option<String> {
+    let name = CString::new(name).ok()?;
+    // SAFETY: a NUL-terminated name; missing_ok; the value is copied before
+    // another setting can change it.
+    unsafe {
+        let value = pg_sys::GetConfigOption(name.as_ptr(), true, false);
+        if value.is_null() {
+            return None;
+        }
+        let value = CStr::from_ptr(value).to_string_lossy().into_owned();
+        (!value.is_empty()).then_some(value)
+    }
+}
+
 /// Whether an owner frame is open: the statement running now is `pg_tviews`'
 /// own, run as a TVIEW's owner.
 pub fn in_owner_frame() -> bool {
@@ -709,6 +782,9 @@ thread_local! {
     static CALLER: std::cell::Cell<Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
     /// The text search configurations owners carry ([`Owner::with_text_search`]).
     static INTERNED: RefCell<Vec<&'static CStr>> = const { RefCell::new(Vec::new()) };
+    /// The custom settings owners carry ([`Owner::with_settings`]).
+    static INTERNED_SETTINGS: RefCell<Vec<&'static [(CString, CString)]>> =
+        const { RefCell::new(Vec::new()) };
     /// The temporary schema found to shadow no name, until a name changes.
     static TEMP_CHECKED: std::cell::Cell<Option<Oid>> = const { std::cell::Cell::new(None) };
 }
@@ -790,6 +866,268 @@ unsafe fn pin_settings() {
     }
     // SAFETY: the caller opened the nest level.
     unsafe { planner::pin_all() };
+    // SAFETY: the caller opened the nest level.
+    unsafe { custom::reset_all() };
+}
+
+/// The settings with a dot in their name (placeholders such as `app.locale`, and
+/// extensions' settings), `pg_tviews.*` aside, which the frame reads itself: a
+/// refresh reads the value the server, the database and `ALTER ROLE ALL … SET`
+/// give them, never one a writer chose. What a session's `SET`, a `SET LOCAL`, a
+/// function's `SET`, a connection option or the writer's role (`ALTER ROLE … SET`)
+/// gave is set back, as the planner settings are.
+///
+/// A placeholder none of those sources gives reads as unset: NULL in a backend
+/// that never saw its name, and `''` in one that did, since PostgreSQL keeps a
+/// placeholder once seen. A definition reads `nullif(current_setting(x, true),
+/// '')` for one value in both.
+///
+/// The settings a session changed are those of PostgreSQL's list of settings not
+/// at their built-in default, read through the serialization a parallel worker
+/// receives: one pass over a few dozen settings, no catalog read.
+mod custom {
+    use pgrx::pg_sys;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ffi::{CStr, CString};
+
+    thread_local! {
+        /// The values `ALTER DATABASE … SET` and `ALTER ROLE ALL … SET` gave,
+        /// read once per backend, the first time a role's setting masks them.
+        static STORED: RefCell<Option<HashMap<String, String>>> = const { RefCell::new(None) };
+    }
+
+    /// Set back every custom setting a session, a function or the writer's role
+    /// gave.
+    ///
+    /// SAFETY: the caller opened the GUC nest level the settings are restored at.
+    pub(super) unsafe fn reset_all() {
+        // SAFETY: forwarded.
+        for name in unsafe { session_given() } {
+            // SAFETY: forwarded.
+            unsafe { reset(&name) };
+        }
+    }
+
+    /// The custom settings whose value a session, a function or a role gave.
+    ///
+    /// SAFETY: reads backend-global state.
+    unsafe fn session_given() -> Vec<CString> {
+        // SAFETY: the state is serialized into a buffer of the size estimated
+        // just before, in the current memory context, and freed after parsing.
+        unsafe {
+            let size = pg_sys::EstimateGUCStateSpace();
+            let buffer = pg_sys::palloc(size).cast::<u8>();
+            pg_sys::SerializeGUCState(size, buffer.cast());
+            let used = buffer.cast::<usize>().read_unaligned();
+            let state = std::slice::from_raw_parts(
+                buffer.add(std::mem::size_of::<usize>()),
+                used.min(size - std::mem::size_of::<usize>()),
+            );
+            let given = super::guc_state::entries(state)
+                .filter(|(name, source)| {
+                    *source > pg_sys::GucSource::PGC_S_DATABASE.cast_signed() && is_custom(name)
+                })
+                .map(|(name, _)| name.to_owned())
+                .collect();
+            pg_sys::pfree(buffer.cast());
+            given
+        }
+    }
+
+    /// A setting with a dot in its name, other than `pg_tviews`' own.
+    pub(super) fn is_custom(name: &CStr) -> bool {
+        let bytes = name.to_bytes();
+        bytes.contains(&b'.') && !bytes.to_ascii_lowercase().starts_with(b"pg_tviews.")
+    }
+
+    /// Set `name` to the value of its server, database and `ALTER ROLE ALL`
+    /// sources.
+    ///
+    /// SAFETY: the caller opened the nest level.
+    unsafe fn reset(name: &CStr) {
+        // SAFETY: a NUL-terminated name; missing_ok.
+        let record = unsafe {
+            pg_sys::find_option(name.as_ptr(), false, true, pg_sys::DEBUG1.cast_signed())
+        };
+        if record.is_null() {
+            return;
+        }
+        // SAFETY: a live record.
+        let (context, reset_source) = unsafe { ((*record).context, (*record).reset_source) };
+        // Settings no session can change (the server's, and those fixed at
+        // connection) are the same in every frame of this backend.
+        if context != pg_sys::GucContext::PGC_USERSET && context != pg_sys::GucContext::PGC_SUSET {
+            return;
+        }
+        let value = if reset_source <= pg_sys::GucSource::PGC_S_DATABASE {
+            // Its reset value is the server's.
+            None
+        } else {
+            // A role's setting or a connection option masked the server's.
+            // SAFETY: a live record.
+            Some(stored(name).unwrap_or_else(|| unsafe { boot_text(record) }))
+        };
+        // SAFETY: the caller opened the nest level; toward the server's value
+        // only, so with the superuser's context for a superuser-only setting.
+        unsafe {
+            pg_sys::set_config_option(
+                name.as_ptr(),
+                value.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+                pg_sys::GucContext::PGC_SUSET,
+                pg_sys::GucSource::PGC_S_SESSION,
+                pg_sys::GucAction::GUC_ACTION_SAVE,
+                true,
+                0,
+                false,
+            );
+        }
+    }
+
+    /// Set the custom setting `name` to `value` (a TVIEW's `settings` option).
+    ///
+    /// SAFETY: the caller opened the nest level.
+    pub(super) unsafe fn pin(name: &CStr, value: &CStr) {
+        // SAFETY: NUL-terminated name and value; the caller opened the nest level.
+        unsafe {
+            pg_sys::set_config_option(
+                name.as_ptr(),
+                value.as_ptr(),
+                pg_sys::GucContext::PGC_USERSET,
+                pg_sys::GucSource::PGC_S_SESSION,
+                pg_sys::GucAction::GUC_ACTION_SAVE,
+                true,
+                0,
+                false,
+            );
+        }
+    }
+
+    /// The value `ALTER DATABASE … SET` gave this database, else the one `ALTER
+    /// ROLE ALL … SET` gave every database.
+    fn stored(name: &CStr) -> Option<CString> {
+        STORED.with(|stored| {
+            let mut stored = stored.borrow_mut();
+            let stored = stored.get_or_insert_with(super::planner::stored_settings);
+            stored
+                .get(name.to_str().ok()?)
+                .and_then(|value| CString::new(value.as_str()).ok())
+        })
+    }
+
+    /// The built-in default as the text that sets it; `''` for a placeholder.
+    ///
+    /// SAFETY: a live record.
+    unsafe fn boot_text(record: *mut pg_sys::config_generic) -> CString {
+        // SAFETY: the record's vartype says which struct it is.
+        let text = unsafe {
+            match (*record).vartype {
+                pg_sys::config_type::PGC_BOOL => {
+                    let on = (*record.cast::<pg_sys::config_bool>()).boot_val;
+                    (if on { "on" } else { "off" }).to_string()
+                }
+                pg_sys::config_type::PGC_INT => {
+                    (*record.cast::<pg_sys::config_int>()).boot_val.to_string()
+                }
+                pg_sys::config_type::PGC_REAL => {
+                    (*record.cast::<pg_sys::config_real>()).boot_val.to_string()
+                }
+                pg_sys::config_type::PGC_STRING => {
+                    let boot = (*record.cast::<pg_sys::config_string>()).boot_val;
+                    if boot.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(boot).to_string_lossy().into_owned()
+                    }
+                }
+                _ => {
+                    let record = record.cast::<pg_sys::config_enum>();
+                    let name = pg_sys::config_enum_lookup_by_value(record, (*record).boot_val);
+                    if name.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(name).to_string_lossy().into_owned()
+                    }
+                }
+            }
+        };
+        CString::new(text).unwrap_or_default()
+    }
+}
+
+/// The entries of PostgreSQL's serialized settings (`SerializeGUCState`, what a
+/// parallel worker receives): per setting not at its built-in default, its name,
+/// value and source file as NUL-terminated strings, the source line when there is
+/// a file, then its source, context and role as 4-byte integers.
+mod guc_state {
+    use std::ffi::CStr;
+
+    /// Each entry's name and source; stops at the first malformed entry.
+    pub(super) fn entries(state: &[u8]) -> impl Iterator<Item = (&CStr, i32)> {
+        let mut rest = state;
+        std::iter::from_fn(move || {
+            let (name, after) = string(rest)?;
+            let (_value, after) = string(after)?;
+            let (file, mut after) = string(after)?;
+            if !file.is_empty() {
+                after = after.get(4..)?;
+            }
+            let source = i32::from_ne_bytes(after.get(..4)?.try_into().ok()?);
+            // The source, the context and the role.
+            rest = after.get(12..)?;
+            Some((name, source))
+        })
+    }
+
+    fn string(bytes: &[u8]) -> Option<(&CStr, &[u8])> {
+        let text = CStr::from_bytes_until_nul(bytes).ok()?;
+        Some((text, bytes.get(text.to_bytes().len() + 1..)?))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::entries;
+
+        fn entry(name: &str, value: &str, file: &str, source: i32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for part in [name, value, file] {
+                bytes.extend_from_slice(part.as_bytes());
+                bytes.push(0);
+            }
+            if !file.is_empty() {
+                bytes.extend_from_slice(&7_i32.to_ne_bytes());
+            }
+            for n in [source, 2, 10] {
+                bytes.extend_from_slice(&n.to_ne_bytes());
+            }
+            bytes
+        }
+
+        #[test]
+        fn reads_names_and_sources() {
+            let mut state = entry("work_mem", "4096", "/etc/pg.conf", 3);
+            state.extend(entry("app.locale", "xx", "", 13));
+            state.extend(entry("app.empty", "", "", 7));
+            let read: Vec<(String, i32)> = entries(&state)
+                .map(|(name, source)| (name.to_string_lossy().into_owned(), source))
+                .collect();
+            assert_eq!(
+                read,
+                [
+                    ("work_mem".to_string(), 3),
+                    ("app.locale".to_string(), 13),
+                    ("app.empty".to_string(), 7)
+                ]
+            );
+        }
+
+        #[test]
+        fn stops_at_a_truncated_entry() {
+            let mut state = entry("app.a", "1", "", 13);
+            state.extend_from_slice(b"app.b\0");
+            assert_eq!(entries(&state).count(), 1);
+        }
+    }
 }
 
 /// The planner settings a refresh is planned under: the server's values, so a
@@ -1082,7 +1420,7 @@ mod planner {
     /// The values `ALTER DATABASE … SET` gave this database, over those `ALTER
     /// ROLE ALL … SET` gave every database: `name=value` entries of
     /// `pg_db_role_setting`. Empty when the catalog cannot be read.
-    fn stored_settings() -> HashMap<String, String> {
+    pub(super) fn stored_settings() -> HashMap<String, String> {
         let rows = crate::utils::spi::catalog_rows(
             "SELECT s.setdatabase <> 0, c.entry \
                FROM pg_catalog.pg_db_role_setting s, pg_catalog.unnest(s.setconfig) AS c(entry) \

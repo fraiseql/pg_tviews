@@ -60,6 +60,9 @@
         -- The indexes option as declared (#226): an array of indexes, each an
         -- array of keys. pg_tviews creates them under managed_index_names.
         declared_indexes JSONB NOT NULL DEFAULT '[]',
+        -- The settings option: custom settings (a dot in the name) pinned in the
+        -- TVIEW's owner frame, name -> value. A refresh reads no session's value.
+        frame_settings JSONB NOT NULL DEFAULT '{}',
         -- The GraphQL type name of the TVIEW's rows: graphql_typename when set,
         -- else PascalCase(entity), as crate::catalog::typename derives it. One
         -- TVIEW per name: the report and the change feed key entries by it.
@@ -102,4 +105,4 @@
     CREATE FUNCTION @extschema@.pg_tviews_catalog_revision()
     RETURNS integer
     LANGUAGE sql IMMUTABLE PARALLEL SAFE
-    AS 'SELECT 14';
+    AS 'SELECT 15';

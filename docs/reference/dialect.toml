@@ -443,6 +443,27 @@ walker = ["src/lineage/walk/order.rs"]
 gen = ["array", "last", "top", "pick", "filter", "ordinality", "firstrow"]
 gen_refused = ["unordered"]
 
+[[production]]
+id = "custom-setting"
+axis = "D"
+shape = "A custom setting read for a value"
+example = "`coalesce(nullif(current_setting('app.locale', true), ''), 'fr-FR')`"
+maintained = "row by row, read in the owner frame: the value the `settings` option pins, else the server's, the database's or `ALTER ROLE ALL`'s; a session's, a role's, a function's or a connection's never reaches a refresh. Registration names each setting read by name and the value its refreshes read (NOTICE), and the health check's `frame_settings` warns about one unset there. A setting with no value reads as NULL, or `''` in a backend that has seen its name: read it with `nullif(…, '')`. A setting a called function reads is read in the frame too, unreported"
+tests = ["refresh/regress_frame_custom_settings.sql", "refresh/regress_frame_settings_option.sql", "lineage/regress_setting_reads.sql"]
+walker = ["src/owner.rs", "src/lineage/walk/settings.rs"]
+gen = ["setting"]
+
+[[production]]
+id = "custom-setting-filter"
+axis = "D"
+shape = "A custom setting deciding which rows the TVIEW holds"
+example = "`WHERE c.tenant_id = current_setting('app.tenant_id')::int`"
+maintained = "refused: its refreshes read the server's value, so the TVIEW would hold that value's rows only. Keep every row and filter where `tv_*` is read (a `WHERE`, or a row security policy on `tv_*`)"
+sqlstate = "0A000"
+tests = ["lineage/regress_setting_reads.sql"]
+walker = ["src/lineage/walk/settings.rs"]
+gen_refused = ["setting"]
+
 # ── E. Time ──────────────────────────────────────────────────────────────────
 
 [[production]]

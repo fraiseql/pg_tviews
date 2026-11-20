@@ -102,6 +102,30 @@ value is not used.
 | `max_parallel_workers_per_gather` |
 | `default_statistics_target` |
 
+## Custom settings
+
+A setting with a dot in its name (a placeholder such as `app.locale`, or an extension's setting),
+`pg_tviews.*` aside, has in the frame:
+
+1. the value the TVIEW's `settings` option pins (`{"settings": {"app.locale": "fr-FR"}}`);
+2. else the value of the server's configuration, `ALTER DATABASE … SET` or `ALTER ROLE ALL …
+   SET`;
+3. else none: it reads as unset, NULL in a backend that never saw the name and `''` in one that
+   did (PostgreSQL keeps a placeholder once seen), so read it with `nullif(current_setting(x,
+   true), '')`.
+
+What a session's `SET`, a `SET LOCAL`, `set_config()`, a function's `SET` clause, a connection
+option or the writer's role (`ALTER ROLE … SET`) gave never reaches the frame: every frame sets
+those back. A change of the server's or the database's value is no write: `pg_tviews_refresh()`
+applies it.
+
+Registration names each setting the definition reads by name with `current_setting()`, and the
+value its refreshes read (a NOTICE); the health check's `frame_settings` component lists them,
+and warns about one that is unset in the frame. A setting that decides which rows the TVIEW holds
+(in a `WHERE`, `ON`, `HAVING`, `LIMIT` or a `FROM` function's arguments) is refused (`0A000`):
+the TVIEW would hold the rows of the frame's value only. A setting a function of the definition
+reads is read in the frame too, unreported: function bodies are not visible.
+
 ## Other settings
 
 Settings outside these lists are not part of the contract.

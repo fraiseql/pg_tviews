@@ -38,6 +38,9 @@ pub struct Lineage {
     /// The tables it reads whole or through a system column, by OID: their
     /// links are unknown, and no column of them is patched.
     pub whole_reads: BTreeMap<u32, walk::WholeRead>,
+    /// The custom settings it reads by name with `current_setting()`, each once:
+    /// its refreshes read them in the owner frame.
+    pub settings: Vec<String>,
 }
 
 /// What another TVIEW's registration says to the analysis of a new one.
@@ -443,7 +446,7 @@ pub fn analyze(
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
-    walk::dialect::check(view_oid)?;
+    let settings = walk::dialect::check(view_oid).and_then(|()| walk::settings::check(view_oid))?;
     refuse_inheritance(&graph.inherited_reads)?;
     let identity = identity_of(entity, view_oid, &graph)?;
     check_tables_agree(entity, &graph, base_tables)?;
@@ -544,6 +547,7 @@ pub fn analyze(
         data: graph.data,
         references,
         whole_reads,
+        settings,
     })
 }
 

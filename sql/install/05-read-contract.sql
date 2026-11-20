@@ -122,7 +122,8 @@ SELECT
                    GROUP BY r.function) f),
             '{}'),
         'time_refresh', m.time_refresh,
-        'typename', m.graphql_typename) END AS options,
+        'typename', m.graphql_typename,
+        'settings', m.frame_settings) END AS options,
     v.oid::pg_catalog.regclass AS view,
     CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
          ELSE ARRAY(SELECT c->>'name'

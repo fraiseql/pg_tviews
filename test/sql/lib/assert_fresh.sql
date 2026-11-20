@@ -5,13 +5,36 @@
 --   \ir lib/assert_fresh.sql
 --   SELECT assert_fresh('tv_order', 'pk_order', 'an UPDATE of tb_line');
 
+-- The custom settings TVIEW `tv`'s definition reads by name, with the value its
+-- owner frame gives each (docs/reference/owner-frame.md; fresh_diff inlines the
+-- same query under its pinned search_path): its settings option's,
+-- else the database's or ALTER ROLE ALL's, else unset (''); the suites set none
+-- in the server's configuration. A session's value never.
+CREATE OR REPLACE FUNCTION frame_custom_settings(tv regclass)
+RETURNS TABLE (name text, value text) LANGUAGE sql STABLE AS $$
+    SELECT s.name, COALESCE(m.frame_settings->>s.name,
+               (SELECT pg_catalog.substr(c.entry, pg_catalog.length(s.name) + 2)
+                  FROM pg_catalog.pg_db_role_setting d, pg_catalog.unnest(d.setconfig) c(entry)
+                 WHERE d.setrole OPERATOR(pg_catalog.=) 0
+                   AND d.setdatabase IN (0, (SELECT oid FROM pg_catalog.pg_database
+                                              WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database()))
+                   AND pg_catalog.starts_with(c.entry, s.name || '=')
+                 ORDER BY d.setdatabase DESC LIMIT 1),
+               '')
+      FROM tviews.pg_tview_meta m,
+           pg_catalog.jsonb_array_elements_text(m.plan->'settings_read') s(name)
+     WHERE m.table_oid::pg_catalog.oid OPERATOR(pg_catalog.=) tv::pg_catalog.oid
+$$;
+
 -- NULL when tv_<entity> and its backing view agree; otherwise how they differ,
 -- with the `key` values of the offending rows.
 --
 -- Both are read in the TVIEW's owner frame (docs/reference/owner-frame.md): as
 -- the owner of tv_<entity>, under the frame's search_path and settings (the block
--- below is generated from that page) and the TVIEW's text search configuration,
--- not the checking session's. Rows are compared by their binary image (`*=`), as
+-- below is generated from that page), the TVIEW's text search configuration and
+-- the custom settings its definition reads by name (its settings option's value,
+-- else the database's or ALTER ROLE ALL's, else unset; the suites set none in
+-- the server's configuration), not the checking session's. Rows are compared by their binary image (`*=`), as
 -- a refresh compares a recomputed row with the stored one: `1.5` and `1.50` in a
 -- jsonb differ, as their text does.
 CREATE OR REPLACE FUNCTION fresh_diff(tv regclass, key text) RETURNS text
@@ -47,6 +70,8 @@ DECLARE
     caller_role text := pg_catalog.current_setting('role');
     switched boolean := false;
     caller_text_search text := pg_catalog.current_setting('default_text_search_config');
+    custom record;
+    caller_custom jsonb := '{}';
     tv_cols text;
     v_cols text;
     tv_rows bigint; v_rows bigint;
@@ -80,6 +105,24 @@ BEGIN
     IF text_search IS NOT NULL THEN
         PERFORM pg_catalog.set_config('default_text_search_config', text_search, true);
     END IF;
+    FOR custom IN
+        SELECT s.name, COALESCE(m.frame_settings->>s.name,
+                   (SELECT pg_catalog.substr(c.entry, pg_catalog.length(s.name) + 2)
+                      FROM pg_catalog.pg_db_role_setting d, pg_catalog.unnest(d.setconfig) c(entry)
+                     WHERE d.setrole OPERATOR(pg_catalog.=) 0
+                       AND d.setdatabase IN (0, (SELECT oid FROM pg_catalog.pg_database
+                                                  WHERE datname OPERATOR(pg_catalog.=) pg_catalog.current_database()))
+                       AND pg_catalog.starts_with(c.entry, s.name || '=')
+                     ORDER BY d.setdatabase DESC LIMIT 1),
+                   '') AS value
+          FROM tviews.pg_tview_meta m,
+               pg_catalog.jsonb_array_elements_text(m.plan->'settings_read') s(name)
+         WHERE m.table_oid::pg_catalog.oid OPERATOR(pg_catalog.=) tv::pg_catalog.oid
+    LOOP
+        caller_custom := caller_custom
+            || pg_catalog.jsonb_build_object(custom.name, pg_catalog.current_setting(custom.name, true));
+        PERFORM pg_catalog.set_config(custom.name, custom.value, true);
+    END LOOP;
     -- Both counts in one statement: one snapshot, under concurrent writers too.
     EXECUTE format('SELECT (SELECT pg_catalog.count(*) FROM %s), (SELECT pg_catalog.count(*) FROM %s)', tv, v)
        INTO tv_rows, v_rows;
@@ -89,6 +132,9 @@ BEGIN
         PERFORM pg_catalog.set_config('role', caller_role, true);
     END IF;
     PERFORM pg_catalog.set_config('default_text_search_config', caller_text_search, true);
+    FOR custom IN SELECT e.key AS name, e.value FROM pg_catalog.jsonb_each_text(caller_custom) e LOOP
+        PERFORM pg_catalog.set_config(custom.name, COALESCE(custom.value, ''), true);
+    END LOOP;
 
     IF tv_only + v_only = 0 AND tv_rows = v_rows THEN
         RETURN NULL;

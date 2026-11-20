@@ -60,18 +60,41 @@ pub(crate) fn derive_as(
     view_oid: pg_sys::Oid,
     declarations: &Declarations,
 ) -> TViewResult<Derivation> {
+    // Its frames pin the settings it declares.
+    let owner = owner.with_settings(&declarations.settings);
     let mut derivation = crate::owner::AsOwner::run(owner, |frame| {
-        derive(
+        let derivation = derive(
             frame,
             entity_name,
             group_keys,
             base_tables,
             view_oid,
             declarations,
-        )
+        )?;
+        report_settings(entity_name, &derivation.plan.settings_read);
+        Ok(derivation)
     })?;
     derivation.plan.text_search = owner.text_search().map(str::to_string);
     Ok(derivation)
+}
+
+/// Tell, for each custom setting the definition reads by name, the value its
+/// refreshes read: the frame's, whatever a session sets. Inside the owner frame.
+fn report_settings(entity: &str, names: &[String]) {
+    for name in names {
+        if let Some(value) = crate::owner::setting_value(name) {
+            pgrx::notice!(
+                "tv_{entity} reads the setting {name}: its refreshes read it as '{value}', \
+                 whatever a session sets"
+            );
+        } else {
+            pgrx::notice!(
+                "tv_{entity} reads the setting {name}: its refreshes read it as unset, \
+                 whatever a session sets; give it a value with the settings option, or for \
+                 the server or the database"
+            );
+        }
+    }
 }
 
 /// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local

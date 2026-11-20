@@ -52,6 +52,9 @@ pub struct TviewMeta {
 
     /// A TVIEW that reads the current time declared `time_refresh: external`.
     pub time_refresh_external: bool,
+    /// The custom settings its owner frames pin (the `settings` option), sorted
+    /// by name.
+    pub frame_settings: Vec<(String, String)>,
     /// The definition reads the current time: two computations of a row may
     /// differ with no write between them.
     pub time_dependent: bool,
@@ -203,7 +206,7 @@ pub(crate) fn meta_select(with_collections: bool) -> String {
          uncascaded_table_oids::oid[] AS uncascaded_table_oids, uncascaded_table_policies, \
          function_read_functions, function_read_tables::oid[] AS function_read_tables, \
          time_refresh IS NOT DISTINCT FROM 'external' AS time_refresh_external, \
-         time_dependent, needs_reregister, typename, \
+         time_dependent, needs_reregister, typename, frame_settings, \
          EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = table_oid \
           AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_public_id, \
          (SELECT CASE WHEN a.atttypid IN ('pg_catalog.int2'::pg_catalog.regtype, \
@@ -290,7 +293,9 @@ impl crate::owner::Owner {
     /// # Errors
     /// Returns an error if its table is gone.
     pub fn of_tview(meta: &TviewMeta) -> crate::TViewResult<Self> {
-        Ok(Self::of_table(meta.tview_oid)?.with_text_search(meta.plan.text_search.as_deref()))
+        Ok(Self::of_table(meta.tview_oid)?
+            .with_text_search(meta.plan.text_search.as_deref())
+            .with_settings(&meta.frame_settings))
     }
 }
 
@@ -595,6 +600,11 @@ impl TviewMeta {
             table_policies,
             function_reads,
             time_refresh_external: row.named::<bool>("time_refresh_external")?.unwrap_or(false),
+            frame_settings: frame_settings(
+                row.named::<pgrx::JsonB>("frame_settings")?
+                    .map(|j| j.0)
+                    .as_ref(),
+            ),
             time_dependent: row.named::<bool>("time_dependent")?.unwrap_or(false),
             plan_release: if row.named::<bool>("needs_reregister")?.unwrap_or(false) {
                 PlanRelease::Earlier
@@ -619,6 +629,22 @@ impl TviewMeta {
     }
 }
 
+/// The `name -> value` pairs of a stored `frame_settings` object, sorted by name;
+/// a value that is not a string is skipped (the option stores strings only).
+fn frame_settings(stored: Option<&serde_json::Value>) -> Vec<(String, String)> {
+    let mut settings: Vec<(String, String)> = stored
+        .and_then(serde_json::Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    settings.sort();
+    settings
+}
+
 /// How [`TviewMeta::decode`] treats what registration derived (the plan, the
 /// identity) when it does not decode.
 #[derive(Clone, Copy)]
@@ -641,6 +667,7 @@ impl Default for TviewMeta {
             table_policies: Vec::new(),
             function_reads: Vec::new(),
             time_refresh_external: false,
+            frame_settings: Vec::new(),
             time_dependent: false,
             plan_release: PlanRelease::This,
             identity: RowIdentity::unknown(),

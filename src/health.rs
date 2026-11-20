@@ -50,6 +50,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             function_paths_check(),
             owner_reads_check(),
             tv_policies_check(),
+            frame_settings_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -487,6 +488,63 @@ fn tv_policies_check() -> Check {
         ),
         Ok(found) => warning("tv_policies", sample(&found)),
         Err(e) => error("tv_policies", format!("could not be checked: {e}")),
+    }
+}
+
+/// The custom settings each TVIEW's definition reads by name, with the value its
+/// refreshes read (the server's, the database's, `ALTER ROLE ALL`'s, or its
+/// `settings` option's), never a session's. A WARNING when one is unset there:
+/// a per-request setting, which no refresh sees.
+fn frame_settings_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("frame_settings", format!("could not be checked: {e}")),
+    };
+    let reads: Vec<(&str, &str, Option<&str>)> = metas
+        .iter()
+        .flat_map(|meta| {
+            meta.plan.settings_read.iter().map(|name| {
+                let pinned = meta
+                    .frame_settings
+                    .iter()
+                    .find(|(pinned, _)| pinned == name)
+                    .map(|(_, value)| value.as_str());
+                (meta.entity_name.as_str(), name.as_str(), pinned)
+            })
+        })
+        .collect();
+    if reads.is_empty() {
+        return ok("frame_settings", "No TVIEW reads a custom setting by name");
+    }
+    let _frame = crate::owner::RenderPin::new();
+    let mut unset = Vec::new();
+    let mut read = Vec::new();
+    for &(entity, name, pinned) in &reads {
+        // The TVIEW's settings option pins it, else the frame reads the server's.
+        let value = match pinned {
+            Some(pinned) => (!pinned.is_empty()).then(|| pinned.to_string()),
+            None => crate::owner::setting_value(name),
+        };
+        match value {
+            Some(value) => read.push(format!("tv_{entity} reads {name} as '{value}'")),
+            None => unset.push(format!("tv_{entity} reads {name}")),
+        }
+    }
+    if unset.is_empty() {
+        ok(
+            "frame_settings",
+            format!("{}; a session's value reaches no refresh", sample(&read)),
+        )
+    } else {
+        warning(
+            "frame_settings",
+            format!(
+                "{}, unset where its refreshes run: they read no session's value (a \
+                 per-request setting); set it for the server or the database, or pin it \
+                 with the settings option",
+                sample(&unset)
+            ),
+        )
     }
 }
 

@@ -121,6 +121,7 @@ of a TVIEW, defaults included.
 | `function_reads` | object | `{}` | the tables each non-immutable function reads, `{"public.label_suffix()": ["public.tb_setting"]}` (`[]` for none); functions are named with their argument types ([details](ddl.md#functions-that-read-tables)) |
 | `time_refresh` | `"external"` or `null` | `null` | accept a definition reading the current time; `pg_tviews_refresh_time_dependent()` is called at the boundary ([details](ddl.md#time-dependent-tviews)) |
 | `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports; one TVIEW per name: a name another TVIEW's rows have is refused (`42710`) |
+| `settings` | object | `{}` | custom settings pinned in the TVIEW's owner frames, `{"app.locale": "fr-FR"}`: its fill and every refresh read these values, never a session's; only names with a dot, not `pg_tviews.*`, with string values (`22023`) ([details](owner-frame.md#custom-settings)) |
 
 ### pg_tviews_create
 
@@ -569,8 +570,9 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`, `reregister`
-(TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`,
+`tv_policies`, `frame_settings`, `reregister` (TVIEWs marked `needs_reregister`), `triggers`
+and `tviews`. A check that cannot run is
 an `ERROR` row.
 
 `function_paths` is an `ERROR` listing the functions a TVIEW's refresh runs (those its
@@ -578,6 +580,10 @@ definition calls, through operators, aggregates and views, and the user triggers
 table) whose `search_path` setting does not end in `pg_temp`, with the setting that
 fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
 before the rule stays, and is reported here and warned about whenever it is re-derived.
+
+`frame_settings` lists, per TVIEW, the custom settings its definition reads by name and the
+value its refreshes read (its `settings` option's, else the server's, the database's or `ALTER
+ROLE ALL`'s), never a session's; a `WARNING` when one is unset there.
 
 `owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
 what it reads: the TVIEW's owner or the owner of a view it reads through, lacking

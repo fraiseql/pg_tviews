@@ -69,6 +69,7 @@ A TVIEW is its definition and its options; no setting changes it
 | `function_reads` | `{}` | tables a non-immutable function reads ([below](#functions-that-read-tables)) |
 | `time_refresh` | `null` | `"external"` for a definition that reads the current time ([below](#time-dependent-tviews)) |
 | `typename` | `null` (the PascalCase of the entity) | the GraphQL type name in `pg_tviews_flush_and_report()`; unique among TVIEWs (`42710`) |
+| `settings` | `{}` | custom settings pinned in the owner frames, `{"app.locale": "fr-FR"}` ([owner frame](owner-frame.md#custom-settings)) |
 
 `tviews.registry.options` lists every option of a TVIEW, defaults included.
 

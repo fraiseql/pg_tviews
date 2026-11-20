@@ -96,7 +96,7 @@ jobs:
       # the night's seeds above.
       - name: Generator coverage of the dialect
         run: |
-          GEN_COVERAGE="$RUNNER_TEMP/gen-coverage.txt" ./test/sql/differential/gen/run.sh 30 "1 2 3 4" 40
+          GEN_COVERAGE="$RUNNER_TEMP/gen-coverage.txt" ./test/sql/differential/gen/run.sh 30 "1 2 3 11" 40
           python3 -I test/sql/differential/gen/coverage.py "$RUNNER_TEMP/gen-coverage.txt"
 
       # Each skip decision switched to decide wrongly, one at a time, on fixed seeds:

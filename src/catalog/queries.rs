@@ -17,6 +17,8 @@ pub struct Declared<'a> {
     pub function_read_functions: Vec<String>,
     pub function_read_tables: Vec<Oid>,
     pub time_refresh: Option<&'a str>,
+    /// The custom settings the owner frames pin, as a JSON object.
+    pub frame_settings: serde_json::Value,
 }
 
 /// A TVIEW's row as registration derives it.
@@ -62,7 +64,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
             uncascaded_oids, uncascaded_policy, identity,
             uncascaded_table_oids, uncascaded_table_policies,
             function_read_functions, function_read_tables, time_refresh, time_dependent,
-            graphql_typename, typename
+            graphql_typename, typename, frame_settings
         ) VALUES (
             $1, $2::pg_catalog.oid::pg_catalog.regclass, $3::pg_catalog.oid::pg_catalog.regclass,
             $4, $5, $6, $7::pg_catalog.oid[]::pg_catalog.regclass[], $8,
@@ -71,7 +73,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
                     'name', $10::pg_catalog.text,
                     'type', pg_catalog.format_type($11::pg_catalog.oid, NULL)))),
             $12::pg_catalog.oid[]::pg_catalog.regclass[], $13,
-            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19)
+            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19, $20)
         {on_conflict}",
         super::meta_table()
     );
@@ -114,6 +116,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::boolean(time_dependent),
         crate::utils::spi::text(declared_typename),
         crate::utils::spi::text(typename.as_str()),
+        crate::utils::spi::jsonb(pgrx::JsonB(declared.frame_settings)),
     ];
     crate::owner::as_extension_owner(|| {
         crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
@@ -138,10 +141,11 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
             crate::utils::spi::text_array(declared.function_read_functions),
             crate::utils::spi::oid_array(declared.function_read_tables),
             crate::utils::spi::text(declared.time_refresh),
+            crate::utils::spi::jsonb(pgrx::JsonB(declared.frame_settings)),
         ];
         crate::utils::spi::run(
             &format!(
-                "UPDATE {} SET uncascaded_policy = $2, \
+                "UPDATE {} SET uncascaded_policy = $2, frame_settings = $8, \
                      uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
                      uncascaded_table_policies = $4, function_read_functions = $5, \
                      function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
