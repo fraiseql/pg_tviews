@@ -788,3 +788,139 @@ pub fn typenames_and_tables(
         pg_error: e.to_string(),
     })
 }
+
+// --- Visibility (the guard, row security on tv_*) ------------------------------
+
+/// The guards of the TVIEWs' own tables (`crate::guard`, whose trigger function
+/// is `handler`) as the trigger check's problem rows: one missing, disabled, switched to `ENABLE
+/// REPLICA`, or on a table a logical replication subscription writes (its apply
+/// worker fires no ordinary trigger: `pg_tviews` is no longer the table's only
+/// writer).
+pub fn guard_problems_sql(handler: &str) -> String {
+    format!(
+        "WITH guards AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS relid, t.tgname, t.tgenabled \
+             FROM {schema}.pg_tview_meta m \
+             LEFT JOIN (pg_catalog.pg_trigger t \
+                        JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+                         AND p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+                         AND p.proname = '{handler}') \
+               ON t.tgrelid = m.table_oid::pg_catalog.oid \
+         ) \
+         SELECT 'missing', pg_catalog.format('{handler} on %s (%s)', \
+                                             g.relid::pg_catalog.regclass, g.entity) \
+         FROM guards g WHERE g.tgname IS NULL \
+         UNION ALL \
+         SELECT 'disabled', pg_catalog.format('%I on %s%s', g.tgname, \
+                                              g.relid::pg_catalog.regclass, \
+                                              CASE g.tgenabled WHEN 'R' THEN \
+                                                ' (ENABLE REPLICA: refuses writes only when \
+                                                 session_replication_role is replica)' \
+                                              WHEN 'D' THEN '' \
+                                              ELSE ' (a logical replication subscription \
+                                                 writes the TVIEW table: pg_tviews is no \
+                                                 longer its only writer)' END) \
+         FROM guards g WHERE g.tgenabled IN ('D', 'R') \
+            OR (g.tgname IS NOT NULL \
+                AND EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
+                            WHERE s.srrelid = g.relid)) \
+         ORDER BY 1, 2",
+        schema = crate::utils::ext_schema(),
+    )
+}
+
+/// The TVIEW tables with row security enabled.
+///
+/// # Errors
+/// The catalog cannot be read.
+pub fn tables_with_row_security() -> TViewResult<Vec<Oid>> {
+    crate::utils::spi::oids(
+        &format!(
+            "SELECT m.table_oid::pg_catalog.oid FROM {} m \
+             JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) m.table_oid::pg_catalog.oid \
+             WHERE c.relrowsecurity ORDER BY 1",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// The health check's `tv_policies` warnings, one message per row: a TVIEW others
+/// read without row security while a table it reads filters its readers, and one
+/// embedding rows of a table whose policies differ from its own (its root tables,
+/// whose rows are its own, aside).
+///
+/// # Errors
+/// The catalog or the policies cannot be read.
+pub fn tv_policy_warnings() -> TViewResult<Vec<String>> {
+    let (entities, roots): (Vec<String>, Vec<Oid>) = super::TviewMeta::load_all()?
+        .iter()
+        .flat_map(|meta| {
+            meta.plan
+                .paths
+                .iter()
+                .filter(|path| path.root)
+                .map(|path| (meta.entity_name.clone(), path.source_oid))
+                .collect::<Vec<_>>()
+        })
+        .unzip();
+    crate::utils::spi::strings(
+        &tv_policy_warnings_sql(),
+        &[
+            crate::utils::spi::text_array(entities),
+            crate::utils::spi::oid_array(roots),
+        ],
+    )
+}
+
+/// The query of [`tv_policy_warnings`]: `$1` and `$2` pair each TVIEW with a root
+/// table of its plan.
+fn tv_policy_warnings_sql() -> String {
+    format!(
+        "WITH tv AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS tv, c.relrowsecurity AS rls, \
+                    c.relowner, c.relacl \
+             FROM {schema}.pg_tview_meta m \
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid \
+         ), \
+         policed AS ( \
+             SELECT DISTINCT r.entity, r.relid \
+             FROM {schema}.reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid \
+             WHERE c.relkind IN ('r', 'p') AND c.relrowsecurity \
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid = r.relid) \
+         ), \
+         roots AS ( \
+             SELECT r.entity, r.relid \
+             FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.text[]), \
+                            pg_catalog.unnest($2::pg_catalog.oid[])) r(entity, relid) \
+         ), \
+         sig AS ( \
+             SELECT p.polrelid AS relid, \
+                    pg_catalog.string_agg(pg_catalog.format('%s/%s/%s/%s', p.polcmd, \
+                        p.polpermissive, pg_catalog.pg_get_expr(p.polqual, p.polrelid), \
+                        pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)), ';' ORDER BY 1) AS s \
+             FROM pg_catalog.pg_policy p GROUP BY p.polrelid \
+         ) \
+         SELECT pg_catalog.format('%s has no row security while %s, which it reads, filters \
+                                   its readers: whoever reads %s reads what that policy hides', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass, \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         WHERE NOT tv.rls \
+           AND EXISTS (SELECT 1 FROM pg_catalog.aclexplode(tv.relacl) a \
+                       WHERE a.grantee <> tv.relowner AND a.privilege_type = 'SELECT') \
+         UNION ALL \
+         SELECT pg_catalog.format('%s embeds rows of %s, whose policies differ from its own: a \
+                                   reader may read in a document a row that table hides from it', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         LEFT JOIN sig child ON child.relid = x.relid \
+         LEFT JOIN sig own ON own.relid = tv.tv \
+         WHERE tv.rls \
+           AND NOT EXISTS (SELECT 1 FROM roots r WHERE r.entity = tv.entity AND r.relid = x.relid) \
+           AND child.s IS DISTINCT FROM own.s \
+         ORDER BY 1",
+        schema = crate::utils::ext_schema(),
+    )
+}
