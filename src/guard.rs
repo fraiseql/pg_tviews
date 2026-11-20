@@ -133,15 +133,7 @@ pub fn owner_filtered(relid: pg_sys::Oid, role: pg_sys::Oid) -> TViewResult<Opti
 /// # Errors
 /// The catalog or the policies cannot be read.
 pub fn filtered_tviews() -> TViewResult<Vec<(String, String, String)>> {
-    let tables = crate::utils::spi::oids(
-        &format!(
-            "SELECT m.table_oid::pg_catalog.oid FROM {}.pg_tview_meta m \
-             JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) m.table_oid::pg_catalog.oid \
-             WHERE c.relrowsecurity ORDER BY 1",
-            crate::utils::ext_schema()
-        ),
-        &[],
-    )?;
+    let tables = crate::catalog::queries::tables_with_row_security()?;
     let mut filtered = Vec::new();
     for table in tables {
         let owner = crate::owner::relation_owner(table)?;

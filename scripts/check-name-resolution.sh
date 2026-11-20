@@ -27,6 +27,7 @@ allowed=(
   "src/ddl/create/select.rs|pg_catalog.to_regtype(\$1)|create: DDL, a type the definition names"
   "src/catalog/queries.rs|pg_catalog.to_regclass(\$1) IS NOT NULL|the extension's own catalog table"
   "src/catalog/queries.rs|'{}'::pg_catalog.regnamespace|the extension's own schema"
+  "src/catalog/queries.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
   "src/dependency/triggers.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
   "src/lineage/analyze.rs|CREATE INDEX ON {} USING {}|advice in a notice, never run"
   "src/hooks/ctas.rs|{}.{}|DDL: the name the CREATE TABLE AS statement wrote"
