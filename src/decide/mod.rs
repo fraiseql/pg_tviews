@@ -2,8 +2,11 @@
 //! plain values (skips.md, theorems.md).
 //!
 //! A decision returns *skip* (or *patch*, or *prune*) only when its safety
-//! condition is established by a positive fact among its inputs; a missing or
-//! unknown input means refresh. Nothing here reads a datum, the catalog, a
+//! condition is established by its inputs; a missing or unknown input means
+//! refresh. Each input not established takes its conservative value, the one
+//! that rules the shortcut out: `key_changed`, `virtual_read`,
+//! `child_changed_in_flush` and `guard_met` true, `paired` and `document_edge`
+//! false, every [`Env`] fact false (theorems.md §0, "Inputs to the decisions"). Nothing here reads a datum, the catalog, a
 //! setting or the clock, and nothing names `pgrx`: binary comparison of datums
 //! stays with the trigger, and every fact about the database comes in
 //! [`Env`], computed once per statement by named functions outside this module
