@@ -251,5 +251,7 @@ skeleton of it is `docs/proofs/model.md`.
 The concurrency fuzzer (`test/concurrency/fuzz/README.md`) checks I1 at every committed
 snapshot; I2 with a prober whose flushes are skipped, every commit of which must fail or have
 queued nothing (it catches the mutant `G3`, a check that does not count fan-out patches);
-and, in `values` mode, a special case of I4 (writes of unread columns never fail). Its tables
+in `mixed` mode, it reports each deadlock by its class among I4's, telling apart all but
+the second lookup from a single statement's flush; and, in `values` mode, it checks a
+special case of I4 (writes of unread columns never fail). Its tables
 belong to a role that is neither superuser nor the writers, as in production.

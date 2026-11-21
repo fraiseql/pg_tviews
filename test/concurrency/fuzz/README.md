@@ -22,6 +22,12 @@ clients against it while a checker compares every TVIEW with its backing view.
   `docs/proofs/theorems.md`). `pg_tviews.test_mutant=G3` (in `EXTRA_PGOPTIONS`) stops the
   check from counting fan-out patches; the run must then fail (the `tv_fz_member` shape: a
   team's name copied into its members, written through a table with no TVIEW of its own).
+  Each deadlock is reported by its class among those ADR 0207 lists ("What can still
+  deadlock", I4): `multi-statement` (a later statement of the transaction), `statement`
+  (a single statement waiting on pg_tviews' locks: rows found by the second lookup only,
+  or its flush), `flush at statement end`, or `base rows` (no pg_tviews lock in the
+  cycle), each with the lock its victim waited on. The run prints the count of each, in
+  pgbench's error lines.
 - **`values`**: autocommit single-row writes of columns no TVIEW joins, filters or
   groups by, at `READ COMMITTED`. None may fail: such writes never wait for each other
   in a cycle (#263).

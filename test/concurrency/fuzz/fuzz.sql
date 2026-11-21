@@ -132,15 +132,39 @@ BEGIN
     END IF;
 END $$;
 
+-- The class of a deadlock that failed statement `n` of a transaction, from the
+-- report's `detail` (its first line: what this backend waited for): `multi-statement`
+-- after earlier statements, `base rows` when no pg_tviews lock is in the cycle
+-- (rows locked in two scan orders, without pg_tviews too), else `statement` (a
+-- single statement waiting on pg_tviews' locks: rows found by the second lookup
+-- only, or its flush). Lock tags: field4 21622 value, 21623 relation, 21624
+-- registration, 21625 time boundary.
+CREATE FUNCTION fuzz_deadlock_class(n int, detail text) RETURNS text LANGUAGE sql AS $$
+    SELECT CASE
+        WHEN n > 1 THEN 'multi-statement'
+        WHEN detail !~ ',2162[2-5]\]' THEN 'base rows'
+        ELSE 'statement'
+    END || ', waits on ' || CASE
+        WHEN split_part(detail, E'\n', 1) ~ ',21622\]' THEN 'a value lock'
+        WHEN split_part(detail, E'\n', 1) ~ ',2162[345]\]' THEN 'a relation lock'
+        WHEN split_part(detail, E'\n', 1) ~ 'on (transaction|tuple)' THEN 'a row'
+        ELSE 'other'
+    END
+$$;
+
 -- One transaction's statements, seeded by `seed`: 1 to 4 of the differential
 -- harness's (`harness` percent of them) or the #263 schema's, one in five rolled
 -- back to its savepoint, each followed one time in four by a read of a TVIEW.
 -- They run inside one outer statement, as a mutation function's do: the TVIEWs
 -- are refreshed at those reads and when it ends.
 CREATE FUNCTION fuzz_txn(seed int, harness int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    n int := 0;
+    detail text;
 BEGIN
     PERFORM setseed(seed / 2147483648.0);
     FOR i IN 1..1 + floor(random() * 4)::int LOOP
+        n := i;
         PERFORM fuzz_exec(CASE WHEN random() * 100 < harness THEN harness_statement(seed % 100000)
                                ELSE fuzz_crossed(true) END,
                           random() < 0.2);
@@ -148,6 +172,14 @@ BEGIN
             PERFORM fuzz_read_back();
         END IF;
     END LOOP;
+EXCEPTION
+    -- A deadlock inside the function is tagged with its class (I4, ADR 0207 "What
+    -- can still deadlock"); one in the flush at the end of the outer statement
+    -- reaches the client untagged.
+    WHEN deadlock_detected THEN
+        GET STACKED DIAGNOSTICS detail = PG_EXCEPTION_DETAIL;
+        RAISE EXCEPTION USING ERRCODE = 'deadlock_detected', DETAIL = detail,
+            MESSAGE = 'deadlock detected [' || fuzz_deadlock_class(n, detail) || ']';
 END $$;
 
 -- One transaction at REPEATABLE READ or SERIALIZABLE, seeded by `seed`: a write

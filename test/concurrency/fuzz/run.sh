@@ -153,8 +153,14 @@ for mode in $MODES; do
     elif [[ "$kind" == values && "${failures:-1}" -ne 0 ]]; then
       verdict="FAIL (a value-only write failed)"
     fi
+    # I4: each deadlock's class (fuzz_deadlock_class); untagged ones failed in the
+    # flush at the end of the outer statement.
+    classes="$(grep -E "deadlock detected" "$log" | grep -v "^ *DETAIL" |
+               sed -n 's/.*deadlock detected \[\([^]]*\)\].*/\1/p; t; /deadlock detected/s/.*/flush at statement end/p' |
+               sort | uniq -c | sort -rn | awk '{n=$1; $1=""; printf "%s%s:%s", sep, n, $0; sep=";"}')"
     echo "$verdict  seed $seed [$mode]: ${done_txns:-?} transactions, ${failures:-?} failed" \
          "(${serialization:-?} serialization, ${deadlocks:-?} deadlocks), $checks checks; $probed"
+    [[ -n "$classes" ]] && echo "      deadlock errors by class (I4):$classes"
     if [[ "$verdict" != PASS ]]; then
       failed=$((failed + 1))
       if [[ "${KEEP:-}" == 1 ]]; then
