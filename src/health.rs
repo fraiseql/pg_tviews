@@ -50,6 +50,8 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             function_paths_check(),
             owner_reads_check(),
             tv_policies_check(),
+            tv_writers_check(),
+            change_feed_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -715,6 +717,97 @@ fn count(n: usize, what: &str) -> String {
 }
 
 /// The first ten items, and how many more there are.
+/// The TVIEW tables' OIDs, for the checks reading their grants.
+fn tview_tables() -> crate::TViewResult<Vec<pgrx::pg_sys::Oid>> {
+    Ok(crate::catalog::TviewMeta::load_all()?
+        .iter()
+        .map(|meta| meta.tview_oid)
+        .collect())
+}
+
+/// Roles other than a TVIEW table's owner granted INSERT, UPDATE, DELETE or
+/// TRUNCATE on it (E1-15). `pg_tviews` is the table's only writer, and its guard
+/// refuses every other write: such a grant serves nothing, and writes as soon as
+/// the guard is disabled.
+fn tv_writers_check() -> Check {
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT pg_catalog.format('%s: %s %s', t.oid::pg_catalog.regclass, \
+                    CASE a.grantee WHEN 0 THEN 'PUBLIC' \
+                         ELSE pg_catalog.pg_get_userbyid(a.grantee)::pg_catalog.text END, \
+                    pg_catalog.string_agg(a.privilege_type, '/' ORDER BY a.privilege_type)) \
+             FROM pg_catalog.pg_class t, pg_catalog.aclexplode(t.relacl) a \
+             WHERE t.oid OPERATOR(pg_catalog.=) ANY ($1) \
+               AND a.grantee OPERATOR(pg_catalog.<>) t.relowner \
+               AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') \
+             GROUP BY t.oid, a.grantee ORDER BY 1",
+            &[crate::utils::spi::oid_array(tables)],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => ok(
+            "tv_writers",
+            "No role but its owner may write a TVIEW table",
+        ),
+        Ok(found) => warning(
+            "tv_writers",
+            format!(
+                "writes granted on TVIEW tables, which only pg_tviews writes (its guard refuses \
+                 the others): {}; REVOKE INSERT, UPDATE, DELETE, TRUNCATE from these roles",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("tv_writers", format!("could not be checked: {e}")),
+    }
+}
+
+/// The change feed (`pg_tviews.publish_changes = rows`) sends the keys of every
+/// TVIEW's changed rows to every role that can `LISTEN`, whatever it may read
+/// (E1-05): a WARNING naming the login roles that may connect but not read a TVIEW.
+fn change_feed_check() -> Check {
+    match crate::config::publish_changes() {
+        None => return ok("change_feed", "The change feed is off"),
+        Some(crate::config::Publish::Types) => {
+            return ok(
+                "change_feed",
+                "The change feed publishes type names only: no keys of rows",
+            );
+        }
+        Some(crate::config::Publish::Rows) => {}
+    }
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT pg_catalog.format('%s (%s)', r.rolname, \
+                    pg_catalog.string_agg(t.oid::pg_catalog.regclass::pg_catalog.text, ' ' \
+                                          ORDER BY t.oid::pg_catalog.regclass::pg_catalog.text)) \
+             FROM pg_catalog.pg_roles r, pg_catalog.pg_class t \
+             WHERE r.rolcanlogin AND NOT r.rolsuper \
+               AND pg_catalog.has_database_privilege(r.oid, \
+                       pg_catalog.current_database(), 'CONNECT') \
+               AND t.oid OPERATOR(pg_catalog.=) ANY ($1) \
+               AND NOT pg_catalog.has_table_privilege(r.oid, t.oid, 'SELECT') \
+             GROUP BY r.rolname ORDER BY r.rolname",
+            &[crate::utils::spi::oid_array(tables)],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => ok(
+            "change_feed",
+            "The change feed publishes row keys; every role that may connect may read every TVIEW",
+        ),
+        Ok(found) => warning(
+            "change_feed",
+            format!(
+                "the change feed publishes the keys of changed rows to any role that can LISTEN: \
+                 these may connect but not read the TVIEWs named: {}; set \
+                 pg_tviews.publish_changes to types or off, or REVOKE CONNECT",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("change_feed", format!("could not be checked: {e}")),
+    }
+}
+
 fn sample(items: &[String]) -> String {
     const SHOWN: usize = 10;
     let text = items
