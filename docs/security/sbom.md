@@ -333,8 +333,7 @@ SBOM generation supports:
 
 For SBOM-related questions or suggestions:
 - **GitHub Issues**: https://github.com/fraiseql/pg_tviews/issues
-- **Security Reports**: Create a Security Advisory in GitHub
-- **Email**: security@your-domain.com (for non-security questions only)
+- **Security Reports**: privately, as [SECURITY.md](../../SECURITY.md) says
 
 ---
 

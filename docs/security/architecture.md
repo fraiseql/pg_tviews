@@ -26,8 +26,9 @@ controls exist today. How the extension works is in
 ## Trust boundaries
 
 - **Trusted**: the PostgreSQL server, its superusers, the extension's owner, and the
-  host. `pg_tviews.control` sets `superuser = false`: a role with `CREATE` on the
-  database can install the extension and becomes its owner.
+  host. `pg_tviews.control` sets `superuser = true`: only a superuser can run `CREATE
+  EXTENSION pg_tviews` or `ALTER EXTENSION pg_tviews UPDATE`, and the superuser who
+  creates it owns the extension.
 - **Partly trusted**: a TVIEW's owner. Its definition's code runs as itself, never as
   the role whose write triggered a refresh, nor as a superuser calling a maintenance
   function.

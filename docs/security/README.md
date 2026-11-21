@@ -162,9 +162,7 @@ GPG key management and verification procedures.
 ## 📞 Contact & Support
 
 ### Security Issues
-- **Vulnerability Reports**: [GitHub Security Advisories](https://github.com/fraiseql/pg_tviews/security/advisories)
-- **Private Contact**: security@your-domain.com
-- **PGP Key**: [Maintainer Keys](maintainer-keys.md)
+- **Vulnerability Reports**: privately, through [GitHub Security Advisories](https://github.com/fraiseql/pg_tviews/security/advisories/new) ([policy](../../SECURITY.md))
 
 ### General Support
 - **Issues**: [GitHub Issues](https://github.com/fraiseql/pg_tviews/issues)
