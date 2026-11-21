@@ -60,3 +60,4 @@ test: create-vs-write
 test: create-lock-needs-trigger
 test: rebuild-owner-scoped
 test: policy-flip-vs-refresh
+test: time-refresh-vs-writer

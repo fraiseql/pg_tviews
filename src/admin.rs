@@ -19,9 +19,13 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catal
     Ok(metas)
 }
 
-/// Refresh `chosen` TVIEWs, which read the current time, in full, as a write to a
-/// `full_refresh` table would refresh them, then the TVIEWs reading them, through
-/// the flush. Returns the TVIEWs refreshed, dependencies first.
+/// Refresh the rows of `chosen` TVIEWs, which read the current time, that differ
+/// from their views' at this instant ([`crate::refresh::full::differing_keys`]),
+/// dependencies first, each through the flush as a write's keys are, and the
+/// TVIEWs reading them. Returns the TVIEWs refreshed, dependencies first.
+///
+/// A TVIEW whose rows are compared reads the rows the flush has just refreshed
+/// for the TVIEWs it reads: each is compared after its dependencies' flush.
 ///
 /// # Errors
 /// Returns an error if the dependency graph cannot be loaded or a refresh fails.
@@ -42,11 +46,19 @@ pub(crate) fn refresh_time_dependent(
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(&meta.entity_name);
         } else {
-            crate::concurrency::enqueue_refresh_all(&meta.entity_name);
+            // Only the rows the boundary changes are refreshed, as writes refresh
+            // theirs: under their value locks, not a lock on all the TVIEW reads.
+            // The time can change which rows a TVIEW holds and what they link to:
+            // a link change, as a full refresh is.
+            let keys = crate::refresh::full::differing_keys(meta)?;
+            if !keys.is_empty() {
+                crate::concurrency::note_link_change();
+                crate::queue::enqueue_refresh_bulk(&meta.entity_name, keys);
+            }
         }
         refreshed.push(crate::utils::qualified_relname_from_oid(meta.tview_oid)?);
+        crate::flush::flush_refresh_queue()?;
     }
-    crate::flush::flush_refresh_queue()?;
     Ok(refreshed)
 }
 
