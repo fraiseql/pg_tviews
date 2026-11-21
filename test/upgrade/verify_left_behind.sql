@@ -31,17 +31,18 @@ CREATE FUNCTION pg_temp.work() RETURNS jsonb LANGUAGE sql AS $$
         'captured', (n->>'direct_patch_captured')::int - (s.q->>'direct_patch_captured')::int)
     FROM seen s, tviews.pg_tviews_show_queue() AS now(n) $$;
 
--- Left exactly the four it could not re-derive.
-SELECT pg_temp.must(string_agg(name, ',' ORDER BY name) = 'tv_col,tv_forced,tv_lost,tv_rls',
+-- Left exactly the five it could not re-derive.
+SELECT pg_temp.must(string_agg(name, ',' ORDER BY name) = 'tv_col,tv_forced,tv_lost,tv_rls,tv_shelf',
                     'left to re-register: ' || coalesce(string_agg(name, ',' ORDER BY name), 'none'))
 FROM tviews.registry WHERE needs_reregister;
 
 -- The health check names each, and why when it knows.
-SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'WARNING 4 TVIEWs left to re-register:%'
+SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'WARNING 5 TVIEWs left to re-register:%'
                     AND pg_temp.reregister_health() LIKE '%tv_col: upgrade_lost_owner lacks SELECT (title) on%'
                     AND pg_temp.reregister_health() LIKE '%tv_forced;%'
                     AND pg_temp.reregister_health() LIKE '%tv_lost: upgrade_lost_owner lacks SELECT on%'
-                    AND pg_temp.reregister_health() LIKE '%tv_rls: row security applies to role upgrade_rls_owner%',
+                    AND pg_temp.reregister_health() LIKE '%tv_rls: row security applies to role upgrade_rls_owner%'
+                    AND pg_temp.reregister_health() LIKE '%tv_shelf%',
                     'health: ' || pg_temp.reregister_health());
 
 -- tv_kept was re-derived and follows its table.
@@ -101,7 +102,15 @@ GRANT SELECT ON public.tb_lost TO upgrade_lost_owner;
 ALTER TABLE public.tb_rls DISABLE ROW LEVEL SECURITY;
 GRANT SELECT ON public.tb_col TO upgrade_lost_owner;
 SELECT pg_temp.must(status = 'reregistered', 'tv_' || entity || ': ' || status)
-FROM tviews.pg_tviews_reregister_all();
+FROM tviews.pg_tviews_reregister_all() WHERE entity <> 'shelf';
+-- tv_shelf's definition is what the rule refuses: given an order, then
+-- re-registered (a replace keeps the flag).
+SELECT tviews.pg_tviews_create_or_replace('tv_shelf', $$
+    SELECT s.pk_shelf, s.id, jsonb_build_object('name', s.name,
+        'books', (SELECT jsonb_agg(b.title ORDER BY b.pk_book) FROM public.tb_book b
+                  WHERE b.fk_shelf = s.pk_shelf)) AS data
+    FROM public.tb_shelf s $$);
+SELECT tviews.pg_tviews_reregister('tv_shelf');
 SELECT pg_temp.must(pg_temp.reregister_health() LIKE 'OK %', 'health after the fixes: ' || pg_temp.reregister_health());
 UPDATE public.tb_lost SET title = 'l1c';
 UPDATE public.tb_rls SET title = 'r1c';
@@ -109,3 +118,5 @@ SELECT pg_temp.must(pg_temp.in_sync('tv_lost', 'pk_lost'), 'tv_lost after the fi
 SELECT pg_temp.must(pg_temp.in_sync('tv_rls', 'pk_rls'), 'tv_rls after the fix');
 UPDATE public.tb_col SET title = 'c1c';
 SELECT pg_temp.must(pg_temp.in_sync('tv_col', 'pk_col'), 'tv_col after the fix');
+INSERT INTO public.tb_book (pk_book, fk_shelf, title) VALUES (2, 1, 'b2');
+SELECT pg_temp.must(pg_temp.in_sync('tv_shelf', 'pk_shelf'), 'tv_shelf after the fix');

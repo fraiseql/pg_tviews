@@ -158,6 +158,13 @@ LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
 -- They have no SET search_path, as a procedure with a SET clause cannot COMMIT: they
 -- run as their caller and name every object with its schema.
 
+-- The operator's time refresh (E1-10): every time-dependent TVIEW (or one),
+-- whoever owns it, each refreshed as its owner. Revoked from PUBLIC below.
+CREATE FUNCTION @extschema@.pg_tviews_refresh_time_dependent_all(tview TEXT DEFAULT NULL)
+RETURNS SETOF TEXT
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'pg_tviews_refresh_time_dependent_all_wrapper';
+
 -- Every time-dependent TVIEW, dependencies first (an entity after every TVIEW its
 -- backing view reads), and whether the caller may refresh it as its owner.
 CREATE FUNCTION @extschema@.pg_tviews_time_dependent_order()
