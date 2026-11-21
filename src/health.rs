@@ -51,6 +51,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             owner_reads_check(),
             tv_policies_check(),
             tv_writers_check(),
+            tv_triggers_check(),
             change_feed_check(),
             time_handoff_check(),
             reregister_check(),
@@ -759,6 +760,48 @@ fn tv_writers_check() -> Check {
             ),
         ),
         Err(e) => error("tv_writers", format!("could not be checked: {e}")),
+    }
+}
+
+/// User triggers and rules on TVIEW tables: each changes what a maintenance write
+/// leaves in the table, which freshness assumes nothing does. A WARNING naming
+/// them; `pg_tviews`' own triggers (functions of its schema) are not reported.
+fn tv_triggers_check() -> Check {
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT x.what FROM ( \
+               SELECT pg_catalog.format('%s on %s', t.tgname, \
+                          t.tgrelid::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) AS what \
+               FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+               WHERE NOT t.tgisinternal AND t.tgrelid OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND p.pronamespace NOT IN (SELECT n.oid FROM pg_catalog.pg_namespace n \
+                                            WHERE n.nspname OPERATOR(pg_catalog.=) $2) \
+               UNION ALL \
+               SELECT pg_catalog.format('rule %s on %s', r.rulename, \
+                          r.ev_class::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) \
+               FROM pg_catalog.pg_rewrite r \
+               WHERE r.ev_class OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND r.rulename OPERATOR(pg_catalog.<>) '_RETURN') x \
+             ORDER BY x.what",
+            &[
+                crate::utils::spi::oid_array(tables),
+                crate::utils::spi::text(crate::utils::ext_schema()),
+            ],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => {
+            ok("tv_triggers", "No user trigger or rule on a TVIEW table")
+        }
+        Ok(found) => warning(
+            "tv_triggers",
+            format!(
+                "user triggers or rules on TVIEW tables change what pg_tviews writes there, \
+                 and its rows may then differ from their definitions: {}",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("tv_triggers", format!("could not be checked: {e}")),
     }
 }
 

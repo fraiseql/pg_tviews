@@ -594,7 +594,7 @@ One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
 no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`,
-`tv_policies`, `tv_writers`, `change_feed`, `time_handoff`, `reregister` (TVIEWs marked `needs_reregister`),
+`tv_policies`, `tv_writers`, `tv_triggers`, `change_feed`, `time_handoff`, `reregister` (TVIEWs marked `needs_reregister`),
 `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
@@ -607,6 +607,9 @@ before the rule stays, and is reported here and warned about whenever it is re-d
 `tv_writers` is a `WARNING` listing, per TVIEW table, each role other than its owner
 granted `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on it (`PUBLIC` included). pg_tviews is a
 TVIEW table's only writer and its guard refuses every other write: revoke them.
+
+`tv_triggers` is a `WARNING` naming each user trigger or rule on a TVIEW table (not
+pg_tviews' own triggers): it changes what pg_tviews writes there.
 
 `change_feed` is `OK` while `pg_tviews.publish_changes` is `off` or `types`. With `rows`, it
 is a `WARNING` naming each login role, not a superuser, that may connect to the database

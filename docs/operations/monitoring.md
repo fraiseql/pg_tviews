@@ -28,14 +28,16 @@ WHERE severity <> 'info';
 
 `severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
 `metadata`, `plans`, `columns`, `seq_scans`, `contents`, `function_paths`, `owner_reads`,
-`tv_policies`, `tv_writers`, `change_feed`, `time_handoff`, `reregister`, `triggers` and `tviews`. `contents` warns about TVIEWs that are empty while their
+`tv_policies`, `tv_writers`, `tv_triggers`, `change_feed`, `time_handoff`, `reregister`, `triggers` and `tviews`. `contents` warns about TVIEWs that are empty while their
 definition yields rows, and lists the TVIEWs it could not check: it is `OK` only when it
 checked every TVIEW. `function_paths` is an error naming each function a refresh runs
 whose `search_path` does not end in `pg_temp`, with the fixed setting. `owner_reads` is
 an error naming each TVIEW whose owner, or the owner of a view it reads through, may no
 longer read what it reads, with the role and the privilege. `tv_writers` warns about
 each role other than its owner granted `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on a
-TVIEW table: pg_tviews is its only writer. `change_feed` warns, when
+TVIEW table: pg_tviews is its only writer. `tv_triggers` warns about each user trigger
+or rule on a TVIEW table: it changes what pg_tviews writes there, so the rows may differ
+from their definitions. `change_feed` warns, when
 `pg_tviews.publish_changes` is `rows`, about each login role that may connect but not
 read a TVIEW: it receives the keys of that TVIEW's changed rows
 ([change feed](../user-guides/change-feed.md#who-can-read-it)).
