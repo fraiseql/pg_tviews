@@ -16,6 +16,12 @@ clients against it while a checker compares every TVIEW with its backing view.
   the share of statements drawn from the differential suite (the rest from `fuzz.sql`).
   One statement in four is followed by a read of a random TVIEW, which must equal its
   view inside the transaction (`fuzz_read_back`: a read refreshes what was queued).
+  With a `test-hooks` build, a prober runs transactions alongside whose flushes are
+  skipped (`pg_tviews.test_skip_flush`), every other one a single statement: each commit
+  must fail with the queued work named, or have queued nothing (I2 of
+  `docs/proofs/theorems.md`). `pg_tviews.test_mutant=G3` (in `EXTRA_PGOPTIONS`) stops the
+  check from counting fan-out patches; the run must then fail (the `tv_fz_member` shape: a
+  team's name copied into its members, written through a table with no TVIEW of its own).
 - **`values`**: autocommit single-row writes of columns no TVIEW joins, filters or
   groups by, at `READ COMMITTED`. None may fail: such writes never wait for each other
   in a cycle (#263).
@@ -26,6 +32,11 @@ it commits. TVIEWs over a materialized view are left to the final check: `REFRES
 MATERIALIZED VIEW` writes its rows frozen, so an older snapshot sees them next to the
 TVIEW rows from before it. A stale TVIEW prints its first differing row, the table's
 version and the view's.
+
+The tables and TVIEWs belong to a role made for the run (`OWNER=role`, the default),
+neither superuser nor the clients, which connect as the superuser: the owner frame, the
+guards and row security act as in production. `OWNER=superuser` loads them as the
+connecting user.
 
 To chase a failure: `KEEP=1` keeps the database; narrow it with `MIX`;
 then write the race as an isolation spec (`test/isolation/specs/`). A statement trigger

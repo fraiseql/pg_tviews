@@ -655,6 +655,7 @@ pub(crate) fn queue_stats() -> crate::TViewResult<serde_json::Value> {
     #[cfg(feature = "test-hooks")]
     {
         json_value["cache_resets"] = crate::cache::resets().into();
+        json_value["pending_work"] = crate::queue::state::pending_count().into();
         json_value["patch_stats"] = crate::stats::patch_stats()
             .into_iter()
             .map(|(code, n)| (code, serde_json::Value::from(n)))

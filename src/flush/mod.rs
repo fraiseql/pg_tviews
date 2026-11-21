@@ -36,6 +36,10 @@ use crate::TViewResult;
 /// What a refresh, a catalog read or a propagation query returns, and
 /// [`crate::TViewError::DepthExceeded`] when propagation does not settle.
 pub fn flush_refresh_queue() -> TViewResult<()> {
+    #[cfg(feature = "test-hooks")]
+    if crate::config::test_skip_flush() {
+        return Ok(());
+    }
     // A refresh write can fire a flush trigger (a TVIEW's table read by another
     // TVIEW): that call returns at once, and the running flush drains what it
     // queued before finishing.

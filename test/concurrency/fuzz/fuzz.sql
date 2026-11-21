@@ -50,11 +50,26 @@ SELECT harness_create('tv_article', 'pk_article', $$
                                 FROM tv_remark r WHERE r.fk_post = p.pk_post), '[]')) AS data
   FROM tb_post p JOIN tv_author a ON a.pk_author = p.fk_author $$);
 
+-- A parent with no TVIEW of its own, its name copied into its members' rows: a
+-- write to it queues fan-out patches only, no key and no patch of its own row (G3).
+CREATE TABLE tb_fz_team (pk_fz_team int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                         name text);
+CREATE TABLE tb_fz_member (pk_fz_member int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                           fk_fz_team int NOT NULL REFERENCES tb_fz_team, name text);
+INSERT INTO tb_fz_team (pk_fz_team, name) SELECT g, 't' || g FROM generate_series(1, 4) g;
+INSERT INTO tb_fz_member (pk_fz_member, fk_fz_team, name)
+SELECT g, 1 + g % 4, 'm' || g FROM generate_series(1, 12) g;
+CREATE INDEX ON tb_fz_member (fk_fz_team);
+SELECT harness_create('tv_fz_member', 'pk_fz_member', $$
+  SELECT m.pk_fz_member, m.id, m.fk_fz_team,
+         jsonb_build_object('name', m.name, 'team', t.name) AS data
+  FROM tb_fz_member m JOIN tb_fz_team t ON t.pk_fz_team = m.fk_fz_team $$);
+
 -- ── generator ───────────────────────────────────────────────────────────────
--- One statement of the #263 schema: single-row value-only writes (`links` false)
--- or any.
+-- One statement of the #263 schema and of the team members: single-row
+-- value-only writes (`links` false) or any.
 CREATE FUNCTION fuzz_crossed(links boolean) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r int := floor(random() * CASE WHEN links THEN 8 ELSE 3 END)::int;
+DECLARE r int := floor(random() * CASE WHEN links THEN 9 ELSE 3 END)::int;
 BEGIN
     RETURN CASE r
     WHEN 0 THEN format('UPDATE tb_user SET bio = %L WHERE pk_user = %s', md5(random()::text), harness_i(8))
@@ -68,6 +83,7 @@ BEGIN
                        harness_pick('tb_comment', 'pk_comment', 1))
     WHEN 5 THEN format('DELETE FROM tb_comment WHERE pk_comment IN %s', harness_pick('tb_comment', 'pk_comment', 1))
     WHEN 6 THEN format('UPDATE tb_post SET fk_author = %s WHERE pk_post = %s', harness_i(8), harness_i(16))
+    WHEN 7 THEN format('UPDATE tb_fz_team SET name = %L WHERE pk_fz_team = %s', md5(random()::text), harness_i(4))
     ELSE format('UPDATE tb_user SET name = name || ''.'' WHERE pk_user = %s', harness_i(8))
     END;
 END $$;
@@ -95,6 +111,10 @@ DECLARE
     s record;
     diff text;
 BEGIN
+    -- The prober skips every flush (I2): nothing is refreshed to read back.
+    IF current_setting('pg_tviews.test_skip_flush', true) = 'on' THEN
+        RETURN;
+    END IF;
     SELECT h.tv, h.key INTO s FROM harness_shape h
     WHERE NOT EXISTS (
         SELECT 1 FROM tviews.pg_tview_meta m, pg_catalog.pg_depend d

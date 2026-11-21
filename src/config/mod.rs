@@ -91,6 +91,8 @@ static TEST_DIAG_21000_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 static TEST_DUPLICATE_SOURCE_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 #[cfg(feature = "test-hooks")]
 static TEST_FFI_FAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+#[cfg(feature = "test-hooks")]
+static TEST_SKIP_FLUSH_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 #[cfg(feature = "test-mutants")]
 static TEST_MUTANT_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
@@ -233,6 +235,16 @@ fn register_diagnostics() {
     );
     #[cfg(feature = "test-hooks")]
     GucRegistry::define_bool_guc(
+        c"pg_tviews.test_skip_flush",
+        c"TEST ONLY: make every flush return without applying the queued work.",
+        c"Leaves the transaction's work queued, as a missing flush trigger would, so a \
+          test can check that its commit fails (I2). Never enable in production.",
+        &TEST_SKIP_FLUSH_GUC,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    #[cfg(feature = "test-hooks")]
+    GucRegistry::define_bool_guc(
         c"pg_tviews.test_diag_21000",
         c"TEST ONLY: log what a refresh upsert failing with 21000 conflicted with.",
         c"Runs each refresh upsert in a subtransaction and, on 21000, logs its keys, the \
@@ -365,6 +377,13 @@ pub fn test_diag_21000() -> bool {
 #[must_use]
 pub fn test_ffi_fault() -> bool {
     TEST_FFI_FAULT_GUC.get()
+}
+
+/// TEST ONLY: whether every flush returns without applying the queued work.
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn test_skip_flush() -> bool {
+    TEST_SKIP_FLUSH_GUC.get()
 }
 
 /// TEST ONLY: whether every refresh source returns each row twice.
