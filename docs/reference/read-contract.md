@@ -47,6 +47,7 @@ Every role can read all three.
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it, and so does `ALTER EXTENSION pg_tviews UPDATE`, which re-derives every TVIEW |
 | `references` | `jsonb` | each output column that holds another TVIEW's key, proven by a `FOREIGN KEY` → that TVIEW and how to read by it (below); `{}` for none. `references` is a reserved word: qualify it (`r.references`) or quote it |
 | `typename` | `text` | the GraphQL type name of the rows, as `pg_tviews_flush_and_report()` and the change feed name them: the `typename` option, else the PascalCase of the entity; unique among TVIEWs. A collection key is `<child typename>.<reference column>` |
+| `time_boundary` | `timestamptz` | the instant the time refresh last brought the rows to (its transaction's `now()`); NULL for a TVIEW that reads no time, or that it never refreshed (below) |
 
 Columns removed in contract version 2, now `options` keys:
 
@@ -106,7 +107,8 @@ or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME
 `full_refresh` policies such a TVIEW exists only with the option
 `time_refresh: "external"`;
 `tviews.pg_tviews_refresh_time_dependent()` brings it up to date
-([DDL](ddl.md#time-dependent-tviews)).
+([DDL](ddl.md#time-dependent-tviews)), and records the instant it was brought to in
+**`time_boundary`**.
 
 **`managed_indexes`** are the indexes pg_tviews created on the TVIEW's table: on `id`
 and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, the one on

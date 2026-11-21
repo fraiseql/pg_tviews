@@ -424,6 +424,25 @@ pub fn owned_time_dependent() -> TViewResult<Vec<String>> {
     )
 }
 
+/// Record that the time refresh brought `entity`'s rows to this transaction's
+/// `now()`, as the extension's owner: the caller's right to refresh it was checked.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn record_time_boundary(entity: &str) -> TViewResult<()> {
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_boundary AS b (entity, boundary) \
+                 VALUES ($1, pg_catalog.now()) \
+                 ON CONFLICT (entity) DO UPDATE SET boundary = EXCLUDED.boundary",
+                crate::utils::ext_schema()
+            ),
+            &[crate::utils::spi::text(entity)],
+        )
+    })
+}
+
 /// TVIEWs whose backing view's own rule depends on column `column` of `relid`
 /// (the column-level `pg_depend` entries of its rewrite rule): the definitions
 /// that name the column, as `(entity, schema, view)`. A view the TVIEW reads

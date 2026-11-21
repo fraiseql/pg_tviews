@@ -157,7 +157,9 @@ SELECT
          FROM @extschema@.references x
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
-    m.typename
+    m.typename,
+    (SELECT b.boundary FROM @extschema@.pg_tview_time_boundary b
+     WHERE b.entity = m.entity) AS time_boundary
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

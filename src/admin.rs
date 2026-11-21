@@ -58,6 +58,9 @@ pub(crate) fn refresh_time_dependent(
         }
         refreshed.push(crate::utils::qualified_relname_from_oid(meta.tview_oid)?);
         crate::flush::flush_refresh_queue()?;
+        if !crate::suspend::is_suspended() {
+            crate::catalog::queries::record_time_boundary(&meta.entity_name)?;
+        }
     }
     Ok(refreshed)
 }

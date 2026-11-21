@@ -779,17 +779,21 @@ and `options->>'time_refresh'` the declaration. Writes refresh it as usual; at t
 something outside calls
 
 ```sql fragment
-SELECT * FROM tviews.pg_tviews_refresh_time_dependent();               -- every one you own
+CALL tviews.pg_tviews_time_boundary();                                   -- every one you own
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent('public.tv_contract');
 ```
 
-which refreshes it in full, as a write to a `full_refresh` table does (the TVIEWs
-reading it follow), and returns the TVIEWs refreshed. With pg_cron, just after
-midnight:
+Each compares the TVIEW's rows with its view's at that instant and refreshes the rows
+that differ, as writes refresh theirs (the TVIEWs reading them follow): a writer waits
+only when it writes a row the boundary changes, and only for that row. The procedure
+refreshes every time-dependent TVIEW you own, dependencies first, and commits after
+each; the function does one TVIEW, or all of them in your transaction
+(`pg_tviews_refresh_time_dependent()`), and returns the TVIEWs refreshed.
+`tviews.registry.time_boundary` is the instant each TVIEW was last brought to: the
+refreshing transaction's `now()`. With pg_cron, just after midnight:
 
 ```sql fragment
-SELECT cron.schedule('tviews-day', '1 0 * * *',
-                     'SELECT tviews.pg_tviews_refresh_time_dependent()');
+SELECT cron.schedule('tviews-day', '1 0 * * *', 'CALL tviews.pg_tviews_time_boundary()');
 ```
 
 `time_refresh` on a definition that reads no time is refused, at creation as when

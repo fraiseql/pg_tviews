@@ -40,6 +40,7 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reregister_all(strict boolean DEFAULT false)`](#pg_tviews_reregister_all) | `TABLE(entity text, status text)` | operator, and owner of each TVIEW |
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
+| [`pg_tviews_time_boundary()`](#pg_tviews_time_boundary) (procedure) | — | owner of each TVIEW |
 | [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` and `SELECT` on `source`, `USAGE` on its schema |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
 | [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
@@ -325,10 +326,13 @@ SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]);
 tviews.pg_tviews_refresh_time_dependent(tview text DEFAULT NULL) RETURNS SETOF text
 ```
 
-Refreshes in full the TVIEWs whose definitions read the current time
-(`tviews.registry.time_dependent`): `tview`, or every such TVIEW the caller owns.
-The TVIEWs reading them follow in the same flush. Returns the TVIEWs refreshed,
-dependencies first. A TVIEW that reads no time is `22023`.
+Brings up to date the TVIEWs whose definitions read the current time
+(`tviews.registry.time_dependent`): `tview`, or every such TVIEW the caller owns, in
+the caller's transaction. Each TVIEW's rows are compared with its view's, as its
+owner and without a lock, and the rows that differ are refreshed through the flush,
+as a write's are, under their value locks; the TVIEWs reading them follow. Each
+records the instant it was brought to, `tviews.registry.time_boundary`. Returns the
+TVIEWs refreshed, dependencies first. A TVIEW that reads no time is `22023`.
 Call it at the boundary the rows depend on, from pg_cron or the application
 ([Time-dependent TVIEWs](ddl.md#time-dependent-tviews)).
 
@@ -339,6 +343,18 @@ SELECT tviews.pg_tviews_create_or_replace('tv_recent_post', $$
     FROM tb_post $$, '{"time_refresh": "external"}');
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent();
 ```
+
+### pg_tviews_time_boundary
+
+```text
+CALL tviews.pg_tviews_time_boundary()
+```
+
+The time refresh of every time-dependent TVIEW the caller owns, one transaction each,
+dependencies first: `pg_tviews_refresh_time_dependent(<tview>)`, then `COMMIT`. A
+writer waits at most for the rows of the TVIEW being refreshed. A procedure: `CALL`
+it outside a transaction block, from pg_cron or the application
+([Time-dependent TVIEWs](ddl.md#time-dependent-tviews)).
 
 ### pg_tviews_refresh_all
 

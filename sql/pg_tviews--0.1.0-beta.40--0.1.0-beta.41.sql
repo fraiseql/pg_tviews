@@ -26,10 +26,166 @@ AS 'MODULE_PATHNAME', 'pg_tviews_row_id_wrapper';
 SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log', '');
 SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log_log_id_seq', '');
 
+-- The instant each time-dependent TVIEW's rows were last brought to by the
+-- time refresh: its transaction's now(). Its own table, not a column of
+-- pg_tview_meta: a write there invalidates every backend's cached metadata.
+CREATE TABLE @extschema@.pg_tview_time_boundary (
+    entity TEXT NOT NULL PRIMARY KEY
+        REFERENCES @extschema@.pg_tview_meta (entity) ON DELETE CASCADE,
+    boundary TIMESTAMPTZ NOT NULL
+);
+COMMENT ON TABLE @extschema@.pg_tview_time_boundary IS
+    'Internal: the instant the time refresh last brought each TVIEW to; may change in any release';
+GRANT SELECT ON @extschema@.pg_tview_time_boundary TO PUBLIC;
+SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_time_boundary', '');
+
+-- registry.time_boundary reads it.
+CREATE OR REPLACE VIEW @extschema@.registry AS
+SELECT
+    n.nspname::text AS schema,
+    COALESCE(c.relname::text, 'tv_' || m.entity) AS name,
+    m.entity,
+    m.definition AS query,
+    CASE WHEN c.oid IS NOT NULL THEN pg_catalog.jsonb_build_object(
+        'logged', c.relpersistence = 'p',
+        'fillfactor', COALESCE(
+            (SELECT o.option_value::integer
+             FROM pg_catalog.pg_options_to_table(c.reloptions) o
+             WHERE o.option_name = 'fillfactor'),
+            100),
+        'data_gin_index', EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_index i
+            JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+            JOIN pg_catalog.pg_am am ON am.oid = ic.relam AND am.amname = 'gin'
+            JOIN pg_catalog.pg_attribute a
+              ON a.attrelid = c.oid AND a.attname = 'data' AND a.attnum = i.indkey[0]
+            WHERE i.indrelid = c.oid AND i.indnatts = 1 AND i.indpred IS NULL
+              AND i.indisvalid AND ic.relname = ANY (m.managed_index_names)),
+        'data_compression', (
+            SELECT CASE a.attcompression WHEN 'l' THEN 'lz4' WHEN 'p' THEN 'pglz'
+                   ELSE pg_catalog.current_setting('default_toast_compression') END
+            FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'data'),
+        'data_storage', (
+            SELECT CASE a.attstorage WHEN 'm' THEN 'main' WHEN 'e' THEN 'external'
+                   WHEN 'x' THEN 'extended' ELSE 'plain' END
+            FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'data'),
+        'toast_tuple_target',
+            (SELECT o.option_value::integer
+             FROM pg_catalog.pg_options_to_table(c.reloptions) o
+             WHERE o.option_name = 'toast_tuple_target'),
+        'indexes', m.declared_indexes,
+        'group_keys', m.group_keys,
+        'uncascaded_policy', m.uncascaded_policy,
+        'uncascaded_tables', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(t.relation::pg_catalog.text, t.policy)
+             FROM ROWS FROM (pg_catalog.unnest(m.uncascaded_table_oids),
+                             pg_catalog.unnest(m.uncascaded_table_policies)) AS t(relation, policy)),
+            '{}'),
+        'function_reads', COALESCE(
+            (SELECT pg_catalog.jsonb_object_agg(f.function, f.tables)
+             FROM (SELECT r.function,
+                          COALESCE(pg_catalog.jsonb_agg(r.relation::pg_catalog.text ORDER BY r.n)
+                                       FILTER (WHERE r.relation IS NOT NULL),
+                                   '[]') AS tables
+                   FROM ROWS FROM (pg_catalog.unnest(m.function_read_functions),
+                                   pg_catalog.unnest(m.function_read_tables))
+                        WITH ORDINALITY AS r(function, relation, n)
+                   GROUP BY r.function) f),
+            '{}'),
+        'time_refresh', m.time_refresh,
+        'typename', m.graphql_typename) END AS options,
+    v.oid::pg_catalog.regclass AS view,
+    CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
+         ELSE ARRAY(SELECT c->>'name'
+                    FROM pg_catalog.jsonb_array_elements(m.identity->'columns') c) END AS identity,
+    COALESCE(
+        (SELECT pg_catalog.array_agg(b.oid::pg_catalog.regclass ORDER BY bn.nspname, b.relname)
+         FROM (SELECT DISTINCT r.relid FROM @extschema@.reads r
+               WHERE r.entity = m.entity) x
+         JOIN pg_catalog.pg_class b ON b.oid = x.relid AND b.relkind IN ('r', 'p', 'f', 'm')
+         JOIN pg_catalog.pg_namespace bn ON bn.oid = b.relnamespace),
+        '{}') AS base_tables,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(e.relid::pg_catalog.regclass::pg_catalog.text, e.kind)
+         FROM @extschema@.pg_tviews_plan_tables(m.plan) e),
+        '{}') AS cascade_kinds,
+    m.uncascaded_oids AS uncascaded_tables,
+    m.time_dependent,
+    CASE WHEN c.oid IS NOT NULL THEN ARRAY(
+        SELECT i.indexrelid::pg_catalog.regclass
+        FROM pg_catalog.pg_index i
+        JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+        WHERE i.indrelid = c.oid AND ic.relname = ANY (m.managed_index_names)
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                          WHERE k.conindid = i.indexrelid)
+        ORDER BY ic.relname) END AS managed_indexes,
+    m.needs_reregister,
+    COALESCE(
+        (SELECT pg_catalog.jsonb_object_agg(x.column_name, pg_catalog.jsonb_build_object(
+                    'entity', x.parent, 'column', x.parent_column, 'unique', x.is_unique,
+                    'nullable', x.is_nullable, 'index', x.index_name,
+                    'order', pg_catalog.to_jsonb(x.order_by)))
+         FROM @extschema@.references x
+         WHERE x.entity = m.entity AND x.chosen),
+        '{}') AS references,
+    m.typename,
+    (SELECT b.boundary FROM @extschema@.pg_tview_time_boundary b
+     WHERE b.entity = m.entity) AS time_boundary
+FROM @extschema@.pg_tview_meta m
+LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
+LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_class v ON v.oid = m.view_oid;
+
+-- pg_tviews_time_boundary(): the time refresh of every time-dependent TVIEW the
+-- caller owns, each in its own transaction, dependencies first: a writer waits at
+-- most for one TVIEW's rows, and each TVIEW's boundary is recorded as it commits.
+-- A procedure, so it must be CALLed outside a transaction block. It has no SET
+-- search_path: a procedure with a SET clause cannot COMMIT. It runs as its caller,
+-- and names every object with its schema.
+CREATE PROCEDURE @extschema@.pg_tviews_time_boundary()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    next_tview TEXT;
+BEGIN
+    FOR next_tview IN
+        WITH RECURSIVE edges(entity, dependency) AS (
+            SELECT DISTINCT r.entity, m.entity
+            FROM @extschema@.reads r
+            JOIN @extschema@.pg_tview_meta m
+              ON r.relid IN (m.view_oid::oid, m.table_oid::oid)
+            WHERE m.entity <> r.entity
+        ),
+        depth(entity, level) AS (
+            SELECT m.entity, 0 FROM @extschema@.pg_tview_meta m
+          UNION
+            SELECT e.entity, d.level + 1
+            FROM depth d JOIN edges e ON e.dependency = d.entity
+            WHERE d.level < 100
+        )
+        SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname)
+        FROM depth d
+        JOIN @extschema@.pg_tview_meta m ON m.entity = d.entity
+        JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE m.time_dependent AND pg_catalog.pg_has_role(c.relowner, 'USAGE')
+        GROUP BY d.entity, n.nspname, c.relname
+        ORDER BY max(d.level), d.entity
+    LOOP
+        PERFORM @extschema@.pg_tviews_refresh_time_dependent(next_tview);
+        COMMIT;
+    END LOOP;
+END;
+$$;
+
+COMMENT ON PROCEDURE @extschema@.pg_tviews_time_boundary() IS
+'Refresh every time-dependent TVIEW the caller owns at the time boundary, one transaction each, dependencies first';
+
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
 RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
-AS 'SELECT 14';
+AS 'SELECT 15';
 
 -- Every TVIEW is re-derived inside the update, as its owner. The update does not
 -- depend on what a TVIEW's owner chose: a TVIEW that cannot be re-derived keeps
