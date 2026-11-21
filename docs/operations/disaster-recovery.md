@@ -12,8 +12,8 @@ This document outlines backup strategies, recovery procedures, and disaster reco
 - `tviews.registry` (each TVIEW's `schema`, `name`, `query` and `options`: enough to
   recreate it with `pg_tviews_create_or_replace`)
 - `pg_tview_meta` table (TVIEW definitions and metadata)
-- `pg_tview_audit_log` table (audit trail): not part of `pg_dump` output, it records
-  the operations of this cluster; copy it with `COPY` if you keep it
+- `pg_tview_audit_log` table (audit trail): dumped with its sequence as extension
+  configuration, so `pg_dump` carries its rows and a restore continues its `log_id`s
 - Base tables (`tb_*`) containing your data
 
 **Optional (Can Recreate)**:

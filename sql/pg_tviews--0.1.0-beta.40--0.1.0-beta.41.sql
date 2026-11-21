@@ -22,6 +22,10 @@ IMMUTABLE STRICT PARALLEL SAFE
 LANGUAGE c
 AS 'MODULE_PATHNAME', 'pg_tviews_row_id_wrapper';
 
+-- The audit log and its sequence are dumped as extension configuration (E1-12).
+SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log', '');
+SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log_log_id_seq', '');
+
 CREATE OR REPLACE FUNCTION @extschema@.pg_tviews_catalog_revision()
 RETURNS integer
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
