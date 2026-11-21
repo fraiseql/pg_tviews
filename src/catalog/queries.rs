@@ -424,6 +424,40 @@ pub fn owned_time_dependent() -> TViewResult<Vec<String>> {
     )
 }
 
+/// Every TVIEW whose definition reads the current time.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT m.entity::text FROM {} m WHERE m.time_dependent ORDER BY m.entity",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// The TVIEWs whose definitions read the current time that the caller does not own
+/// (nor may change as a member of its owner's role), schema-qualified: those
+/// [`owned_time_dependent`] leaves out.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn unowned_time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
+             FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE m.time_dependent AND NOT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+             ORDER BY 1",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
 /// Record that the time refresh brought `entity`'s rows to this transaction's
 /// `now()`, as the extension's owner: the caller's right to refresh it was checked.
 ///

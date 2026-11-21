@@ -19,6 +19,20 @@ pub(crate) fn owned_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catal
     Ok(metas)
 }
 
+/// Every TVIEW whose definition reads the current time, whoever owns it.
+///
+/// # Errors
+/// Returns an error if the catalog cannot be read.
+pub(crate) fn all_time_dependent() -> TViewResult<Vec<std::rc::Rc<crate::catalog::TviewMeta>>> {
+    let mut metas = Vec::new();
+    for entity in crate::catalog::queries::time_dependent()? {
+        if let Some(meta) = crate::catalog::TviewMeta::load_by_entity(&entity)? {
+            metas.push(meta);
+        }
+    }
+    Ok(metas)
+}
+
 /// Refresh the rows of `chosen` TVIEWs, which read the current time, that differ
 /// from their views' at this instant ([`crate::refresh::full::differing_keys`]),
 /// dependencies first, each through the flush as a write's keys are, and the

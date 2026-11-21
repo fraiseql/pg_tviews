@@ -136,8 +136,8 @@ fn pg_tviews_resync(
 }
 
 /// Bring the TVIEWs whose definitions read the current time up to date: `tview`,
-/// or every such TVIEW the caller owns. Returns the TVIEWs refreshed,
-/// dependencies first.
+/// or every such TVIEW the caller owns; the others are named in a WARNING.
+/// Returns the TVIEWs refreshed, dependencies first.
 #[pg_extern]
 fn pg_tviews_refresh_time_dependent(
     tview: default!(Option<&str>, "NULL"),
@@ -146,26 +146,66 @@ fn pg_tviews_refresh_time_dependent(
     crate::revision::check();
     crate::owner::refuse_in_frame("pg_tviews_refresh_time_dependent")?;
     crate::concurrency::require_read_committed();
-    let chosen = match tview {
-        Some(name) => {
-            let meta = super::owned_meta(name)?;
-            if !meta.time_dependent {
-                return Err(TViewError::InvalidInput {
-                    parameter: "tview".to_string(),
-                    reason: format!(
-                        "{} does not read the time: nothing to refresh",
-                        super::relation(&meta)
-                    ),
-                }
-                .into());
-            }
-            vec![meta]
+    let chosen = if let Some(name) = tview {
+        vec![reading_time(super::owned_meta(name)?)?]
+    } else {
+        let skipped = crate::catalog::queries::unowned_time_dependent()?;
+        if !skipped.is_empty() {
+            ereport!(
+                PgLogLevel::WARNING,
+                PgSqlErrorCode::ERRCODE_WARNING,
+                format!(
+                    "time-dependent TVIEWs not refreshed, owned by other roles: {}",
+                    skipped.join(", ")
+                ),
+                "Run it as their owner, or grant \
+                 tviews.pg_tviews_refresh_time_dependent_all() to the role that runs it \
+                 (docs/user-guides/operators.md)."
+            );
         }
-        None => crate::admin::owned_time_dependent()?,
+        crate::admin::owned_time_dependent()?
     };
     Ok(SetOfIterator::new(crate::admin::refresh_time_dependent(
         &chosen,
     )?))
+}
+
+/// An operator's [`pg_tviews_refresh_time_dependent`]: `tview`, or every TVIEW whose
+/// definition reads the current time, whoever owns it, each refreshed as its
+/// owner. Not executable by `PUBLIC`.
+#[pg_extern]
+fn pg_tviews_refresh_time_dependent_all(
+    tview: default!(Option<&str>, "NULL"),
+) -> Result<SetOfIterator<'static, String>, ErrorReport> {
+    let _path = crate::owner::CatalogPath::pin();
+    crate::revision::check();
+    crate::owner::refuse_in_frame("pg_tviews_refresh_time_dependent_all")?;
+    crate::concurrency::require_read_committed();
+    let chosen = if let Some(name) = tview {
+        vec![reading_time(super::resolve::resolve(name)?)?]
+    } else {
+        crate::admin::all_time_dependent()?
+    };
+    Ok(SetOfIterator::new(crate::admin::refresh_time_dependent(
+        &chosen,
+    )?))
+}
+
+/// `meta`, a TVIEW whose definition reads the current time; any other is `22023`.
+fn reading_time(
+    meta: std::rc::Rc<crate::catalog::TviewMeta>,
+) -> Result<std::rc::Rc<crate::catalog::TviewMeta>, TViewError> {
+    if meta.time_dependent {
+        Ok(meta)
+    } else {
+        Err(TViewError::InvalidInput {
+            parameter: "tview".to_string(),
+            reason: format!(
+                "{} does not read the time: nothing to refresh",
+                super::relation(&meta)
+            ),
+        })
+    }
 }
 
 /// Create the propagation indexes `(<lookup>, <identity>)` `tview` is missing,

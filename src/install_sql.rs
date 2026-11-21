@@ -64,6 +64,7 @@ extension_sql_file!(
     name = "time_boundary",
     requires = [
         pg_tviews_refresh_time_dependent,
+        pg_tviews_refresh_time_dependent_all,
         "create_metadata_tables",
         "tview_reads"
     ],
