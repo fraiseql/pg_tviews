@@ -8,7 +8,8 @@ What `pg_tviews_refresh_time_dependent()` costs the writers running while it run
 - `save_*.sql`: the pgbench scripts of the 40/20/20/20 mix (placement, asset, site, add-on).
 - `run.sh <label>`: loads the database afresh, runs 8 writers for `DURATION` seconds
   (600), calls the time refresh once `AT` seconds in (180), as one call (`FORM=one`) or
-  one transaction per TVIEW (`FORM=per_tview`), and keeps per-transaction latencies,
+  one transaction per TVIEW (`FORM=per_tview`), or `CALL tviews.pg_tviews_time_boundary()`
+  (`FORM=call`, the same in one procedure), and keeps per-transaction latencies,
   lock waits sampled every 100 ms, failed saves and refreshes, and `tviews.stats`.
 - `summarize.py OUT_DIR`: per run and save, p50/p95/p99 of the saves that overlapped the
   refresh against the others, the failures, the lock waits by tag (`0x5476` value,

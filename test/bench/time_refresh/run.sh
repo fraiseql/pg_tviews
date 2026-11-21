@@ -4,6 +4,7 @@
 # called once AT seconds in, in one of two forms:
 #   FORM=one         one call refreshing every time-dependent TVIEW, one transaction
 #   FORM=per_tview   one transaction per TVIEW, dependencies first
+#   FORM=call        CALL tviews.pg_tviews_time_boundary(): the same, in one procedure
 # Per-transaction latencies (pgbench -l), lock waits sampled every 100 ms and
 # tviews.stats before and after go to OUT/<label>/; summarize.py reads them. A save or a
 # refresh that fails (a deadlock, 40P01) is recorded, not retried.
@@ -45,6 +46,8 @@ case "$FORM" in
       "${psql[@]}" -d "$DB" -At -c "SELECT tviews.pg_tviews_refresh_time_dependent('$tv')" \
         >> "$dir/refresh.out" 2>&1 || echo "FAILED $tv" >> "$dir/refresh.out"
     done ;;
+  call) "${psql[@]}" -d "$DB" -At -c "CALL tviews.pg_tviews_time_boundary()" \
+          > "$dir/refresh.out" 2>&1 || echo "FAILED all" >> "$dir/refresh.out" ;;
   *) echo "unknown FORM $FORM" >&2; exit 2 ;;
 esac
 end=$(date +%s.%N)
