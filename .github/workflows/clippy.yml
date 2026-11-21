@@ -20,8 +20,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Check formatting
         run: cargo fmt --check
-      - name: Check every PostgreSQL callback carries #[pg_guard]
+      - name: Check every PostgreSQL callback and imported backend function is guarded
         run: scripts/check-ffi-guards.sh
+      - name: Check the FFI check flags every form it should
+        run: test/scripts/check-ffi-guards-test.sh
       - name: Check the refresh path's modules only call downward
         run: scripts/check-layers.sh
       - name: Check no catalog SQL resolves an object name

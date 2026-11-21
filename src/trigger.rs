@@ -480,12 +480,15 @@ fn changed_columns(trigger: &PgTrigger, table: pg_sys::Oid) -> Option<Changed> {
             } else if old_isnull {
                 false // both NULL
             } else {
-                !crate::utils::datum_is_equal(
-                    old_datum,
-                    new_datum,
-                    att.attbyval,
-                    i32::from(att.attlen),
-                )
+                #[cfg(feature = "test-hooks")]
+                let (byval, len) = if crate::config::test_ffi_fault() {
+                    (false, -3)
+                } else {
+                    (att.attbyval, i32::from(att.attlen))
+                };
+                #[cfg(not(feature = "test-hooks"))]
+                let (byval, len) = (att.attbyval, i32::from(att.attlen));
+                !crate::utils::datum_is_equal(old_datum, new_datum, byval, len)
             };
             if differs {
                 changed.push((att.name().to_string(), i16::try_from(i + 1).ok()?));
