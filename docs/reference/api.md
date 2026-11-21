@@ -571,8 +571,8 @@ One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
 no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`,
-`tv_policies`, `frame_settings`, `reregister` (TVIEWs marked `needs_reregister`), `triggers`
-and `tviews`. A check that cannot run is
+`tv_policies`, `frame_settings`, `tv_writers`, `change_feed`, `reregister` (TVIEWs marked
+`needs_reregister`), `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
 `function_paths` is an `ERROR` listing the functions a TVIEW's refresh runs (those its
@@ -584,6 +584,15 @@ before the rule stays, and is reported here and warned about whenever it is re-d
 `frame_settings` lists, per TVIEW, the custom settings its definition reads by name and the
 value its refreshes read (its `settings` option's, else the server's, the database's or `ALTER
 ROLE ALL`'s), never a session's; a `WARNING` when one is unset there.
+
+`tv_writers` is a `WARNING` listing, per TVIEW table, each role other than its owner
+granted `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on it (`PUBLIC` included). pg_tviews is a
+TVIEW table's only writer and its guard refuses every other write: revoke them.
+
+`change_feed` is `OK` while `pg_tviews.publish_changes` is `off` or `types`. With `rows`, it
+is a `WARNING` naming each login role, not a superuser, that may connect to the database
+but not `SELECT` a TVIEW, with the TVIEWs: `LISTEN` takes no privilege, so it receives the
+keys of their changed rows.
 
 `owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
 what it reads: the TVIEW's owner or the owner of a view it reads through, lacking

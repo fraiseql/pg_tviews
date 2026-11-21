@@ -20,6 +20,7 @@
 //! | `pg_tviews.test_skip_ctas_intercept` | bool | false | superuser, hidden | Test builds only (`test-hooks`) |
 //! | `pg_tviews.test_diag_21000` | bool | false | superuser, hidden | Test builds only: log what a 21000 upsert conflicted with (#278) |
 //! | `pg_tviews.test_duplicate_source` | bool | false | superuser, hidden | Test builds only: every refresh source returns each row twice |
+//! | `pg_tviews.test_ffi_fault` | bool | false | superuser, hidden | Test builds only: the row trigger's datum comparison passes an invalid type length (E1-13) |
 //! | `pg_tviews.auto_rebuild_databases` | string | `*` | postmaster | Databases whose reset UNLOGGED TVIEWs are rebuilt after recovery: `*` every one, a list, or empty for none |
 
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
@@ -88,6 +89,8 @@ static TEST_SKIP_CTAS_INTERCEPT_GUC: GucSetting<bool> = GucSetting::<bool>::new(
 static TEST_DIAG_21000_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 #[cfg(feature = "test-hooks")]
 static TEST_DUPLICATE_SOURCE_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
+#[cfg(feature = "test-hooks")]
+static TEST_FFI_FAULT_GUC: GucSetting<bool> = GucSetting::<bool>::new(false);
 #[cfg(feature = "test-mutants")]
 static TEST_MUTANT_GUC: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(None);
@@ -220,6 +223,16 @@ fn register_diagnostics() {
     );
     #[cfg(feature = "test-hooks")]
     GucRegistry::define_bool_guc(
+        c"pg_tviews.test_ffi_fault",
+        c"TEST ONLY: make the row trigger's datum comparison raise an ERROR.",
+        c"Passes an invalid type length to datumIsEqual, as corrupt data would, to test \
+          that the ERROR unwinds through pg_tviews' frames. Never enable in production.",
+        &TEST_FFI_FAULT_GUC,
+        GucContext::Suset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    #[cfg(feature = "test-hooks")]
+    GucRegistry::define_bool_guc(
         c"pg_tviews.test_diag_21000",
         c"TEST ONLY: log what a refresh upsert failing with 21000 conflicted with.",
         c"Runs each refresh upsert in a subtransaction and, on 21000, logs its keys, the \
@@ -345,6 +358,13 @@ pub fn test_skip_ctas_intercept() -> bool {
 #[must_use]
 pub fn test_diag_21000() -> bool {
     TEST_DIAG_21000_GUC.get()
+}
+
+/// TEST ONLY: whether the row trigger's datum comparison raises (E1-13).
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn test_ffi_fault() -> bool {
+    TEST_FFI_FAULT_GUC.get()
 }
 
 /// TEST ONLY: whether every refresh source returns each row twice.

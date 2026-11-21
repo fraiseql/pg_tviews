@@ -16,6 +16,11 @@ CREATE INDEX idx_audit_log_entity_time ON @extschema@.pg_tview_audit_log(entity,
 
 COMMENT ON TABLE @extschema@.pg_tview_audit_log IS 'Audit log for TVIEW operations';
 
+-- Dumped as extension configuration, with its sequence: pg_dump skips the rows of an
+-- extension's tables unless marked, and a restore would lose the audit trail (E1-12).
+SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log', '');
+SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_audit_log_log_id_seq', '');
+
 -- Writes buffered audit entries. Only the extension owner may call it:
 -- the library calls it as that owner, for whichever role triggered the entries, and
 -- performed_by is the session user, whatever role the caller has set.

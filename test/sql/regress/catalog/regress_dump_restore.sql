@@ -92,8 +92,23 @@ CREATE INDEX post_title ON app.tv_post ((data->>'title'));
 ALTER TABLE app.tv_post ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY;
 CREATE POLICY tviews_owner ON app.tv_post FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
 CREATE POLICY readers ON app.tv_post FOR SELECT TO PUBLIC USING (pk_post > 0);
+-- The audit trail (E1-12): an audited create, whose entry a restore brings back (the
+-- TVIEW itself is dropped again: the counts below are of the two TVIEWs above).
+SET pg_tviews.audit_enabled = on;
+CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
+CREATE TABLE tv_note AS SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM tb_note;
+RESET pg_tviews.audit_enabled;
+DROP TABLE tv_note;
+DROP TABLE tb_note;
+SELECT count(*) AS audit_before, max(log_id) AS audit_last FROM tviews.pg_tview_audit_log \gset
+\if `test :audit_before -gt 0 && echo true || echo false`
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'E1-12 FAIL: the audited create wrote no audit entry'; END $$;
+\endif
+
 SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname) AS managed_before
 FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i \gset
+
 
 -- ========================================================================
 -- Round trip: pg_dump -Fc | pg_restore --exit-on-error into a fresh database
@@ -108,6 +123,16 @@ FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i
 \set restored :DBNAME '_restored'
 \c :restored
 SET client_min_messages TO WARNING;
+
+-- The audit trail came back, and the next entry follows the restored ones.
+SELECT count(*) = :audit_before
+       AND nextval(pg_get_serial_sequence('tviews.pg_tview_audit_log', 'log_id')) > :audit_last
+       AS audit_ok
+FROM tviews.pg_tview_audit_log \gset
+\if :audit_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'E1-12 FAIL: the audit log or its sequence was not restored'; END $$;
+\endif
 
 SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::jsonb = :'author_options'::jsonb
        AND :'author_options'::jsonb @> '{"data_storage": "external", "toast_tuple_target": 3000, "indexes": [["name"]]}'

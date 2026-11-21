@@ -6,7 +6,8 @@ pg_tviews needs no backup mechanism of its own: everything it stores is in ordin
 PostgreSQL tables. What matters is how each PostgreSQL backup type treats two things:
 
 - **The catalog** `tviews.pg_tview_meta`: an extension
-  table registered with `pg_extension_config_dump`, so `pg_dump` includes its rows.
+  table registered with `pg_extension_config_dump`, so `pg_dump` includes its rows. So
+  is the audit log, `tviews.pg_tview_audit_log`, with its sequence.
 - **The TVIEW tables** `tv_*`: derived data that can always be rebuilt from the base
   tables. They are LOGGED by default and restored like any table. A TVIEW declared
   `logged: false` is UNLOGGED: it writes no WAL and is **empty** after any restore

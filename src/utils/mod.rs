@@ -178,23 +178,51 @@ pub fn quote_literal(text: &str) -> String {
     }
 }
 
+// Backend functions absent from the pgrx bindings, resolved at `.so` load time like
+// every other `pg_sys` symbol. Each is called only through the guarded wrapper
+// below it (`scripts/check-ffi-guards.sh`): an ERROR raised inside becomes a Rust
+// panic that unwinds pg_tviews' frames, instead of a longjmp over them.
 unsafe extern "C" {
-    /// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`) — exported
-    /// by the backend but absent from the pgrx bindings; resolved at `.so` load
-    /// time like every other `pg_sys` symbol. Compares datums for physical equality.
     #[link_name = "datumIsEqual"]
-    pub(crate) fn datum_is_equal(
+    fn raw_datum_is_equal(
         value1: pg_sys::Datum,
         value2: pg_sys::Datum,
         typ_by_val: bool,
         typ_len: i32,
     ) -> bool;
 
-    /// `PostgreSQL`'s `contain_aggs_of_level` (`src/backend/rewrite/rewriteManip.c`),
-    /// exported but absent from the pgrx bindings: whether `node` holds an aggregate
-    /// or `GROUPING()` of the query `levelsup` levels above it.
     #[link_name = "contain_aggs_of_level"]
-    pub(crate) fn contain_aggs_of_level(node: *mut pg_sys::Node, levelsup: i32) -> bool;
+    fn raw_contain_aggs_of_level(node: *mut pg_sys::Node, levelsup: i32) -> bool;
+}
+
+/// `PostgreSQL`'s `datumIsEqual` (`src/backend/utils/adt/datum.c`): whether two
+/// datums are physically equal. It raises on an invalid `typ_len` (corrupt data).
+///
+/// # Safety
+/// Both datums are valid values of a type of `typ_by_val` and `typ_len`.
+pub(crate) unsafe fn datum_is_equal(
+    value1: pg_sys::Datum,
+    value2: pg_sys::Datum,
+    typ_by_val: bool,
+    typ_len: i32,
+) -> bool {
+    // SAFETY: the caller's contract; the boundary turns an ERROR into a panic.
+    unsafe {
+        pg_sys::ffi::pg_guard_ffi_boundary(|| {
+            raw_datum_is_equal(value1, value2, typ_by_val, typ_len)
+        })
+    }
+}
+
+/// `PostgreSQL`'s `contain_aggs_of_level` (`src/backend/rewrite/rewriteManip.c`):
+/// whether `node` holds an aggregate or `GROUPING()` of the query `levelsup` levels
+/// above it.
+///
+/// # Safety
+/// `node` is a valid node tree, or null.
+pub(crate) unsafe fn contain_aggs_of_level(node: *mut pg_sys::Node, levelsup: i32) -> bool {
+    // SAFETY: the caller's contract; the boundary turns an ERROR into a panic.
+    unsafe { pg_sys::ffi::pg_guard_ffi_boundary(|| raw_contain_aggs_of_level(node, levelsup)) }
 }
 
 /// Longest identifier `PostgreSQL` keeps (`NAMEDATALEN - 1` bytes).
