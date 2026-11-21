@@ -13,3 +13,4 @@ test/sql/comprehensive_benchmarks/results/
 # The standalone build of src/decide/ (decide/Cargo.toml)
 /decide/target/
 /decide/Cargo.lock
+__pycache__/
