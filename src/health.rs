@@ -52,6 +52,7 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             tv_policies_check(),
             tv_writers_check(),
             change_feed_check(),
+            time_handoff_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -805,6 +806,46 @@ fn change_feed_check() -> Check {
             ),
         ),
         Err(e) => error("change_feed", format!("could not be checked: {e}")),
+    }
+}
+
+/// Keys written across a time boundary by a transaction older than it, waiting
+/// for the drain (`crate::time_drain`): a WARNING once the oldest waited a minute,
+/// which the drain worker takes milliseconds to clear. Counts only, read as the
+/// extension's owner: the keys are rows of TVIEWs the caller may not read.
+fn time_handoff_check() -> Check {
+    let found = crate::owner::as_extension_owner(|| {
+        crate::utils::spi::two::<i64, f64>(
+            &format!(
+                "SELECT pg_catalog.count(*), \
+                        COALESCE(pg_catalog.date_part('epoch', \
+                            pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-) \
+                            pg_catalog.min(h.handed_at)), 0)::pg_catalog.float8 \
+                 FROM {}.pg_tview_time_handoff h",
+                crate::utils::ext_schema()
+            ),
+            &[],
+        )
+    });
+    match found {
+        Ok((Some(0) | None, _)) => ok(
+            "time_handoff",
+            "No key written across a time boundary waits to be refreshed",
+        ),
+        Ok((Some(pending), age)) if age.unwrap_or(0.0) < 60.0 => ok(
+            "time_handoff",
+            format!("keys written across a time boundary, being refreshed: {pending}"),
+        ),
+        Ok((Some(pending), age)) => warning(
+            "time_handoff",
+            format!(
+                "keys written across a time boundary wait to be refreshed: {pending}, the oldest \
+                 for {:.0} s: the drain worker did not run (see the server log); the next \
+                 time refresh of each TVIEW refreshes them",
+                age.unwrap_or(0.0)
+            ),
+        ),
+        Err(e) => error("time_handoff", format!("could not be checked: {e}")),
     }
 }
 

@@ -18,6 +18,7 @@ setup
 
 teardown
 {
+  DROP TABLE tv_item;
   DROP EXTENSION pg_tviews CASCADE;
   DROP TABLE tb_item;
 }

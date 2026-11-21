@@ -39,6 +39,21 @@ COMMENT ON TABLE @extschema@.pg_tview_time_boundary IS
 GRANT SELECT ON @extschema@.pg_tview_time_boundary TO PUBLIC;
 SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_time_boundary', '');
 
+-- Keys of time-dependent TVIEWs written, after a time boundary was announced,
+-- by a transaction that began before it: its rows were computed at an earlier
+-- now(). The drain refreshes them again once the writer commits. pk NULL: the
+-- whole TVIEW. Not granted: keys are a TVIEW's rows.
+CREATE TABLE @extschema@.pg_tview_time_handoff (
+    entity TEXT NOT NULL
+        REFERENCES @extschema@.pg_tview_meta (entity) ON DELETE CASCADE,
+    pk BIGINT,
+    boundary TIMESTAMPTZ NOT NULL,
+    handed_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp()
+);
+CREATE INDEX pg_tview_time_handoff_entity ON @extschema@.pg_tview_time_handoff (entity);
+COMMENT ON TABLE @extschema@.pg_tview_time_handoff IS
+    'Internal: keys written across a time boundary, refreshed again by the drain; may change in any release';
+
 -- registry.time_boundary reads it.
 CREATE OR REPLACE VIEW @extschema@.registry AS
 SELECT

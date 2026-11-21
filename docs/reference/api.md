@@ -594,7 +594,7 @@ One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
 no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`,
-`tv_policies`, `tv_writers`, `change_feed`, `reregister` (TVIEWs marked `needs_reregister`),
+`tv_policies`, `tv_writers`, `change_feed`, `time_handoff`, `reregister` (TVIEWs marked `needs_reregister`),
 `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
@@ -612,6 +612,11 @@ TVIEW table's only writer and its guard refuses every other write: revoke them.
 is a `WARNING` naming each login role, not a superuser, that may connect to the database
 but not `SELECT` a TVIEW, with the TVIEWs: `LISTEN` takes no privilege, so it receives the
 keys of their changed rows.
+
+`time_handoff` counts the keys written across a time boundary by a transaction older
+than it, which the drain worker refreshes again once that transaction commits: `OK`
+while there are none or the oldest is under a minute old, then a `WARNING` (the worker
+did not run; the next time refresh of each TVIEW refreshes its keys).
 
 `owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
 what it reads: the TVIEW's owner or the owner of a view it reads through, lacking

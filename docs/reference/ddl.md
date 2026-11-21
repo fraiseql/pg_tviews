@@ -790,7 +790,13 @@ refreshes every time-dependent TVIEW you own, dependencies first, and commits af
 each; the function does one TVIEW, or all of them in your transaction
 (`pg_tviews_refresh_time_dependent()`), and returns the TVIEWs refreshed.
 `tviews.registry.time_boundary` is the instant each TVIEW was last brought to: the
-refreshing transaction's `now()`. With pg_cron, just after midnight:
+refreshing transaction's `now()`. Every row equals the definition evaluated at an instant no
+earlier than the last boundary, with one window: a transaction that began before the
+boundary computes its rows with its own, earlier `now()`. If it writes the TVIEW after
+the boundary was announced, its keys are recorded as it commits and a background worker
+refreshes them again right after (the health component `time_handoff` counts them); if
+it was writing the TVIEW already, the time refresh waits for it to end. A transaction
+that only reads, such as `pg_dump`'s, is never waited for. With pg_cron, just after midnight:
 
 ```sql fragment
 SELECT cron.schedule('tviews-day', '1 0 * * *', 'CALL tviews.pg_tviews_time_boundary()');

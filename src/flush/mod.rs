@@ -45,6 +45,12 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let _path = crate::owner::CatalogPath::pin();
     let wrote = crate::queue::has_pending();
     drain::flush_pending()?;
+    if wrote {
+        // Rows of a time-dependent TVIEW written by a transaction older than
+        // its boundary are handed off (crate::boundary).
+        let (keys, rebuilt) = crate::queue::log::written_in_flush();
+        crate::boundary::check_flush(&keys, &rebuilt)?;
+    }
     crate::executor::flushed(wrote);
     // The collections the written rows belong to, named by their parents'
     // public ids while SPI is available (the commit callback has none).

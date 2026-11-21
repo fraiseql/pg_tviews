@@ -146,6 +146,26 @@ pub(super) fn note_flush_rebuilt(entity: &str) {
     FLUSH_REBUILT.with(|c| c.borrow_mut().insert(entity.to_string()));
 }
 
+/// The rows the last flush inserted, updated or deleted, as keys by entity, and
+/// the TVIEWs it rebuilt or refilled whole.
+#[must_use]
+pub fn written_in_flush() -> (
+    std::collections::BTreeMap<String, Vec<i64>>,
+    std::collections::BTreeSet<String>,
+) {
+    let mut keys: std::collections::BTreeMap<String, Vec<i64>> = std::collections::BTreeMap::new();
+    FLUSH_CHANGED.with(|c| {
+        for (entity, pk) in c.borrow().iter() {
+            keys.entry(entity.clone()).or_default().push(*pk);
+        }
+    });
+    for pks in keys.values_mut() {
+        pks.sort_unstable();
+    }
+    let rebuilt = FLUSH_REBUILT.with(|c| c.borrow().iter().cloned().collect());
+    (keys, rebuilt)
+}
+
 /// How many rows of each TVIEW the last flush inserted, updated or deleted, by
 /// entity.
 pub fn changed_in_flush_by_entity() -> std::collections::HashMap<String, i64> {

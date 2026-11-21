@@ -63,6 +63,12 @@ pub fn int8<'a>(value: i64) -> DatumWithOid<'a> {
     DatumWithOid::from(value)
 }
 
+/// A `timestamptz` argument, from PostgreSQL's internal value; an infinite or
+/// out-of-range value binds as `NULL`.
+pub fn timestamptz<'a>(value: pgrx::pg_sys::TimestampTz) -> DatumWithOid<'a> {
+    DatumWithOid::from(pgrx::datum::TimestampWithTimeZone::try_from(value).ok())
+}
+
 /// A `bigint[]` argument.
 pub fn int8_array<'a>(values: Vec<i64>) -> DatumWithOid<'a> {
     DatumWithOid::from(values)
@@ -439,6 +445,25 @@ pub fn rows<T>(
     Spi::connect(|client| {
         let mut out = Vec::new();
         for row in client.select(sql, None, args).map_err(|e| error(sql, &e))? {
+            out.push(read(&row)?);
+        }
+        Ok(out)
+    })
+}
+
+/// Run a statement that writes and returns rows (`… RETURNING`), and read each
+/// with `read`.
+///
+/// # Errors
+/// Returns an error if the statement fails or `read` does.
+pub fn rows_written<T>(
+    sql: &str,
+    args: &[DatumWithOid<'_>],
+    mut read: impl FnMut(&SpiHeapTupleData<'_>) -> TViewResult<T>,
+) -> TViewResult<Vec<T>> {
+    Spi::connect_mut(|client| {
+        let mut out = Vec::new();
+        for row in client.update(sql, None, args).map_err(|e| error(sql, &e))? {
             out.push(read(&row)?);
         }
         Ok(out)

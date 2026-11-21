@@ -61,3 +61,6 @@ test: create-lock-needs-trigger
 test: rebuild-owner-scoped
 test: policy-flip-vs-refresh
 test: time-refresh-vs-writer
+test: time-refresh-vs-long-writer
+test: time-refresh-vs-pg-dump
+test: time-refresh-vs-idle-early-txn

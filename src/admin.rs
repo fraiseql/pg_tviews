@@ -60,6 +60,14 @@ pub(crate) fn refresh_time_dependent(
         if crate::suspend::is_suspended() {
             crate::suspend::record_change(&meta.entity_name);
         } else {
+            // Writers older than the boundary that write the TVIEW from now on hand
+            // their keys off; those already writing it are waited for, so the
+            // comparison reads their rows (crate::boundary).
+            // SAFETY: a transaction is in progress.
+            let boundary = unsafe { pgrx::pg_sys::GetCurrentTransactionStartTimestamp() };
+            crate::boundary::announce(meta.tview_oid, boundary);
+            crate::concurrency::wait_for_boundary_writers(meta.tview_oid.to_u32());
+            crate::time_drain::drain(Some(&meta.entity_name))?;
             // Only the rows the boundary changes are refreshed, as writes refresh
             // theirs: under their value locks, not a lock on all the TVIEW reads.
             // The time can change which rows a TVIEW holds and what they link to:

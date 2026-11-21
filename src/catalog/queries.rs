@@ -458,6 +458,39 @@ pub fn unowned_time_dependent() -> TViewResult<Vec<String>> {
     )
 }
 
+/// Record that this transaction wrote rows `keys` of `entity` (`None`: the whole
+/// TVIEW) after its time boundary `boundary` was announced, though it began
+/// before it: the drain refreshes them again once it commits. As the extension's
+/// owner: the writer's right to write them was checked by the write itself.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn hand_off(
+    entity: &str,
+    keys: &[Option<i64>],
+    boundary: pgrx::pg_sys::TimestampTz,
+) -> TViewResult<()> {
+    let whole = keys.iter().any(Option::is_none);
+    let pks: Vec<i64> = keys.iter().filter_map(|k| *k).collect();
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_handoff (entity, pk, boundary) \
+                 SELECT $1, k, $3 \
+                 FROM pg_catalog.unnest(CASE WHEN $4 THEN ARRAY[NULL::pg_catalog.int8] \
+                                             ELSE $2 END) k",
+                crate::utils::ext_schema()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::int8_array(pks),
+                crate::utils::spi::timestamptz(boundary),
+                crate::utils::spi::boolean(whole),
+            ],
+        )
+    })
+}
+
 /// Record that the time refresh brought `entity`'s rows to this transaction's
 /// `now()`, as the extension's owner: the caller's right to refresh it was checked.
 ///

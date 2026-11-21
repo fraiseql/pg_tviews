@@ -13,6 +13,7 @@ use std::os::raw::c_void;
 /// `tviews.stats`.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
+    crate::boundary::forget,
     super::savepoint::clear,
     crate::concurrency::clear,
     crate::executor::reset,
@@ -140,6 +141,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
                 fail_suspended();
                 crate::publish::at_pre_commit();
                 crate::stats::merge_committing();
+                if crate::boundary::take_handed_off() {
+                    crate::time_drain::start_for_committing();
+                }
             }
             crate::suspend::clear_changed_entities();
             crate::suspend::force_resume();

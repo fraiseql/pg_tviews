@@ -134,6 +134,8 @@ item the count of its place's current items), compose the aggregate at read time
 | Filling an UNLOGGED TVIEW a crash or a promotion reset (the first write, `pg_tviews_rebuild_all()`, the startup worker) | the TVIEW's row in `tviews.pg_tview_valid`, inserted before the fill: other writers of that TVIEW wait for it; readers are not blocked | end of transaction |
 | Creating or replacing a TVIEW | `SHARE` on the tables whose writes refresh it (for a replace, also those of the TVIEWs reading it) that the caller may attach triggers to, taken as each table's owner before the fill: the call waits for writes in flight to those tables, and their writers wait for it, so the new TVIEW starts from committed rows and misses no write. A replace also takes `EXCLUSIVE` on the TVIEW tables it recomputes, which holds off the flush of every write to a table it did not lock | end of transaction |
 | Creating, replacing or dropping a TVIEW | pg_tviews' registration lock of the entity (an advisory lock with `objsubid` 21624), so DDL on one entity runs one call at a time; a role that may not change the TVIEW is refused before it takes the lock | end of transaction |
+| A flush that wrote rows of a time-dependent TVIEW | the TVIEW's boundary lock (an advisory lock with `objsubid` 21625) in `SHARE`: writers never conflict on it. The time refresh waits for the transactions holding it when it starts, without joining its queue, so no writer waits for the time refresh | end of transaction |
+| The time refresh of a TVIEW | the value locks of the rows that differ from the view's at its instant, as a write's refresh of those rows takes them; no lock on the tables the TVIEW reads | end of transaction |
 
 The value locks live in PostgreSQL's lock manager as advisory locks of pg_tviews'
 own: `objsubid` is 21622 for a value (or the key of a row being created) and 21623 for
@@ -141,7 +143,7 @@ a relation's intent and escalated locks, `classid` is the relation, `objid` a ha
 the value keyed with a secret the server makes at start: no role can tell from it which
 value is locked, and a superuser computes the tag of a value with
 [`pg_tviews_value_lock_tag`](reference/api.md#pg_tviews_value_lock_tag). A registration lock has `objsubid` 21624 and a hash of the entity, keyed with the same server secret, as
-`classid`. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
+`classid`; a boundary lock has `objsubid` 21625 and the TVIEW as `classid`. `pg_advisory_lock()` uses other `objsubid` values, so it can neither take
 nor block any of them. They are kept by a prepared transaction until `COMMIT PREPARED`, and
 released by `ROLLBACK TO SAVEPOINT` when taken after the savepoint; a link changed
 after the savepoint is forgotten with them.
