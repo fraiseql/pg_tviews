@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A refresh no longer depends on the writer's session** (E1-01, advisory to be
+  published with the release). Below, under Added: the `settings` option and the
+  health component `frame_settings`.
+
 ### Changed (breaking)
 
 - **A definition whose output depends on the order of rows is refused** (`0A000`).
@@ -61,6 +67,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The `settings` option of `pg_tviews_create()`** pins, per TVIEW, the custom
+  settings its definition reads by name: every refresh reads them at those values, and
+  settings of the writer's session, transaction, function or role are not seen. A
+  definition reading one by name gets a NOTICE at `CREATE` with the value its refreshes
+  read; one deciding which rows the TVIEW holds (in a `WHERE`, a join condition,
+  `HAVING`, `LIMIT` or a `FROM` function) is refused (`0A000`). The health component
+  `frame_settings` lists them and warns about one unset where refreshes run
+  (`docs/reference/owner-frame.md#custom-settings`).
 - **`CALL tviews.pg_tviews_time_boundary()`**: the time refresh of every time-dependent
   TVIEW the caller owns, dependencies first, one transaction each, so a writer waits at
   most for one TVIEW's rows. `tviews.registry.time_boundary` is the instant each TVIEW
