@@ -13,6 +13,9 @@
 --   pre-check names it).
 -- - tv_rls: row security applies to upgrade_rls_owner on the table its TVIEW
 --   reads, which this release refuses.
+-- - tv_shelf: aggregates its books in an order nothing fixes, which this
+--   release refuses (the order rule); the operator's pre-check cannot tell, the
+--   rehearsal of the update names it.
 
 \set ON_ERROR_STOP on
 SET client_min_messages TO WARNING;
@@ -46,9 +49,20 @@ INSERT INTO tb_col (pk_col, title) VALUES (1, 'c1');
 INSERT INTO tb_forced (pk_forced, name) VALUES (1, 'f1'), (2, 'f2');
 INSERT INTO tb_lost (pk_lost, title) VALUES (1, 'l1');
 INSERT INTO tb_rls (pk_rls, title) VALUES (1, 'r1');
+CREATE TABLE tb_shelf (pk_shelf int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                       name text);
+CREATE TABLE tb_book (pk_book int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
+                      fk_shelf int NOT NULL REFERENCES tb_shelf, title text);
+CREATE INDEX ON tb_book (fk_shelf);
+INSERT INTO tb_shelf (pk_shelf, name) VALUES (1, 's1');
+INSERT INTO tb_book (pk_book, fk_shelf, title) VALUES (1, 1, 'b1');
 
 SELECT pg_tviews_create('tv_kept', $$
     SELECT pk_kept, id, jsonb_build_object('title', title) AS data FROM tb_kept $$);
+SELECT pg_tviews_create('tv_shelf', $$
+    SELECT s.pk_shelf, s.id, jsonb_build_object('name', s.name,
+        'books', (SELECT jsonb_agg(b.title) FROM tb_book b WHERE b.fk_shelf = s.pk_shelf)) AS data
+    FROM tb_shelf s $$);
 -- name is copied (a patch), note is read by nothing (a skip).
 SELECT pg_tviews_create('tv_forced', $$
     SELECT pk_forced, id, jsonb_build_object('name', name) AS data FROM tb_forced $$);

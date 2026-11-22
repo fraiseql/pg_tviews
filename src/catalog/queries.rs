@@ -428,6 +428,92 @@ pub fn owned_time_dependent() -> TViewResult<Vec<String>> {
     )
 }
 
+/// Every TVIEW whose definition reads the current time.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT m.entity::text FROM {} m WHERE m.time_dependent ORDER BY m.entity",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// The TVIEWs whose definitions read the current time that the caller does not own
+/// (nor may change as a member of its owner's role), schema-qualified: those
+/// [`owned_time_dependent`] leaves out.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn unowned_time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
+             FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE m.time_dependent AND NOT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+             ORDER BY 1",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// Record that this transaction wrote rows `keys` of `entity` (`None`: the whole
+/// TVIEW) after its time boundary `boundary` was announced, though it began
+/// before it: the drain refreshes them again once it commits. As the extension's
+/// owner: the writer's right to write them was checked by the write itself.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn hand_off(
+    entity: &str,
+    keys: &[Option<i64>],
+    boundary: pgrx::pg_sys::TimestampTz,
+) -> TViewResult<()> {
+    let whole = keys.iter().any(Option::is_none);
+    let pks: Vec<i64> = keys.iter().filter_map(|k| *k).collect();
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_handoff (entity, pk, boundary) \
+                 SELECT $1, k, $3 \
+                 FROM pg_catalog.unnest(CASE WHEN $4 THEN ARRAY[NULL::pg_catalog.int8] \
+                                             ELSE $2 END) k",
+                crate::utils::ext_schema()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::int8_array(pks),
+                crate::utils::spi::timestamptz(boundary),
+                crate::utils::spi::boolean(whole),
+            ],
+        )
+    })
+}
+
+/// Record that the time refresh brought `entity`'s rows to this transaction's
+/// `now()`, as the extension's owner: the caller's right to refresh it was checked.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn record_time_boundary(entity: &str) -> TViewResult<()> {
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_boundary AS b (entity, boundary) \
+                 VALUES ($1, pg_catalog.now()) \
+                 ON CONFLICT (entity) DO UPDATE SET boundary = EXCLUDED.boundary",
+                crate::utils::ext_schema()
+            ),
+            &[crate::utils::spi::text(entity)],
+        )
+    })
+}
+
 /// TVIEWs whose backing view's own rule depends on column `column` of `relid`
 /// (the column-level `pg_depend` entries of its rewrite rule): the definitions
 /// that name the column, as `(entity, schema, view)`. A view the TVIEW reads

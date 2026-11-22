@@ -99,6 +99,34 @@
     GRANT SELECT ON @extschema@.pg_tview_valid TO PUBLIC;
     SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_valid', '');
 
+    -- The instant each time-dependent TVIEW's rows were last brought to by the
+    -- time refresh: its transaction's now(). Its own table, not a column of
+    -- pg_tview_meta: a write there invalidates every backend's cached metadata.
+    CREATE TABLE @extschema@.pg_tview_time_boundary (
+        entity TEXT NOT NULL PRIMARY KEY
+            REFERENCES @extschema@.pg_tview_meta (entity) ON DELETE CASCADE,
+        boundary TIMESTAMPTZ NOT NULL
+    );
+    COMMENT ON TABLE @extschema@.pg_tview_time_boundary IS
+        'Internal: the instant the time refresh last brought each TVIEW to; may change in any release';
+    GRANT SELECT ON @extschema@.pg_tview_time_boundary TO PUBLIC;
+    SELECT pg_catalog.pg_extension_config_dump('@extschema@.pg_tview_time_boundary', '');
+
+    -- Keys of time-dependent TVIEWs written, after a time boundary was announced,
+    -- by a transaction that began before it: its rows were computed at an earlier
+    -- now(). The drain refreshes them again once the writer commits. pk NULL: the
+    -- whole TVIEW. Not granted: keys are a TVIEW's rows.
+    CREATE TABLE @extschema@.pg_tview_time_handoff (
+        entity TEXT NOT NULL
+            REFERENCES @extschema@.pg_tview_meta (entity) ON DELETE CASCADE,
+        pk BIGINT,
+        boundary TIMESTAMPTZ NOT NULL,
+        handed_at TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp()
+    );
+    CREATE INDEX pg_tview_time_handoff_entity ON @extschema@.pg_tview_time_handoff (entity);
+    COMMENT ON TABLE @extschema@.pg_tview_time_handoff IS
+        'Internal: keys written across a time boundary, refreshed again by the drain; may change in any release';
+
     -- Revision of this catalog. The library refuses to work against a
     -- catalog of another revision; an upgrade script that changes the extension SQL
     -- redefines this function, and the library's revision::CATALOG_REVISION with it.

@@ -34,6 +34,7 @@ use pgrx::prelude::*;
 // Core modules
 mod api;
 mod audit;
+mod boundary;
 mod cache;
 mod catalog;
 mod concurrency;
@@ -66,6 +67,7 @@ mod admin;
 mod health;
 mod lifecycle;
 mod suspend;
+mod time_drain;
 
 mod config;
 mod ddl;
@@ -89,6 +91,7 @@ pub extern "C-unwind" fn _PG_init() {
     crate::revision::note_preload();
     crate::config::register_gucs();
     crate::stats::init();
+    crate::boundary::init();
     crate::concurrency::key::init();
     crate::cache::register_relcache_callback();
     crate::owner::register_name_callbacks();

@@ -11,7 +11,7 @@ pub mod report;
 
 pub use report::{
     Change, NetChange, Recorded, Summary, begin_flush, changed_in_flush,
-    changed_in_flush_by_entity, summarize,
+    changed_in_flush_by_entity, summarize, written_in_flush,
 };
 
 /// Record that a refresh write changed a TVIEW row: in the flush's changed rows,

@@ -52,7 +52,9 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             tv_policies_check(),
             frame_settings_check(),
             tv_writers_check(),
+            tv_triggers_check(),
             change_feed_check(),
+            time_handoff_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -711,6 +713,7 @@ pub(crate) fn queue_stats() -> crate::TViewResult<serde_json::Value> {
     #[cfg(feature = "test-hooks")]
     {
         json_value["cache_resets"] = crate::cache::resets().into();
+        json_value["pending_work"] = crate::queue::state::pending_count().into();
         json_value["patch_stats"] = crate::stats::patch_stats()
             .into_iter()
             .map(|(code, n)| (code, serde_json::Value::from(n)))
@@ -819,6 +822,48 @@ fn tv_writers_check() -> Check {
     }
 }
 
+/// User triggers and rules on TVIEW tables: each changes what a maintenance write
+/// leaves in the table, which freshness assumes nothing does. A WARNING naming
+/// them; `pg_tviews`' own triggers (functions of its schema) are not reported.
+fn tv_triggers_check() -> Check {
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT x.what FROM ( \
+               SELECT pg_catalog.format('%s on %s', t.tgname, \
+                          t.tgrelid::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) AS what \
+               FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+               WHERE NOT t.tgisinternal AND t.tgrelid OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND p.pronamespace NOT IN (SELECT n.oid FROM pg_catalog.pg_namespace n \
+                                            WHERE n.nspname OPERATOR(pg_catalog.=) $2) \
+               UNION ALL \
+               SELECT pg_catalog.format('rule %s on %s', r.rulename, \
+                          r.ev_class::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) \
+               FROM pg_catalog.pg_rewrite r \
+               WHERE r.ev_class OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND r.rulename OPERATOR(pg_catalog.<>) '_RETURN') x \
+             ORDER BY x.what",
+            &[
+                crate::utils::spi::oid_array(tables),
+                crate::utils::spi::text(crate::utils::ext_schema()),
+            ],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => {
+            ok("tv_triggers", "No user trigger or rule on a TVIEW table")
+        }
+        Ok(found) => warning(
+            "tv_triggers",
+            format!(
+                "user triggers or rules on TVIEW tables change what pg_tviews writes there, \
+                 and its rows may then differ from their definitions: {}",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("tv_triggers", format!("could not be checked: {e}")),
+    }
+}
+
 /// The change feed (`pg_tviews.publish_changes = rows`) sends the keys of every
 /// TVIEW's changed rows to every role that can `LISTEN`, whatever it may read
 /// (E1-05): a WARNING naming the login roles that may connect but not read a TVIEW.
@@ -863,6 +908,46 @@ fn change_feed_check() -> Check {
             ),
         ),
         Err(e) => error("change_feed", format!("could not be checked: {e}")),
+    }
+}
+
+/// Keys written across a time boundary by a transaction older than it, waiting
+/// for the drain (`crate::time_drain`): a WARNING once the oldest waited a minute,
+/// which the drain worker takes milliseconds to clear. Counts only, read as the
+/// extension's owner: the keys are rows of TVIEWs the caller may not read.
+fn time_handoff_check() -> Check {
+    let found = crate::owner::as_extension_owner(|| {
+        crate::utils::spi::two::<i64, f64>(
+            &format!(
+                "SELECT pg_catalog.count(*), \
+                        COALESCE(pg_catalog.date_part('epoch', \
+                            pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-) \
+                            pg_catalog.min(h.handed_at)), 0)::pg_catalog.float8 \
+                 FROM {}.pg_tview_time_handoff h",
+                crate::utils::ext_schema()
+            ),
+            &[],
+        )
+    });
+    match found {
+        Ok((Some(0) | None, _)) => ok(
+            "time_handoff",
+            "No key written across a time boundary waits to be refreshed",
+        ),
+        Ok((Some(pending), age)) if age.unwrap_or(0.0) < 60.0 => ok(
+            "time_handoff",
+            format!("keys written across a time boundary, being refreshed: {pending}"),
+        ),
+        Ok((Some(pending), age)) => warning(
+            "time_handoff",
+            format!(
+                "keys written across a time boundary wait to be refreshed: {pending}, the oldest \
+                 for {:.0} s: the drain worker did not run (see the server log); the next \
+                 time refresh of each TVIEW refreshes them",
+                age.unwrap_or(0.0)
+            ),
+        ),
+        Err(e) => error("time_handoff", format!("could not be checked: {e}")),
     }
 }
 

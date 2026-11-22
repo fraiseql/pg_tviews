@@ -57,7 +57,7 @@ INSERT INTO sec.tb_country VALUES (1, 'FR', 'France');
 
 SELECT pg_tviews_create('sec.tv_doc', $q$
     SELECT d.pk_doc, d.id, jsonb_build_object('title', d.title,
-        'notes', (SELECT jsonb_agg(n.body) FROM sec.tb_doc_note n
+        'notes', (SELECT jsonb_agg(n.body ORDER BY n.pk_doc_note) FROM sec.tb_doc_note n
                   WHERE n.fk_doc = d.pk_doc OPERATOR(pg_catalog.+) sec.folded('upgrade') - 1)) AS data
     FROM sec.tb_doc d $q$);
 SELECT pg_tviews_create('sec.tv_tag', $q$

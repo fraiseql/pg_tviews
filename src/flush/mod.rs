@@ -36,6 +36,10 @@ use crate::TViewResult;
 /// What a refresh, a catalog read or a propagation query returns, and
 /// [`crate::TViewError::DepthExceeded`] when propagation does not settle.
 pub fn flush_refresh_queue() -> TViewResult<()> {
+    #[cfg(feature = "test-hooks")]
+    if crate::config::test_skip_flush() {
+        return Ok(());
+    }
     // A refresh write can fire a flush trigger (a TVIEW's table read by another
     // TVIEW): that call returns at once, and the running flush drains what it
     // queued before finishing.
@@ -45,6 +49,12 @@ pub fn flush_refresh_queue() -> TViewResult<()> {
     let _path = crate::owner::CatalogPath::pin();
     let wrote = crate::queue::has_pending();
     drain::flush_pending()?;
+    if wrote {
+        // Rows of a time-dependent TVIEW written by a transaction older than
+        // its boundary are handed off (crate::boundary).
+        let (keys, rebuilt) = crate::queue::log::written_in_flush();
+        crate::boundary::check_flush(&keys, &rebuilt)?;
+    }
     crate::executor::flushed(wrote);
     // The collections the written rows belong to, named by their parents'
     // public ids while SPI is available (the commit callback has none).

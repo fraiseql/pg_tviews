@@ -133,6 +133,139 @@ pub fn reconcile_as_owner(entity: &str, meta: &TviewMeta) -> TViewResult<Vec<i64
     Ok(changed)
 }
 
+/// How a TVIEW's table and its backing view are compared, row by row: matched on
+/// the table's primary key, their value columns compared as the reconcile's
+/// `UPDATE` would assign them (a stored column can have another type than the
+/// view's: an unmapped user type is stored as text).
+struct Comparison {
+    qualified_tv: String,
+    qualified_view: String,
+    /// `t` and `v` matched on the key.
+    same_key: String,
+    /// The `pk_<entity>` column, quoted.
+    pk: String,
+    /// Every column of the view, quoted, comma-separated.
+    all_columns: String,
+    /// `column = v.column` for each value column; empty for a TVIEW of keys only.
+    value_set: String,
+    /// `t.column` for each value column.
+    stored_values: Vec<String>,
+    /// `v.column::<stored type>` for each value column.
+    fresh_values: Vec<String>,
+}
+
+impl Comparison {
+    fn of(meta: &TviewMeta) -> TViewResult<Self> {
+        let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
+        let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
+        let columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
+        let keys = crate::utils::spi::strings(
+            "SELECT a.attname::text FROM pg_catalog.pg_index i \
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
+              AND a.attnum = ANY (i.indkey) \
+             WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
+            &[crate::utils::spi::oid(meta.tview_oid)],
+        )?;
+        let quoted = |columns: &[&String], prefix: &str| -> Vec<String> {
+            columns
+                .iter()
+                .map(|c| format!("{prefix}{}", ident::quoted(c)))
+                .collect()
+        };
+        let key_columns: Vec<&String> = keys.iter().collect();
+        let value_columns: Vec<&String> = columns.iter().filter(|c| !keys.contains(c)).collect();
+        let all_columns: Vec<&String> = columns.iter().collect();
+        let same_key = format!(
+            "({}) = ({})",
+            quoted(&key_columns, "t.").join(", "),
+            quoted(&key_columns, "v.").join(", ")
+        );
+        let stored: std::collections::HashMap<String, String> =
+            crate::utils::column_types(meta.tview_oid)?
+                .into_iter()
+                .collect();
+        let stored_types: Vec<String> = value_columns
+            .iter()
+            .filter_map(|c| stored.get(c.as_str()).cloned())
+            .collect();
+        if stored_types.len() != value_columns.len() {
+            return Err(TViewError::CatalogError {
+                operation: format!("Compare the rows of {qualified_tv} with its view"),
+                pg_error: "a view column is missing from the TVIEW's table".to_string(),
+            });
+        }
+        let fresh_values = quoted(&value_columns, "v.")
+            .into_iter()
+            .zip(&stored_types)
+            .map(|(v, ty)| format!("{v}::{ty}"))
+            .collect();
+        let value_set = value_columns
+            .iter()
+            .map(|c| format!("{0} = v.{0}", ident::quoted(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(Self {
+            qualified_tv,
+            qualified_view,
+            same_key,
+            pk: ident::quoted(meta.key_column()),
+            all_columns: quoted(&all_columns, "").join(", "),
+            value_set,
+            stored_values: quoted(&value_columns, "t."),
+            fresh_values,
+        })
+    }
+}
+
+/// The keys of `meta`'s rows that differ from its view's at this instant: a row
+/// the view has and the table lacks, one the table has and the view lacks, and
+/// one whose values differ. Read as its owner, with no lock: the time refresh
+/// then refreshes these keys as writes do, under their value locks, and leaves
+/// every writer of what the TVIEW reads free to go on meanwhile.
+///
+/// # Errors
+/// Returns an error if the comparison cannot run.
+pub fn differing_keys(meta: &TviewMeta) -> TViewResult<Vec<crate::queue::key::KeyValue>> {
+    AsOwner::run(Owner::of_tview(meta)?, |frame| {
+        frame.require_owner_of(meta.tview_oid)?;
+        let Comparison {
+            qualified_tv,
+            qualified_view,
+            same_key,
+            pk,
+            stored_values,
+            fresh_values,
+            ..
+        } = Comparison::of(meta)?;
+        let differs = if stored_values.is_empty() {
+            "false".to_string()
+        } else {
+            crate::refresh::rows_differ(&stored_values, &fresh_values)
+        };
+        let _joins = crate::owner::WholeTableJoins::pin();
+        let keys = crate::utils::spi::strings(
+            &format!(
+                "SELECT COALESCE(t.{pk}, v.{pk})::pg_catalog.text \
+                 FROM {qualified_tv} t FULL JOIN {qualified_view} v ON {same_key} \
+                 WHERE t.{pk} IS NULL OR v.{pk} IS NULL OR {differs} \
+                 ORDER BY 1"
+            ),
+            &[],
+        )?;
+        let int = matches!(
+            meta.plan.key.type_name.as_str(),
+            "smallint" | "integer" | "bigint" | "int2" | "int4" | "int8"
+        );
+        Ok(keys
+            .into_iter()
+            .map(|key| match key.parse() {
+                Ok(n) if int => crate::queue::key::KeyValue::Int(n),
+                _ => crate::queue::key::KeyValue::Text(key),
+            })
+            .collect())
+    })
+}
+
 /// [`reconcile`], once every refresh of the TVIEW's rows waits for it, and it
 /// for them: every row may change.
 pub(crate) fn reconcile_locked(
@@ -165,34 +298,16 @@ pub(crate) fn reconcile(
 
     // A key names one row: a UNION view returning several for one is refused.
     crate::refresh::refuse_duplicate_keys(frame, meta, "true", &[])?;
-    let qualified_tv = crate::utils::qualified_relname_from_oid(meta.tview_oid)?;
-    let qualified_view = crate::utils::qualified_relname_from_oid(meta.view_oid)?;
-
-    let columns = crate::utils::spi::get_view_columns_by_oid(meta.view_oid)?;
-    let keys = crate::utils::spi::strings(
-        "SELECT a.attname::text FROM pg_catalog.pg_index i \
-         JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid \
-          AND a.attnum = ANY (i.indkey) \
-         WHERE i.indrelid = $1 AND i.indisprimary ORDER BY a.attnum",
-        &[crate::utils::spi::oid(meta.tview_oid)],
-    )?;
-    let prefixed = |columns: &[&String], prefix: &str| -> Vec<String> {
-        columns
-            .iter()
-            .map(|c| format!("{prefix}{}", ident::quoted(c)))
-            .collect()
-    };
-    let list = |columns: &[&String], prefix: &str| prefixed(columns, prefix).join(", ");
-    let key_columns: Vec<&String> = keys.iter().collect();
-    let value_columns: Vec<&String> = columns.iter().filter(|c| !keys.contains(c)).collect();
-    let all_columns: Vec<&String> = columns.iter().collect();
-    let same_key = format!(
-        "({}) = ({})",
-        list(&key_columns, "t."),
-        list(&key_columns, "v.")
-    );
-    let pk = ident::quoted(meta.key_column());
-
+    let Comparison {
+        qualified_tv,
+        qualified_view,
+        same_key,
+        pk,
+        all_columns,
+        value_set,
+        stored_values,
+        fresh_values,
+    } = Comparison::of(meta)?;
     let returned = meta.returned("t", false);
     let _joins = crate::owner::WholeTableJoins::pin();
     let mut changed = crate::refresh::run_journaled(
@@ -206,42 +321,16 @@ pub(crate) fn reconcile(
         &[],
         Change::Deleted,
     )?;
-    if !value_columns.is_empty() {
-        // A stored column can have another type than the view's (an unmapped user type
-        // is stored as text): compare against the value the UPDATE would assign.
-        let stored: std::collections::HashMap<String, String> =
-            crate::utils::column_types(meta.tview_oid)?
-                .into_iter()
-                .collect();
-        let stored_types: Vec<String> = value_columns
-            .iter()
-            .filter_map(|c| stored.get(c.as_str()).cloned())
-            .collect();
-        if stored_types.len() != value_columns.len() {
-            return Err(TViewError::CatalogError {
-                operation: format!("Compare the rows of {qualified_tv} with its view"),
-                pg_error: "a view column is missing from the TVIEW's table".to_string(),
-            });
-        }
-        let fresh: Vec<String> = prefixed(&value_columns, "v.")
-            .into_iter()
-            .zip(&stored_types)
-            .map(|(v, ty)| format!("{v}::{ty}"))
-            .collect();
-        let set = value_columns
-            .iter()
-            .map(|c| format!("{0} = v.{0}", ident::quoted(c)))
-            .collect::<Vec<_>>()
-            .join(", ");
+    if !value_set.is_empty() {
         changed.extend(crate::refresh::run_journaled(
             frame,
             meta,
             &format!(
-                "UPDATE {qualified_tv} t SET {set} \
+                "UPDATE {qualified_tv} t SET {value_set} \
                  FROM {qualified_view} v \
                  WHERE {same_key} AND {} \
                  RETURNING t.{pk}::pg_catalog.int8, {}",
-                crate::refresh::rows_differ(&prefixed(&value_columns, "t."), &fresh),
+                crate::refresh::rows_differ(&stored_values, &fresh_values),
                 meta.returned("t", true)
             ),
             &[],
@@ -252,11 +341,10 @@ pub(crate) fn reconcile(
         frame,
         meta,
         &format!(
-            "INSERT INTO {qualified_tv} AS t ({columns}) \
-             SELECT {columns} FROM {qualified_view} v \
+            "INSERT INTO {qualified_tv} AS t ({all_columns}) \
+             SELECT {all_columns} FROM {qualified_view} v \
              WHERE NOT EXISTS (SELECT 1 FROM {qualified_tv} t WHERE {same_key}) \
-             RETURNING t.{pk}::pg_catalog.int8, {returned}",
-            columns = list(&all_columns, "")
+             RETURNING t.{pk}::pg_catalog.int8, {returned}"
         ),
         &[],
         Change::Inserted,

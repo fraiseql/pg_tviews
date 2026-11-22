@@ -572,7 +572,13 @@ impl FollowUps {
                         .map(|entity| (entity, table, logged))
                 }),
                 value_rewrite: value_rewrite_of(pstmt),
-                row_security_before: row_security_scope_of(pstmt).then(|| {
+                // pg_tviews' own scripts change no role a TVIEW reads a table as
+                // (the update's re-derivation checks each TVIEW, under its lock
+                // timeout); reading every TVIEW here would wait on each backing
+                // view with none.
+                row_security_before: (!crate::revision::in_own_script()
+                    && row_security_scope_of(pstmt))
+                .then(|| {
                     crate::ddl::row_security_refusals()
                         .into_iter()
                         .map(|(entity, _)| entity)

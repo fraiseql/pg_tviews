@@ -28,8 +28,9 @@ WHERE severity <> 'info';
 
 `severity` is `info`, `warning` or `error`. The components are `extension`, `catalog`,
 `metadata`, `plans`, `columns`, `seq_scans`, `contents`, `function_paths`, `owner_reads`,
-`tv_policies`, `frame_settings`, `tv_writers`, `change_feed`, `reregister`, `triggers` and
-`tviews`. `contents` warns about TVIEWs that are empty while their definition yields rows, and lists the TVIEWs it could not check: it is `OK` only when it
+`tv_policies`, `frame_settings`, `tv_writers`, `tv_triggers`, `change_feed`, `time_handoff`,
+`reregister`, `triggers` and `tviews`. `contents` warns about TVIEWs that are empty while their
+definition yields rows, and lists the TVIEWs it could not check: it is `OK` only when it
 checked every TVIEW. `function_paths` is an error naming each function a refresh runs
 whose `search_path` does not end in `pg_temp`, with the fixed setting. `owner_reads` is
 an error naming each TVIEW whose owner, or the owner of a view it reads through, may no
@@ -38,10 +39,16 @@ custom settings each TVIEW's definition reads by name (`current_setting('app.loc
 with the value its refreshes read, and warns about one unset there: a per-request setting,
 which no refresh sees ([owner frame](../reference/owner-frame.md#custom-settings)).
 `tv_writers` warns about each role other than its owner granted `INSERT`, `UPDATE`,
-`DELETE` or `TRUNCATE` on a TVIEW table: pg_tviews is its only writer. `change_feed` warns, when
+`DELETE` or `TRUNCATE` on a TVIEW table: pg_tviews is its only writer. `tv_triggers` warns
+about each user trigger or rule on a TVIEW table: it changes what pg_tviews writes there, so
+the rows may differ from their definitions. `change_feed` warns, when
 `pg_tviews.publish_changes` is `rows`, about each login role that may connect but not
 read a TVIEW: it receives the keys of that TVIEW's changed rows
 ([change feed](../user-guides/change-feed.md#who-can-read-it)).
+`time_handoff` counts the keys a transaction older than a time boundary wrote after
+it ([time-dependent TVIEWs](../reference/ddl.md#time-dependent-tviews)), waiting to be
+refreshed again; it warns once the oldest has waited a minute, which means the drain
+worker did not run.
 `seq_scans` warns about TVIEWs whose mapping query (how writes to a base table map to
 TVIEW keys) plans a sequential scan of a table above 1,000 estimated rows; it is
 planned again on each call with the current indexes and statistics, so an index

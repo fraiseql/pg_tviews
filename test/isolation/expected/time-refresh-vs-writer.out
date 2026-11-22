@@ -1,0 +1,39 @@
+Parsed test spec with 2 sessions
+
+starting permutation: c_sleep c_begin c_refresh w_kept c_commit c_check
+pg_tviews_create            
+----------------------------
+TVIEW public.tv_item created
+(1 row)
+
+step c_sleep: SELECT pg_sleep(1.5);
+pg_sleep
+--------
+        
+(1 row)
+
+step c_begin: BEGIN;
+step c_refresh: SELECT * FROM tviews.pg_tviews_refresh_time_dependent();
+pg_tviews_refresh_time_dependent
+--------------------------------
+public.tv_item                  
+(1 row)
+
+step w_kept: UPDATE tb_item SET name = 'renamed' WHERE pk_item = 1;
+step c_commit: COMMIT;
+step c_check: 
+  SELECT pk_item, data->>'name' AS name, data->>'current' AS current FROM tv_item ORDER BY 1;
+  SELECT (SELECT jsonb_agg(data ORDER BY pk_item) FROM tv_item)
+       = (SELECT jsonb_agg(data ORDER BY pk_item) FROM tviews.public__tv_item) AS fresh;
+
+pk_item|name   |current
+-------+-------+-------
+      1|renamed|true   
+      2|ending |false  
+(2 rows)
+
+fresh
+-----
+t    
+(1 row)
+

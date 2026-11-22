@@ -2,8 +2,11 @@
 //! plain values (skips.md, theorems.md).
 //!
 //! A decision returns *skip* (or *patch*, or *prune*) only when its safety
-//! condition is established by a positive fact among its inputs; a missing or
-//! unknown input means refresh. Nothing here reads a datum, the catalog, a
+//! condition is established by its inputs; a missing or unknown input means
+//! refresh. Each input not established takes its conservative value, the one
+//! that rules the shortcut out: `key_changed`, `virtual_read`,
+//! `child_changed_in_flush` and `guard_met` true, `paired` and `document_edge`
+//! false, every [`Env`] fact false (theorems.md §0, "Inputs to the decisions"). Nothing here reads a datum, the catalog, a
 //! setting or the clock, and nothing names `pgrx`: binary comparison of datums
 //! stays with the trigger, and every fact about the database comes in
 //! [`Env`], computed once per statement by named functions outside this module
@@ -82,6 +85,8 @@ impl Env {
 
 /// The columns the TVIEW reads of the table, when the stored read set holds in
 /// `env`; `None` otherwise.
+///
+/// Theorem: T1 (docs/proofs/theorems.md).
 #[must_use]
 pub fn trusted_read_set(read: &ReadSet, env: Env) -> Option<&Attnums> {
     read.complete().filter(|_| env.reads_hold())
@@ -90,6 +95,8 @@ pub fn trusted_read_set(read: &ReadSet, env: Env) -> Option<&Attnums> {
 /// S03 (row trigger): whether a write to one row of a table may skip the
 /// TVIEW. Only an UPDATE that changed none of the columns it reads (`changed`,
 /// by binary comparison of the two images) may.
+///
+/// Theorem: T1 (docs/proofs/theorems.md).
 #[must_use]
 pub fn column_skip(event: Event, read: &ReadSet, changed: &Attnums, env: Env) -> bool {
     event == Event::Update
@@ -102,6 +109,8 @@ pub fn column_skip(event: Event, read: &ReadSet, changed: &Attnums, env: Env) ->
 /// over the rows, by binary comparison), on a table read without a virtual
 /// generated column (`virtual_read`: such a column is NULL in the rows a
 /// trigger sees).
+///
+/// Theorem: T2 (docs/proofs/theorems.md).
 #[must_use]
 pub fn statement_skip(
     event: Event,
@@ -115,6 +124,8 @@ pub fn statement_skip(
 
 /// S12 (pair filter): the columns an UPDATE's row pairs are compared on, a
 /// pair equal on all of them dropped from the delta; `None`: every row is kept.
+///
+/// Theorem: T3 (docs/proofs/theorems.md).
 #[must_use]
 pub fn pair_filter(event: Event, read: &ReadSet, env: Env) -> Option<&Attnums> {
     if event != Event::Update {
@@ -140,6 +151,8 @@ pub struct Copied {
 /// leaves the key alone (`key_changed`), changed some column the TVIEW reads,
 /// and every one of those is a column `data` copies (`copied`: the plan's
 /// direct fields) exactly.
+///
+/// Theorem: T4 (docs/proofs/theorems.md).
 #[must_use]
 pub fn direct_patch(
     event: Event,
@@ -164,6 +177,8 @@ pub fn direct_patch(
 /// copies (`copied`), instead of a recompute of those rows, when the key the rows are looked up by is unchanged in
 /// every pair (`key_changed`), every row was paired (`paired`), and every
 /// changed column the TVIEW reads is a copied field, copied exactly.
+///
+/// Theorem: T5 (docs/proofs/theorems.md).
 #[must_use]
 pub fn fanout_patch(
     event: Event,
@@ -194,6 +209,8 @@ pub enum Equality {
 /// S31/S35 (no-op guard): the comparison by which a recomputed or patched row
 /// equal to the stored one is left unwritten (D10). Made in SQL; its only
 /// input is the two rows.
+///
+/// Theorem: T6 (docs/proofs/theorems.md).
 #[must_use]
 pub const fn noop_guard() -> Equality {
     Equality::Binary
@@ -203,6 +220,8 @@ pub const fn noop_guard() -> Equality {
 ///
 /// The parent reads the child only through the child's stored row
 /// (`document_edge`), and the child row did not change in this flush.
+///
+/// Theorem: T7 (docs/proofs/theorems.md).
 #[must_use]
 pub const fn edge_prune(document_edge: bool, child_changed_in_flush: bool) -> bool {
     document_edge && !child_changed_in_flush
@@ -214,6 +233,8 @@ pub const fn edge_prune(document_edge: bool, child_changed_in_flush: bool) -> bo
 /// conditions on constants of the reads that leave it unmapped) does only when
 /// a changed row meets them (`guard_met`, evaluated over both images); an
 /// unguarded one always does.
+///
+/// Theorem: T10 (docs/proofs/theorems.md).
 #[must_use]
 pub const fn lookup_filter(full_refresh: bool, guarded: bool, guard_met: bool) -> bool {
     full_refresh && (!guarded || guard_met)
