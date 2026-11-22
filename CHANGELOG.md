@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A definition whose output depends on the order of rows is refused** (`0A000`).
+  An order-sensitive aggregate (`jsonb_agg`, `array_agg`, `string_agg`, …), `LIMIT` or
+  a non-zero `OFFSET`, `ARRAY(SELECT …)`, `DISTINCT ON` or an order-sensitive window
+  function must be ordered by keys that fix one row per value it reads: two evaluations
+  over the same rows could otherwise store different documents. The refusal names the
+  keys to append, usually the primary key (`ORDER BY c.name, c.pk_contract`). A TVIEW
+  created before and refused now is left to re-register by the update, which names it
+  in its WARNING; it is not among the pre-check's findings
+  (`docs/reference/ddl.md#row-order`, `docs/operations/upgrade.md`).
+- **A definition reading something other than the rows is refused** (`0A000`): a
+  volatile function anywhere in its view chain (`random()`, `gen_random_uuid()`,
+  `nextval()`, `clock_timestamp()`, a function of yours declared `VOLATILE`), the
+  session, transaction, server, privileges or statistics (`SESSION_USER`,
+  `txid_current()`, `has_table_privilege(…)`, `pg_stat_*`), who reads it
+  (`CURRENT_USER`, `CURRENT_ROLE`, `USER`), the system columns `ctid`, `xmax`, `cmin`
+  and `cmax`, `TABLESAMPLE`, and a relation or join the definition walk cannot follow.
+  Each changes with no write pg_tviews sees. See `docs/reference/ddl.md#refused-definitions`.
+- **pg_tviews is the only writer of a TVIEW's table.** Each `tv_*` carries a statement
+  trigger, `trg_tview_guard`, refusing `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` from
+  outside pg_tviews with `55000`, a superuser's included; the owner's `TRUNCATE` is
+  allowed, to rebuild. A data-only restore must leave the TVIEW tables' data out
+  (`pg_dump --exclude-table-data='*.tv_*'`); each empty TVIEW is refilled.
+- **Row security on `tv_*` is supported, and must not filter the owner.** Under
+  `FORCE ROW LEVEL SECURITY`, every statement pg_tviews runs on the table fails with
+  `55000` unless the owner has a permissive policy filtering nothing and no
+  restrictive one applies. A replace that rebuilds the table puts its row security and
+  policies back. `docs/reference/ddl.md#row-level-security-on-tv_` gives the pattern.
+- **A TVIEW created from a `SELECT` without `id`** gets
+  `tviews.pg_tviews_row_id(entity, key)`, a UUIDv5 of the entity and the key, in
+  place of `gen_random_uuid()`: the same `id` at every evaluation. A TVIEW created
+  that way before is refused by the update's re-derivation (a volatile function);
+  create it again with `pg_tviews_create_or_replace()`.
+- **The time refresh refreshes only the rows the instant changes.**
+  `pg_tviews_refresh_time_dependent()` compares each time-dependent TVIEW's rows with
+  its view's, as its owner and without a lock on the TVIEW, and refreshes only the
+  rows that differ, through the flush and under their value locks: a writer waits only
+  when it writes one of those rows. It no longer rebuilds the TVIEW. Called with no
+  TVIEW by a role that does not own every time-dependent TVIEW, it refreshes those it
+  owns and names the others in a WARNING (E1-10).
+- **A transaction with work still queued at `COMMIT` fails** (`55000`), the fan-out
+  patches included; before, a disabled flush trigger let it commit with stale rows.
+- **A patch no longer copies `numeric`, floating-point or `jsonb` values**: a write
+  changing one recomputes the row, so the document keeps the digits and scale
+  `to_jsonb()` gives. Writes changing such a column are slower.
+- **Patched writes cost about 3 % more under contention** (measured, accepted): the
+  decisions' facts are established once per command, and the guard is one more
+  statement trigger.
+- The catalog revision is 15: writes are refused between installing the package and
+  `ALTER EXTENSION pg_tviews UPDATE`, which re-derives every TVIEW.
+
+### Added
+
+- **`CALL tviews.pg_tviews_time_boundary()`**: the time refresh of every time-dependent
+  TVIEW the caller owns, dependencies first, one transaction each, so a writer waits at
+  most for one TVIEW's rows. `tviews.registry.time_boundary` is the instant each TVIEW
+  was last brought to. An operator's forms refresh every TVIEW, each as its owner:
+  `CALL tviews.pg_tviews_time_boundary_all()` and
+  `pg_tviews_refresh_time_dependent_all(tview)` (revoked from `PUBLIC`).
+- **A transaction older than a time boundary hands its keys off.** Its rows were
+  computed at an earlier `now()`: its keys are recorded as it commits, and a background
+  worker refreshes them right after. Nothing fails; the health component
+  `time_handoff` warns when keys wait longer than a minute.
+- **Health components** in `pg_tviews_check_health()`: `tv_policies` (an owner that
+  row security filters on `tv_*`, a `tv_*` without row security read by other roles
+  while a table it reads filters its readers, an embedded table whose policies differ),
+  `tv_writers` (roles other than the owner granted writes on `tv_*`, `PUBLIC`
+  included), `tv_triggers` (user triggers and rules on `tv_*`), `change_feed` (with
+  `publish_changes = rows`, login roles that may `LISTEN` but not read a TVIEW) and
+  `time_handoff`. `triggers` also reports a guard missing or disabled, and a `tv_*` a
+  subscription writes.
+- `docs/reference/dialect.toml`, the grammar of accepted definitions, from which
+  `shapes.md` is generated; `docs/reference/owner-frame.md`, the frame a refresh runs
+  in; `docs/proofs/theorems.md`, each refresh shortcut stated as a theorem naming its
+  code and its checks.
+- `SECURITY.md` gives one reporting channel and what pg_tviews guarantees
+  (`docs/security/architecture.md`: the extension is `superuser = true`).
+
+### Fixed
+
+- **A write is skipped or patched only when pg_tviews can show the TVIEW does not
+  read what it changed.** Each mapping now stores the columns its definition reads of
+  each table, from a walk of the whole chain: operators, `= ANY`, aggregates and their
+  support functions, window functions, `LIMIT`/`OFFSET` and `VALUES` expressions,
+  function arguments in `FROM`, and casts of text to a time type (a time read). A
+  column missing from it before left a document stale after a write to that column.
+  Anything the walk cannot establish refreshes. Adding, dropping or renaming a column of
+  a table a TVIEW reads whole refreshes that TVIEW.
+- **A computed part of a document no longer takes a patch it cannot take**: a document
+  embedded in a TVIEW that is also read elsewhere in its definition, or a part built
+  from a sub-select, an aggregate, a subquery's output or a fallback around an embed,
+  is recomputed.
+- **An error inside pg_tviews' datum comparison no longer leaves the backend marked as
+  inside extension work** (E1-13): a function reading back its own write after such an
+  error read it stale.
+- **`pg_dump` includes the audit log** and its sequence (E1-12).
+
 ## [0.1.0-beta.40] - 2026-11-17
 
 ### Security
