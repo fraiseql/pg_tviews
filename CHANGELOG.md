@@ -114,6 +114,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Writes that recompute an embedded TVIEW's rows no longer deadlock each other**
+  (40P01). A recompute writes the child's rows with an upsert, which fires the
+  child's statement-level `INSERT` trigger over no inserted row; that counted as a
+  link change, so every later refresh in the transaction took shared value locks,
+  and two writers changing no link could wait for each other in a cycle (#263's
+  case, on the recompute path). It hit every write that recomputes instead of
+  patching, among them writes of a `numeric`, floating-point or `jsonb` column
+  (above, under Changed). A statement that changed no row is now ignored. In the
+  concurrent fuzzer's value-only writes with the direct patch off: 37 of 79
+  transactions deadlocked before, none of 32,841 after.
 - **A write is skipped or patched only when pg_tviews can show the TVIEW does not
   read what it changed.** Each mapping now stores the columns its definition reads of
   each table, from a walk of the whole chain: operators, `= ANY`, aggregates and their
