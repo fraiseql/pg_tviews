@@ -1,8 +1,11 @@
 //! Per-TVIEW refresh statistics, readable from any session (ADR 0221).
 //!
 //! A backend adds to a local map while its transaction refreshes TVIEWs, and
-//! merges it into shared memory when the transaction ends, committed or not: one
-//! lock acquisition per transaction, no SPI. The shared table holds a fixed number
+//! merges it into shared memory when the transaction ends, committed or not: no
+//! SPI. The counters are atomic, so a merge into slots that exist takes the lock
+//! shared, and concurrent transactions do not wait on each other; only taking a
+//! slot, freeing one or zeroing counters takes it exclusively. A reader may see one
+//! transaction's additions to some counters before the others. The shared table holds a fixed number
 //! of TVIEWs for the whole cluster, keyed by database and table; a TVIEW that
 //! finds it full is untracked, and the view says so. Counters start over at a
 //! restart, a reset, and a rebuild (a new table).
@@ -48,23 +51,41 @@ pub enum Counter {
 const COUNTERS: usize = 10;
 
 /// One TVIEW's counters. `db` 0 marks a free slot (no database has OID 0): the
-/// all-zero slot is free, so zeroed memory is an empty table.
-#[derive(Debug, Clone, Copy)]
+/// all-zero slot is free, so zeroed memory is an empty table. `db`, `table` and
+/// `since` change only under the exclusive lock; `counts` are added to under the
+/// shared one.
+#[derive(Debug)]
 #[repr(C)]
 struct Slot {
     db: u32,
     table: u32,
     since: pg_sys::TimestampTz,
-    counts: [u64; COUNTERS],
+    counts: [AtomicU64; COUNTERS],
 }
 
 impl Slot {
-    const FREE: Self = Self {
-        db: 0,
-        table: 0,
-        since: 0,
-        counts: [0; COUNTERS],
-    };
+    const fn new(db: u32, table: u32, since: pg_sys::TimestampTz) -> Self {
+        Self {
+            db,
+            table,
+            since,
+            counts: [const { AtomicU64::new(0) }; COUNTERS],
+        }
+    }
+
+    /// The counters, each read once.
+    fn counts(&self) -> [u64; COUNTERS] {
+        std::array::from_fn(|i| self.counts[i].load(Ordering::Relaxed))
+    }
+
+    /// Add `counts` (wrapping: a u64 of events or microseconds does not wrap).
+    fn add(&self, counts: &[u64; COUNTERS]) {
+        for (total, &n) in self.counts.iter().zip(counts) {
+            if n > 0 {
+                total.fetch_add(n, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// The cluster's table, in shared memory; all zeros is empty.
@@ -102,6 +123,14 @@ impl Table {
         None
     }
 
+    /// Add `counts` to the slot of `(db, table)`: false when it has none. Needs
+    /// only shared access (the lock taken shared).
+    fn add_existing(&self, db: u32, table: u32, counts: &[u64; COUNTERS]) -> bool {
+        self.find(db, table)
+            .map(|i| self.slots[i].add(counts))
+            .is_some()
+    }
+
     /// The slot of `(db, table)`, taken now if it had none; `None` when full.
     fn find_or_take(&mut self, db: u32, table: u32, now: pg_sys::TimestampTz) -> Option<usize> {
         let mut i = Self::home(db, table);
@@ -111,12 +140,7 @@ impl Table {
                 return Some(i);
             }
             if slot.db == 0 {
-                *slot = Slot {
-                    db,
-                    table,
-                    since: now,
-                    counts: [0; COUNTERS],
-                };
+                *slot = Slot::new(db, table, now);
                 return Some(i);
             }
             i = (i + 1) % CAPACITY;
@@ -135,10 +159,10 @@ impl Table {
     fn free(&mut self, mut i: usize) {
         let mut j = i;
         loop {
-            self.slots[i] = Slot::FREE;
+            self.slots[i] = Slot::new(0, 0, 0);
             loop {
                 j = (j + 1) % CAPACITY;
-                let slot = self.slots[j];
+                let slot = &self.slots[j];
                 if slot.db == 0 {
                     self.overflowed = false;
                     return;
@@ -151,7 +175,8 @@ impl Table {
                     i < home || home <= j
                 };
                 if !stays {
-                    self.slots[i] = slot;
+                    // Slot i is free: the swap moves j into it and frees j.
+                    self.slots.swap(i, j);
                     i = j;
                     break;
                 }
@@ -317,29 +342,38 @@ fn merge_into(committing: bool) {
     // Whether each table may take a slot, decided before the lock is held: its
     // relation is in the committing transaction's catalog (one created in a
     // subtransaction that rolled back is not).
+    #[allow(clippy::needless_collect)] // Reason: the catalog lookups run before the lock is taken
     let local: Vec<(Oid, [u64; COUNTERS], bool)> = local
         .into_values()
         .map(|(oid, counts)| (oid, counts, committing && relation_exists(oid)))
         .collect();
     // SAFETY: reads backend globals.
     let (db, now) = unsafe { (pg_sys::MyDatabaseId.to_u32(), pg_sys::GetCurrentTimestamp()) };
+    // Into the slots that exist, under the shared lock: concurrent transactions
+    // merge side by side.
+    let missing: Vec<(Oid, [u64; COUNTERS])> = {
+        let Some(table) = Locked::acquire(pg_sys::LWLockMode::LW_SHARED) else {
+            return;
+        };
+        local
+            .into_iter()
+            .filter(|(oid, counts, may_take)| {
+                !table.add_existing(db, oid.to_u32(), counts) && *may_take
+            })
+            .map(|(oid, counts, _)| (oid, counts))
+            .collect()
+    };
+    if missing.is_empty() {
+        return;
+    }
+    // A TVIEW counting for the first time takes its slot, exclusively.
     let Some(mut table) = Locked::acquire(pg_sys::LWLockMode::LW_EXCLUSIVE) else {
         return;
     };
-    for (oid, counts, may_take) in local {
-        let slot = if may_take {
-            table.find_or_take(db, oid.to_u32(), now)
-        } else {
-            table.find(db, oid.to_u32())
-        };
-        match slot {
-            Some(i) => {
-                for (total, n) in table.slots[i].counts.iter_mut().zip(counts) {
-                    *total = total.saturating_add(n);
-                }
-            }
-            None if may_take => table.overflowed = true,
-            None => {}
+    for (oid, counts) in missing {
+        match table.find_or_take(db, oid.to_u32(), now) {
+            Some(i) => table.slots[i].add(&counts),
+            None => table.overflowed = true,
         }
     }
 }
@@ -388,7 +422,7 @@ pub fn read() -> crate::TViewResult<(HashMap<Oid, Counts>, bool)> {
             (
                 Oid::from(slot.table),
                 Counts {
-                    counts: slot.counts,
+                    counts: slot.counts(),
                     since: slot.since,
                 },
             )
@@ -415,7 +449,9 @@ pub fn reset(tables: &[Oid], whole_database: bool) -> crate::TViewResult<()> {
     for table in tables {
         match shared.find_or_take(db, table.to_u32(), now) {
             Some(i) => {
-                shared.slots[i].counts = [0; COUNTERS];
+                for count in &mut shared.slots[i].counts {
+                    *count.get_mut() = 0;
+                }
                 shared.slots[i].since = now;
             }
             None => shared.overflowed = true,
@@ -608,7 +644,7 @@ pub fn record_propagation_pruned(parent: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CAPACITY, Slot, Table};
+    use super::{CAPACITY, COUNTERS, Slot, Table};
 
     /// A zeroed table on the heap, as shared memory starts.
     fn table() -> Box<Table> {
@@ -663,6 +699,36 @@ mod tests {
         assert_eq!(t.slots.iter().filter(|s| s.db == 2).count(), CAPACITY / 2);
         assert!(t.find(2, 2).is_some(), "the other database keeps its slots");
         assert!(t.find_or_take(3, 1, 0).is_some(), "room again");
+    }
+
+    #[test]
+    fn counts_add_to_an_existing_slot_through_a_shared_reference() {
+        let mut t = table();
+        let i = t.find_or_take(1, 100, 0).unwrap();
+        let shared: &Table = &t;
+        assert!(shared.add_existing(1, 100, &[2; COUNTERS]));
+        assert!(
+            !shared.add_existing(1, 200, &[2; COUNTERS]),
+            "no slot: not added"
+        );
+        assert_eq!(t.slots[i].counts(), [2; COUNTERS]);
+    }
+
+    #[test]
+    fn concurrent_additions_are_all_counted() {
+        let mut t = table();
+        let i = t.find_or_take(1, 100, 0).unwrap();
+        let shared: &Table = &t;
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..1000 {
+                        assert!(shared.add_existing(1, 100, &[1; COUNTERS]));
+                    }
+                });
+            }
+        });
+        assert_eq!(t.slots[i].counts(), [8000; COUNTERS]);
     }
 
     #[test]
