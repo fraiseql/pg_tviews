@@ -53,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A patch no longer copies `numeric`, floating-point or `jsonb` values**: a write
   changing one recomputes the row, so the document keeps the digits and scale
   `to_jsonb()` gives. Writes changing such a column are slower.
-- **Patched writes cost about 3 % more under contention** (measured, accepted): the
-  decisions' facts are established once per command, and the guard is one more
-  statement trigger.
+- **Patched writes cost about 3 % more** (measured against beta.40 at 1 and 16
+  clients, accepted): the decisions' facts are established once per command, and the
+  guard is one more statement trigger.
 - The catalog revision is 15: writes are refused between installing the package and
   `ALTER EXTENSION pg_tviews UPDATE`, which re-derives every TVIEW.
 
@@ -85,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code and its checks.
 - `SECURITY.md` gives one reporting channel and what pg_tviews guarantees
   (`docs/security/architecture.md`: the extension is `superuser = true`).
+
+### Performance
+
+- **Concurrent writers no longer queue on the statistics lock**: a transaction adds
+  its counters to `pg_tviews_stats()` under a shared lock, and takes the exclusive
+  lock only to give a new table a slot. With 16 writers of one TVIEW, waits on
+  `LWLock:pg_tviews_stats` went from about 6 % of samples to none, and writes got
+  0.7–1.5 % faster. A reader may now see one transaction's counters before others.
 
 ### Fixed
 
