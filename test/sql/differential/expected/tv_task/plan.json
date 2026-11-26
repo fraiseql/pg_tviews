@@ -10,6 +10,11 @@
       "entity_name": "task",
       "initial_attnum": "public.tb_task.pk_task",
       "initial_col": "pk_task",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_task",
@@ -23,6 +28,11 @@
       "entity_name": "task",
       "initial_attnum": "public.tb_task_archive.pk_task",
       "initial_col": "pk_task",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_task",
@@ -52,6 +62,11 @@
       "links": [
         "public.tb_task.pk_task"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_task",
       "table": "public.tb_task"
     },
@@ -70,6 +85,11 @@
       "kind": "local",
       "links": [
         "public.tb_task_archive.pk_task"
+      ],
+      "read_set": [
+        1,
+        2,
+        3
       ],
       "relid": "public.tb_task_archive",
       "table": "public.tb_task_archive"

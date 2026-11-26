@@ -27,6 +27,7 @@ allowed=(
   "src/ddl/create/select.rs|pg_catalog.to_regtype(\$1)|create: DDL, a type the definition names"
   "src/catalog/queries.rs|pg_catalog.to_regclass(\$1) IS NOT NULL|the extension's own catalog table"
   "src/catalog/queries.rs|'{}'::pg_catalog.regnamespace|the extension's own schema"
+  "src/catalog/queries.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
   "src/dependency/triggers.rs|'{schema}'::pg_catalog.regnamespace|the extension's own schema"
   "src/lineage/analyze.rs|CREATE INDEX ON {} USING {}|advice in a notice, never run"
   "src/hooks/ctas.rs|{}.{}|DDL: the name the CREATE TABLE AS statement wrote"
@@ -240,7 +241,7 @@ echo "no SQL resolves an object name outside the allowed DDL, restore and instal
 pin='let _path = crate::owner::CatalogPath::pin();'
 unpinned=""
 # The first statement (after `use` items) of each #[pg_extern] / #[pg_trigger]
-# function. pg_tviews_version() runs no SQL.
+# function. pg_tviews_version() and pg_tviews_row_id() run no SQL.
 unpinned+=$(awk -v pin="$pin" '
   FNR == 1 { state = 0 }
   /^#\[pg_(extern|trigger)/ { state = 1; name = ""; next }
@@ -250,7 +251,7 @@ unpinned+=$(awk -v pin="$pin" '
   state == 1 && /\{$/ && !/^[[:space:]]/ { state = 2; next }
   state == 2 && /^[[:space:]]*use / { next }
   state == 2 {
-    if (index($0, pin) == 0 && name != "pg_tviews_version") print FILENAME ": " name "()"
+    if (index($0, pin) == 0 && name != "pg_tviews_version" && name != "pg_tviews_row_id") print FILENAME ": " name "()"
     state = 0
   }' $(grep -rlE '^#\[pg_(extern|trigger)' src))
 # Entry points that are not SQL-callable functions: `file|function|text it holds`.

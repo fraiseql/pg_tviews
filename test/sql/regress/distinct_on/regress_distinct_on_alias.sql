@@ -49,7 +49,7 @@ SELECT pg_tviews_create('tv_contract', $TV$
          c.id,
          jsonb_build_object('status', c.status, 'version', c.version_no) AS data
   FROM tb_contract c
-  ORDER BY c.id_contract, c.version_no DESC
+  ORDER BY c.id_contract, c.version_no DESC, c.pk_contract
 $TV$);
 
 -- Baseline: latest version per contract materialized (contract 100 -> active v2).
@@ -116,7 +116,7 @@ SELECT pg_tviews_create('tv_event', $TV$
   SELECT DISTINCT ON (e.id) e.pk_event, e.id,
          jsonb_build_object('status', e.status, 'seq', e.seq) AS data
   FROM tb_event e
-  ORDER BY e.id, e.seq DESC
+  ORDER BY e.id, e.seq DESC, e.pk_event
 $TV$);
 
 DO $$ BEGIN

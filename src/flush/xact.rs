@@ -13,6 +13,7 @@ use std::os::raw::c_void;
 /// `tviews.stats`.
 const RESET_AT_END: &[fn()] = &[
     crate::queue::state::clear,
+    crate::boundary::forget,
     super::savepoint::clear,
     crate::concurrency::clear,
     crate::executor::reset,
@@ -24,6 +25,7 @@ const RESET_AT_END: &[fn()] = &[
     crate::cache::end_transaction,
     crate::owner::forget_temp_check,
     crate::catalog::stopgap::forget,
+    crate::catalog::facts::forget,
 ];
 
 /// What an abort resets besides: the caches and the revision check, when the
@@ -139,6 +141,9 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
                 fail_suspended();
                 crate::publish::at_pre_commit();
                 crate::stats::merge_committing();
+                if crate::boundary::take_handed_off() {
+                    crate::time_drain::start_for_committing();
+                }
             }
             crate::suspend::clear_changed_entities();
             crate::suspend::force_resume();
@@ -174,18 +179,15 @@ unsafe extern "C-unwind" fn tview_xact_callback(event: u32, _arg: *mut c_void) {
 /// this runs in the transaction callback, at `PRE_COMMIT`, before the point of no
 /// return).
 fn fail_unflushed() {
-    let queued = crate::queue::state::get_queue_contents();
-    if queued.is_empty() {
+    // Every queue: a statement whose rows all fan out queues no key (G3).
+    let (pending, entities) = crate::queue::state::pending_work();
+    if pending == 0 {
         return;
     }
-    let entities: std::collections::BTreeSet<&str> =
-        queued.iter().map(|k| k.entity.as_str()).collect();
     fail_pending(
         &format!(
-            "cannot commit with {} queued refreshes for {:?}: they were never applied \
-             (missing flush trigger?)",
-            queued.len(),
-            entities
+            "cannot commit with {pending} queued refreshes for {entities:?}: they were never \
+             applied (missing flush trigger?)"
         ),
         "Run tviews.pg_tviews_check_health() to find missing triggers, and \
          tviews.pg_tviews_refresh(entity) to rebuild the TVIEWs named.",

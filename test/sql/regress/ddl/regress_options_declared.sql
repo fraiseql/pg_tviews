@@ -45,7 +45,7 @@ SELECT must(options_of('a') - 'data_compression' = '{"logged": true, "fillfactor
                             "data_storage": "main", "toast_tuple_target": null, "indexes": [],
                                "group_keys": null, "uncascaded_policy": "error",
                                "uncascaded_tables": {}, "function_reads": {},
-                               "time_refresh": null, "typename": null}'::jsonb,
+                               "time_refresh": null, "typename": null, "settings": {}}'::jsonb,
             'CREATE TABLE AS defaults: ' || options_of('a')::text);
 SELECT must(options_of('b') = options_of('a'), 'pg_tviews_create: ' || options_of('b')::text);
 SELECT must(options_of('c') = options_of('a'), 'pg_tviews_create_or_replace: ' || options_of('c')::text);
@@ -93,14 +93,16 @@ SELECT tviews.pg_tviews_create_or_replace('tv_spend', $$
       "function_reads": {"public.current_rate()": ["public.tb_rate"]},
       "time_refresh": "external", "typename": "Spend",
       "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000,
-      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]]}');
+      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]],
+      "settings": {"app.region": "eu"}}');
 SELECT must(options_of('spend') = '{"group_keys": {"tb_order": "fk_a", "tb_a": "pk_a"},
       "logged": false, "fillfactor": 90, "data_gin_index": true,
       "uncascaded_policy": "warn", "uncascaded_tables": {"tb_b": "full_refresh"},
       "function_reads": {"public.current_rate()": ["tb_rate"]},
       "time_refresh": "external", "typename": "Spend",
       "data_compression": "pglz", "data_storage": "extended", "toast_tuple_target": 4000,
-      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]]}'::jsonb,
+      "indexes": [["total"], [{"path": "recent", "type": "bigint", "desc": true}]],
+      "settings": {"app.region": "eu"}}'::jsonb,
             'every option published: ' || options_of('spend')::text);
 SELECT must(tviews.pg_tviews_create_or_replace(format('%I.%I', schema, name), query, options) = 'unchanged',
             'round trip of ' || entity || ': ' || options::text)

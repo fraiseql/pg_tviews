@@ -572,7 +572,13 @@ impl FollowUps {
                         .map(|entity| (entity, table, logged))
                 }),
                 value_rewrite: value_rewrite_of(pstmt),
-                row_security_before: row_security_scope_of(pstmt).then(|| {
+                // pg_tviews' own scripts change no role a TVIEW reads a table as
+                // (the update's re-derivation checks each TVIEW, under its lock
+                // timeout); reading every TVIEW here would wait on each backing
+                // view with none.
+                row_security_before: (!crate::revision::in_own_script()
+                    && row_security_scope_of(pstmt))
+                .then(|| {
                     crate::ddl::row_security_refusals()
                         .into_iter()
                         .map(|(entity, _)| entity)
@@ -656,8 +662,27 @@ impl FollowUps {
         }
         if let Some(rewrite) = self.value_rewrite {
             let readers = match &rewrite {
-                ValueRewrite::Expression { table, columns } => {
-                    crate::catalog::queries::column_readers_of(*table, columns)
+                ValueRewrite::Expression {
+                    table,
+                    columns,
+                    row_type,
+                } => {
+                    let mut readers = if columns.is_empty() {
+                        Ok(Vec::new())
+                    } else {
+                        crate::catalog::queries::column_readers_of(*table, columns)
+                    };
+                    if *row_type && let Ok(found) = &mut readers {
+                        match crate::catalog::queries::whole_readers_of(*table) {
+                            Ok(whole) => {
+                                found.extend(whole);
+                                found.sort();
+                                found.dedup();
+                            }
+                            Err(e) => readers = Err(e),
+                        }
+                    }
+                    readers
                 }
                 ValueRewrite::EnumLabel(enum_type) => {
                     crate::catalog::queries::type_readers_of(*enum_type)
@@ -667,10 +692,16 @@ impl FollowUps {
                 e.raise_in("pg_tviews: could not refresh the TVIEWs reading rewritten values");
             }
         }
-        if let Some(before) = &self.row_security_before
-            && let Err(e) = crate::ddl::check_every_row_security(before)
-        {
-            e.raise();
+        if let Some(before) = &self.row_security_before {
+            if let Err(e) = crate::ddl::check_every_row_security(before) {
+                e.raise();
+            }
+            // Row security on a TVIEW's own table is not refused here, since
+            // pg_restore runs FORCE before CREATE POLICY: its maintenance fails
+            // until fixed (D6), which the caller hears now.
+            if let Err(e) = crate::guard::warn_filtered() {
+                e.raise();
+            }
         }
     }
 }

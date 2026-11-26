@@ -10,6 +10,11 @@
       "entity_name": "anytask",
       "initial_attnum": "public.tb_task.pk_task",
       "initial_col": "pk_task",
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "root": true,
       "source_columns": [
         "pk_task",
@@ -39,6 +44,11 @@
       "links": [
         "public.tb_task.pk_task"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_task",
       "table": "public.tb_task"
     },
@@ -56,6 +66,11 @@
       "kind": "mapped",
       "links": [
         "public.tb_task_archive.pk_task"
+      ],
+      "read_set": [
+        1,
+        2,
+        3
       ],
       "relid": "public.tb_task_archive",
       "sql": "SELECT DISTINCT (OPERATOR(pg_catalog.-) d.{c:public.tb_task_archive.pk_task}) FROM pg_tviews_delta d",

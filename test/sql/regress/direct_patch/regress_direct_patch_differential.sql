@@ -172,7 +172,7 @@ INSERT INTO tb_dedup (grp, ord, label) VALUES (1, 1, 'a'), (1, 2, 'b');
 SELECT pg_tviews_create('tv_dedup', $TVIEW$
     SELECT DISTINCT ON (grp) grp AS pk_dedup, id,
            jsonb_build_object('label', label) AS data
-    FROM tb_dedup ORDER BY grp, ord DESC
+    FROM tb_dedup ORDER BY grp, ord DESC, tb_dedup.pk_dedup
 $TVIEW$);
 -- DISTINCT ON refresh uses refresh_by_dedup_key (not the recompute_view_row path),
 -- so the signal is that it is never fast-patched: direct_patches_applied is flat.

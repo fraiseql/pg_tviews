@@ -47,6 +47,11 @@ pub struct TviewPlan {
     /// refreshes run under (`to_tsvector(text)` reads it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_search: Option<String>,
+    /// The custom settings its definition reads by name with `current_setting()`,
+    /// which its refreshes read in the owner frame (the health check's
+    /// `frame_settings`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_read: Vec<String>,
 }
 
 /// A TVIEW's row key: the integer column `pk_<entity>` (ADR 0169; smallint,
@@ -95,6 +100,11 @@ pub struct LocalPath {
     /// them changes no row. Empty means unknown: every UPDATE refreshes.
     #[serde(default)]
     pub source_columns: Vec<String>,
+    /// Every column of the table the TVIEW reads, by attnum (its table's
+    /// [`KeyMapping::read_set`]); `None`, also in a plan stored without it: not
+    /// known column by column, so every UPDATE refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_set: Option<Vec<i16>>,
     /// The table holds the TVIEW's identity: its own rows are the TVIEW's rows.
     #[serde(default)]
     pub root: bool,
@@ -153,11 +163,19 @@ pub struct KeyMapping {
     /// [`super::render_template`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql: Option<String>,
-    /// Columns of the table the TVIEW reads; empty when unknown.
+    /// Columns of the table the definition names (`pg_depend`), numbered by
+    /// the templates; empty when unknown.
     #[serde(default)]
     pub attnums: Vec<i16>,
     #[serde(default)]
     pub columns: Vec<String>,
+    /// Every column of the table the TVIEW reads, by attnum: `Complete` in the
+    /// decisions (`crate::decide::ReadSet`). `None`, also in a plan stored
+    /// without it, is `Unknown`: it reads the table beyond its columns (whole, a
+    /// system column, inside a declared function), and no write to it is
+    /// skipped or patched on its columns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_set: Option<Vec<i16>>,
     /// `mapped` through one equality onto a column of the root: `(this table's
     /// column, the root's column)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,6 +247,7 @@ pub fn assemble(entity: &str, lineage: &Lineage, paths: Vec<LocalPath>, key: Pla
         references: lineage.references.clone(),
         key,
         text_search: None,
+        settings_read: lineage.settings.clone(),
     }
 }
 
@@ -279,6 +298,7 @@ fn key_mappings(lineage: &Lineage) -> Vec<KeyMapping> {
                 sql,
                 attnums: t.columns.iter().map(|(_, n)| *n).collect(),
                 columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
+                read_set: t.read_set.clone(),
                 hop,
                 key_col,
                 fanout,
@@ -401,6 +421,11 @@ impl TviewPlan {
             if let Some(links) = &table.links {
                 table.links = Some(links.iter().map(|&a| number(a)).collect::<Result<_, _>>()?);
             }
+            // A column read that the plan does not name cannot be rebound: the
+            // read set is then unknown.
+            if let Some(read) = &table.read_set {
+                table.read_set = read.iter().map(|&a| attnum(old, a)).collect();
+            }
             for read in &mut table.reads {
                 if read.attnum != 0 {
                     read.attnum = number(read.attnum)?;
@@ -428,6 +453,9 @@ impl TviewPlan {
             }
             path.source_oid =
                 Oid::from(relid(old).ok_or_else(|| Unbound::Table(path.source_table.clone()))?);
+            if let Some(read) = &path.read_set {
+                path.read_set = read.iter().map(|&a| attnum(old, a)).collect();
+            }
             if let Some(a) = path.initial_attnum {
                 path.initial_attnum = Some(
                     attnum(old, a).ok_or_else(|| Unbound::Unnamed(path.source_table.clone(), a))?,

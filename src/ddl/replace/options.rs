@@ -32,6 +32,8 @@ pub(crate) struct Options {
     pub(super) typename: Option<String>,
     /// Declared JSON-path indexes.
     pub(super) indexes: Option<Vec<JsonIndex>>,
+    /// Custom settings pinned in the owner frames, name and value.
+    pub(super) settings: Option<Vec<(String, String)>>,
 }
 
 /// A TVIEW as its options declare it: every option, those not passed at their
@@ -92,7 +94,8 @@ impl Options {
                     None => Vec::new(),
                 },
                 self.time_refresh.unwrap_or(TimeRefresh::None),
-            ),
+            )
+            .with_settings(self.settings.unwrap_or_default()),
             typename: self.typename,
             indexes: self.indexes.unwrap_or_default(),
         })
@@ -140,6 +143,7 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
             "uncascaded_tables" => options.uncascaded_tables = Some(uncascaded_tables(key, value)?),
             "function_reads" => options.function_reads = Some(function_reads(key, value)?),
             "time_refresh" => options.time_refresh = Some(time_refresh(key, value)?),
+            "settings" => options.settings = Some(frame_settings(key, value)?),
             "group_keys" => options.group_keys = group_keys(key, value)?,
             "typename" => options.typename = typename(key, value)?,
             "indexes" => {
@@ -152,13 +156,57 @@ pub(crate) fn parse_options(value: &serde_json::Value) -> TViewResult<Options> {
                         "unknown option \"{other}\" (known: logged, fillfactor, \
                          data_gin_index, data_compression, data_storage, toast_tuple_target, \
                          group_keys, uncascaded_policy, uncascaded_tables, \
-                         function_reads, time_refresh, typename, indexes)"
+                         function_reads, time_refresh, typename, indexes, settings)"
                     ),
                 ));
             }
         }
     }
     Ok(options)
+}
+
+/// The `settings` option: an object of custom settings (a dot in the name, not
+/// `pg_tviews.*`) and the string value each is pinned to in the owner frames.
+fn frame_settings(key: &str, value: &serde_json::Value) -> TViewResult<Vec<(String, String)>> {
+    let serde_json::Value::Object(map) = value else {
+        return Err(invalid(
+            key,
+            "must be an object of custom settings and their values",
+        ));
+    };
+    map.iter()
+        .map(|(name, value)| {
+            if !is_custom_setting(name) {
+                return Err(invalid(
+                    key,
+                    format!(
+                        "\"{name}\" is not a custom setting: name one with a dot, such as \
+                         app.locale, other than pg_tviews.*; the frame pins the others itself"
+                    ),
+                ));
+            }
+            let value = value
+                .as_str()
+                .ok_or_else(|| invalid(key, format!("the value of \"{name}\" must be a string")))?;
+            Ok((name.clone(), value.to_string()))
+        })
+        .collect()
+}
+
+/// A custom setting's name as PostgreSQL accepts one: identifiers joined by dots,
+/// at least two, the first not `pg_tviews`.
+fn is_custom_setting(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('.').collect();
+    parts.len() >= 2
+        && !parts[0].eq_ignore_ascii_case("pg_tviews")
+        && parts.iter().all(|part| {
+            part.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        })
 }
 
 fn boolean(key: &str, value: &serde_json::Value) -> TViewResult<bool> {

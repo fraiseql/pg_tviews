@@ -143,10 +143,10 @@ fn pg_tview_trigger_handler<'a>(
     // The changed columns, compared datum by datum, once for every TVIEW: only
     // when a local path or a link check reads them.
     let changed = (!all_paths.is_empty() || !crate::concurrency::links_changed())
-        .then(|| changed_columns(trigger))
+        .then(|| changed_columns(trigger, table_oid))
         .flatten();
     for served in readers.row() {
-        note_row_write(trigger, served, table_oid, changed.as_deref());
+        note_row_write(trigger, served, table_oid, changed.as_ref());
     }
     // If triggers are suspended, record the change instead of enqueuing
     if crate::suspend::is_suspended() {
@@ -162,7 +162,7 @@ fn pg_tview_trigger_handler<'a>(
             .iter()
             .filter(|p| p.entity_name == served)
             .collect();
-        enqueue_local_keys(trigger, &paths, changed.as_deref());
+        enqueue_local_keys(trigger, &paths, changed.as_ref());
 
         // A partitioned table whose writes map through a query (ADR 0157): the
         // row trigger is the one copied onto every partition, so map this row.
@@ -183,7 +183,7 @@ fn note_row_write(
     trigger: &PgTrigger<'_>,
     served: &str,
     table: pg_sys::Oid,
-    changed: Option<&[String]>,
+    changed: Option<&Changed>,
 ) {
     let meta = crate::catalog::TviewMeta::load_reaching(served, table)
         .ok()
@@ -204,12 +204,14 @@ fn note_row_write(
     };
     // Columns the plan does not list may link its rows: every write changes a
     // link.
-    if meta
-        .as_deref()
-        .is_some_and(|m| !crate::catalog::stopgap::columns_known(m, table.to_u32()))
-    {
-        crate::concurrency::note_link_change();
-        return;
+    if let Some(meta) = meta.as_deref() {
+        let relid = table.to_u32();
+        let read = crate::catalog::facts::read_set(meta, relid);
+        let env = crate::catalog::facts::env(meta, relid);
+        if crate::decide::trusted_read_set(&read, env).is_none() {
+            crate::concurrency::note_link_change();
+            return;
+        }
     }
     let mapping = meta.as_deref().and_then(|m| m.key_mapping(table, None));
     crate::concurrency::note_write(mapping, event, |links| {
@@ -217,14 +219,10 @@ fn note_row_write(
             return true;
         };
         links.iter().any(|&attnum| {
-            // SAFETY: a catalog lookup by OID and attribute number.
-            let name = unsafe { pg_sys::get_attname(table, attnum, true) };
             // A link column gone (dropped) cannot be told apart: count it.
-            name.is_null() || {
-                // SAFETY: a non-null, NUL-terminated name from the catalog.
-                let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
-                changed.iter().any(|c| *c == name)
-            }
+            changed.attnums.contains(attnum)
+                // SAFETY: a catalog lookup by OID and attribute number.
+                || unsafe { pg_sys::get_attname(table, attnum, true) }.is_null()
         })
     });
 }
@@ -244,7 +242,7 @@ fn new_image(trigger: &PgTrigger<'_>) -> Option<*mut pg_sys::HeapTupleData> {
 fn enqueue_local_keys(
     trigger: &PgTrigger,
     paths: &[&crate::lineage::plan::LocalPath],
-    changed: Option<&[String]>,
+    changed: Option<&Changed>,
 ) {
     if paths.is_empty() {
         return;
@@ -265,25 +263,28 @@ fn enqueue_local_keys(
 
     // Column-aware refresh: on a row-level UPDATE, a cascade whose target tview
     // depends on NONE of the changed columns cannot alter any target row, so the
-    // refresh is skipped. `changed` is None for INSERT/DELETE (membership
-    // changes) — those always cascade. A path with an empty `source_columns`
-    // also always cascades, and so does one whose columns the plan does not know
-    // ([`crate::catalog::stopgap`]: read whole, through a system column or a
-    // declared function, or by a plan from an earlier release).
+    // refresh is skipped (`crate::decide::column_skip`). `changed` is None for
+    // INSERT/DELETE (membership changes): those always cascade, and so does a
+    // path whose read set is unknown (read whole, through a system column or a
+    // declared function, or by a plan stored without it).
     for path in paths {
+        // The decisions below read the path's TVIEW's catalog row: on an UPDATE.
+        let meta = changed.and_then(|_| {
+            crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
+                .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))
+        });
         // An UPDATE changing none of the columns the TVIEW reads changes none of
         // its rows, its own included.
-        if let Some(changed) = changed {
-            let unread = !path.source_columns.is_empty()
-                && !path.source_columns.iter().any(|c| changed.contains(c));
-            if unread && columns_known(&path.entity_name, path.source_oid.to_u32()) {
-                continue;
-            }
+        if let (Some(changed), Some(meta)) = (changed, meta.as_deref())
+            && column_skip(meta, path, changed)
+        {
+            continue;
         }
         // An UPDATE of the TVIEW's own row that only changes columns
         // copied into its data is patched in place.
         if path.root
-            && let Some(fields) = try_capture_direct_patch(trigger, path, changed)
+            && let Some(meta) = meta.as_deref()
+            && let Some(fields) = try_capture_direct_patch(trigger, meta, path, changed)
             && let Some(new) = new_image(trigger)
             && let KeyExtraction::Value(KeyValue::Int(pk)) =
                 // SAFETY: the new image of the trigger's row, of its relation's
@@ -293,30 +294,44 @@ fn enqueue_local_keys(
             enqueue_refresh_patched(&path.entity_name, pk, fields);
             continue;
         }
-        for &image in &images {
+        for (i, &image) in images.iter().enumerate() {
+            // Mutant S09: the old image of an UPDATE keys no row.
+            if i == 0 && images.len() == 2 && crate::mutant::on("S09") {
+                continue;
+            }
             follow_local_path(path, image, &tupdesc);
         }
     }
 }
 
-/// Whether a write to table `relid` may skip `entity`'s TVIEW on the columns its
-/// plan names ([`crate::catalog::stopgap::columns_known`]).
-fn columns_known(entity: &str, relid: u32) -> bool {
-    let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))
-    else {
-        return false;
-    };
-    let known = crate::catalog::stopgap::columns_known(&meta, relid);
+/// Whether an UPDATE of a row of `path`'s table that changed `changed` may skip
+/// the path's TVIEW ([`crate::decide::column_skip`]).
+fn column_skip(
+    meta: &crate::catalog::TviewMeta,
+    path: &crate::lineage::plan::LocalPath,
+    changed: &Changed,
+) -> bool {
+    let relid = path.source_oid.to_u32();
+    let stored = path
+        .read_set
+        .as_deref()
+        .map(|read| crate::mutant::drop_last("S03", read));
+    let read = crate::catalog::facts::stored(stored);
+    let env = crate::catalog::facts::env(meta, relid);
+    let skip =
+        crate::decide::column_skip(crate::decide::Event::Update, &read, &changed.attnums, env);
+    // Test builds: a skip the columns the definition names would have allowed.
     #[cfg(feature = "test-hooks")]
-    if !known {
-        crate::stats::record_stopgap(
-            &crate::catalog::stopgap::reasons(&meta, relid),
-            &meta.entity_name,
-            relid,
-        );
+    if !skip
+        && !path.source_columns.is_empty()
+        && !path
+            .source_columns
+            .iter()
+            .any(|c| changed.names().any(|n| n == c))
+    {
+        crate::stats::count_refusal(meta, relid);
     }
-    known
+    skip
 }
 
 /// Enqueue the key a local path reads off one image of the changed row (its
@@ -349,65 +364,83 @@ fn follow_local_path(
 /// Try to capture a direct patch for an eligible row-level UPDATE.
 ///
 /// Returns `Some(fields)` — a `key → value` JSONB map ready to merge into the
-/// entity's own `data` — only when every changed column is in the plan's
-/// direct-patch map (columns of the table holding the identity that `data`
-/// copies and the definition reads nowhere else, ADR 0203) and the key is
-/// unchanged; `None` (fall back to recompute) otherwise. Pure in-memory: the
-/// cached plan, a raw datum diff, and typed value extraction — no SPI.
+/// entity's own `data` — when [`crate::decide::direct_patch`] allows it: every
+/// changed column the TVIEW reads is a column `data` copies (the plan's direct
+/// fields, ADR 0203) exactly, and the key is unchanged; `None` (fall back to
+/// recompute) otherwise, or when a value cannot be captured. The cached plan,
+/// a raw datum diff, typed value extraction and syscache lookups: no SPI.
 fn try_capture_direct_patch(
     trigger: &PgTrigger,
+    meta: &crate::catalog::TviewMeta,
     path: &crate::lineage::plan::LocalPath,
-    changed: Option<&[String]>,
+    changed: Option<&Changed>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    if !crate::config::direct_patch_enabled() {
-        return None;
-    }
-    // Full-tuple diff — `None` unless this is a row-level UPDATE (OLD and NEW both
-    // present). No changed columns ⇒ nothing to patch (let the caller plain-enqueue).
-    let changed = changed.filter(|c| !c.is_empty())?;
-    if changed.contains(&path.initial_col) {
-        return None;
-    }
-    // Columns the TVIEW does not read change none of its data.
-    let changed: Vec<&String> = changed
-        .iter()
-        .filter(|c| path.source_columns.is_empty() || path.source_columns.contains(c))
-        .collect();
-    if changed.is_empty() {
-        return None;
-    }
-    let meta = crate::catalog::TviewMeta::load_by_entity(&path.entity_name)
-        .unwrap_or_else(|e| e.raise_in("pg_tviews: could not read the propagation plan"))?;
+    // `None` unless this is a row-level UPDATE (OLD and NEW both present).
+    let changed = changed.filter(|c| !c.attnums.is_empty())?;
+    let relid = path.source_oid.to_u32();
     let direct = &meta.plan.direct;
+    if direct.is_empty() {
+        return None;
+    }
     let data_key = |col: &str| direct.iter().find(|(c, _)| c == col).map(|(_, k)| k);
-    if direct.is_empty() || !changed.iter().all(|c| data_key(c).is_some()) {
-        return None;
+    // The changed columns `data` copies, each with whether the copy is exact.
+    let copied: Vec<crate::decide::Copied> = changed
+        .columns
+        .iter()
+        .filter(|(name, _)| data_key(name).is_some())
+        .map(|&(_, attnum)| crate::decide::Copied {
+            attnum,
+            exact: crate::catalog::facts::copy_is_exact(relid, attnum),
+        })
+        .collect();
+    let key_changed = changed.names().any(|n| n == path.initial_col);
+    let read = crate::catalog::facts::path_read_set(path);
+    let env = crate::catalog::facts::patch_env(meta, relid);
+    #[cfg(feature = "test-hooks")]
+    if crate::decide::trusted_read_set(&read, env).is_none() {
+        crate::stats::count_refusal(meta, relid);
     }
-    // A copy alone of what the plan knows the TVIEW reads.
-    if !crate::stats::patch_columns_known(&meta, path.source_oid.to_u32()) {
-        return None;
-    }
-    // The copy stands for the owner's read: recomputed where that read differs.
-    if !crate::catalog::owner_reads::patch_stands_for_read(&meta) {
-        return None;
-    }
+    let fields = crate::decide::direct_patch(
+        crate::decide::Event::Update,
+        &read,
+        &changed.attnums,
+        key_changed,
+        &copied,
+        env,
+    )?;
     let new_tuple = trigger.new()?;
-    let mut fields = serde_json::Map::with_capacity(changed.len());
-    for col in changed {
-        fields.insert(data_key(col)?.clone(), capture_value(&new_tuple, col)?);
+    let mut out = serde_json::Map::new();
+    for attnum in fields.iter() {
+        let (col, _) = changed.columns.iter().find(|(_, a)| *a == attnum)?;
+        out.insert(data_key(col)?.clone(), capture_value(&new_tuple, col)?);
     }
-    Some(fields)
+    Some(out)
 }
 
-/// Diff OLD vs NEW over **all** columns of the changed row. Returns the names of
-/// columns whose stored value changed, or `None` when this is not a row-level
-/// UPDATE (either OLD or NEW absent).
+/// The columns an UPDATE changed, by binary comparison of its two images.
+pub(crate) struct Changed {
+    /// Each by name and attnum in the table the plans name (a partition's
+    /// partitioned table).
+    columns: Vec<(String, i16)>,
+    /// Their attnums.
+    attnums: crate::decide::Attnums,
+}
+
+impl Changed {
+    fn names(&self) -> impl Iterator<Item = &str> {
+        self.columns.iter().map(|(name, _)| name.as_str())
+    }
+}
+
+/// Diff OLD vs NEW over **all** columns of the changed row: the columns whose
+/// stored value changed, numbered as in `table` (the partition tree's root), or
+/// `None` when this is not a row-level UPDATE (either OLD or NEW absent).
 ///
 /// Type-agnostic: compares raw datums via `datumIsEqual` over the relation's tuple
 /// descriptor, so it detects changes to *unmapped* columns (filter columns,
 /// computed-field inputs) without knowing their types. A false "changed" (e.g. an
 /// equal-but-differently-TOASTed varlena) is safe — it only forces a recompute.
-fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
+fn changed_columns(trigger: &PgTrigger, table: pg_sys::Oid) -> Option<Changed> {
     // SAFETY: inside a row-level AFTER trigger the `TriggerData` and its relation
     // are valid for the call; `tg_trigtuple`/`tg_newtuple` are the OLD/NEW heap
     // tuples and `rd_att` the matching tuple descriptor. `heap_getattr` reads a
@@ -447,18 +480,32 @@ fn changed_columns(trigger: &PgTrigger) -> Option<Vec<String>> {
             } else if old_isnull {
                 false // both NULL
             } else {
-                !crate::utils::datum_is_equal(
-                    old_datum,
-                    new_datum,
-                    att.attbyval,
-                    i32::from(att.attlen),
-                )
+                #[cfg(feature = "test-hooks")]
+                let (byval, len) = if crate::config::test_ffi_fault() {
+                    (false, -3)
+                } else {
+                    (att.attbyval, i32::from(att.attlen))
+                };
+                #[cfg(not(feature = "test-hooks"))]
+                let (byval, len) = (att.attbyval, i32::from(att.attlen));
+                !crate::utils::datum_is_equal(old_datum, new_datum, byval, len)
             };
             if differs {
-                changed.push(att.name().to_string());
+                changed.push((att.name().to_string(), i16::try_from(i + 1).ok()?));
             }
         }
-        Some(changed)
+        // A partition numbers its columns its own way.
+        if (*rel).rd_id != table {
+            for (name, attnum) in &mut changed {
+                let c_name = std::ffi::CString::new(name.as_str()).ok()?;
+                *attnum = pg_sys::get_attnum(table, c_name.as_ptr());
+            }
+        }
+        let attnums = changed.iter().map(|(_, attnum)| *attnum).collect();
+        Some(Changed {
+            columns: changed,
+            attnums,
+        })
     }
 }
 

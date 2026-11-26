@@ -10,6 +10,22 @@ use pgrx::datum::DatumWithOid;
 use pgrx::pg_sys::{self, Oid};
 use pgrx::prelude::*;
 
+/// Whether the statement changed no row: its transition table of `event`'s rows
+/// (the new rows of an insert or an update, the old rows of a delete) is empty.
+/// An `INSERT ... ON CONFLICT DO UPDATE` that updated every row it met fires the
+/// statement-level INSERT trigger over an empty insert table.
+///
+/// SAFETY: `td` is the `TriggerData` of an AFTER statement trigger, whose
+/// transition tables are valid for the call.
+pub(super) unsafe fn changed_no_row(td: &pg_sys::TriggerData, event: super::Event) -> bool {
+    let table = match event {
+        super::Event::Delete => td.tg_oldtable,
+        super::Event::Insert | super::Event::Update => td.tg_newtable,
+    };
+    // SAFETY: per the contract, a transition table of the firing statement.
+    !table.is_null() && unsafe { pg_sys::tuplestore_tuple_count(table) } == 0
+}
+
 /// Whether every row an UPDATE statement changed holds the same values in the
 /// columns `attnums` before and after: the transition tables are read pairwise,
 /// each row's old image next to its new one, and compared datum by datum.

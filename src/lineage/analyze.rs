@@ -38,6 +38,9 @@ pub struct Lineage {
     /// The tables it reads whole or through a system column, by OID: their
     /// links are unknown, and no column of them is patched.
     pub whole_reads: BTreeMap<u32, walk::WholeRead>,
+    /// The custom settings it reads by name with `current_setting()`, each once:
+    /// its refreshes read them in the owner frame.
+    pub settings: Vec<String>,
 }
 
 /// What another TVIEW's registration says to the analysis of a new one.
@@ -106,9 +109,10 @@ impl Lineage {
                 } else {
                     EmbedKind::Nested
                 };
-                // A document placed at two paths has no single path to patch.
+                // A document placed at two paths has no single path to patch,
+                // nor one read elsewhere too.
                 let path = match placements.as_slice() {
-                    [one] => one.path.clone(),
+                    [one] if one.only_in_data => one.path.clone(),
                     _ => Vec::new(),
                 };
                 Embed {
@@ -124,14 +128,15 @@ impl Lineage {
     /// The direct-patch map: `(column, data key)` for each column of the table
     /// holding the identity that `data` copies under a top-level key and that the
     /// definition reads nowhere else. Never a virtual generated column or an input
-    /// of one: the trigger sees it NULL. Empty for a set operation and a
-    /// DISTINCT ON TVIEW, whose rows are recomputed.
+    /// of one: the trigger sees it NULL. Empty for a set operation, a DISTINCT
+    /// ON TVIEW, and a `data` with a part the walk does not follow (`opaque`),
+    /// whose rows are recomputed.
     #[must_use]
     pub fn direct_fields(&self) -> Vec<(String, String)> {
         let Some(data) = &self.data else {
             return Vec::new();
         };
-        if self.set_operation || self.identity.kind == IdentityKind::DistinctOn {
+        if self.set_operation || self.identity.kind == IdentityKind::DistinctOn || data.opaque {
             return Vec::new();
         }
         let Some(&(root, _)) = self.identity.columns.first() else {
@@ -207,6 +212,7 @@ impl Lineage {
                     table.fanout = None;
                     // What the function reads of it is unknown.
                     table.links = None;
+                    table.read_set = None;
                     table.guard = None;
                 }
                 None => self.tables.push(TableLineage {
@@ -218,6 +224,7 @@ impl Lineage {
                     sql: None,
                     reads: Vec::new(),
                     columns: Vec::new(),
+                    read_set: None,
                     lookups: Vec::new(),
                     index_hints: Vec::new(),
                     hop: None,
@@ -334,6 +341,55 @@ fn check_tables_agree(
     })
 }
 
+/// Every column `pg_depend` records the definition reading of `table`
+/// (`named`) must be among those the walk of its views' Vars found (`read`): the
+/// read set comes from the walk, and `pg_depend` checks it.
+///
+/// # Errors
+/// An internal error naming the columns the walk missed.
+fn check_columns_agree(
+    entity: &str,
+    table: &TableLineage,
+    named: &[(String, i16)],
+    read: &BTreeSet<i16>,
+) -> crate::TViewResult<()> {
+    let missed: Vec<&str> = named
+        .iter()
+        .filter(|(_, attnum)| !read.contains(attnum))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if missed.is_empty() {
+        return Ok(());
+    }
+    Err(crate::TViewError::CatalogError {
+        operation: format!("Find the columns tv_{entity} reads of {}", table.qualified),
+        pg_error: format!(
+            "pg_depend records columns the walk of its views did not find: {}",
+            missed.join(", ")
+        ),
+    })
+}
+
+/// The read set of a table the walk found reading the columns `read`: those
+/// and the inputs of the virtual columns among them, or `None` (unknown) when
+/// it reads the table whole or through a system column (`reads_whole`).
+fn read_set(
+    reads_whole: bool,
+    read: &BTreeSet<i16>,
+    virtual_columns: &[(i16, Vec<(String, i16)>)],
+) -> Option<Vec<i16>> {
+    // Mutants W01/W02: the derivation reads a table read whole column by
+    // column, for the read-set checks to catch (test/sql/differential/readset-checks.sh).
+    let reads_whole = reads_whole && !crate::mutant::on("W01") && !crate::mutant::on("W02");
+    (!reads_whole).then(|| {
+        let read: Vec<(String, i16)> = read.iter().map(|&attnum| (String::new(), attnum)).collect();
+        expand_read_columns(read, virtual_columns)
+            .into_iter()
+            .map(|(_, attnum)| attnum)
+            .collect()
+    })
+}
+
 /// Analyze the backing view `view_oid` of `entity`.
 ///
 /// The TVIEWs it embeds are the ones it reads with an output column equal to
@@ -390,9 +446,12 @@ pub fn analyze(
     )?;
 
     crate::utils::log_debug!("lineage of tv_{entity}: {graph:?}");
+    let settings = walk::dialect::check(view_oid).and_then(|()| walk::settings::check(view_oid))?;
     refuse_inheritance(&graph.inherited_reads)?;
     let identity = identity_of(entity, view_oid, &graph)?;
     check_tables_agree(entity, &graph, base_tables)?;
+    // After the shape's own refusals, which name what to change more precisely.
+    walk::order::check(view_oid)?;
 
     let functions = function_signatures(&graph.untracked_functions).map_err(catalog)?;
 
@@ -431,11 +490,23 @@ pub fn analyze(
     // pg_depend lists the columns the definition names, not those it reads
     // through a whole row or a system column. The list is kept: other entries
     // of the plan number the table's columns by it.
-    let whole_reads = walk::whole_reads(view_oid)?.tables;
+    let walked = walk::whole_reads(view_oid)?;
+    let whole_reads = walked.tables;
     for table in &mut tables {
         let virtual_columns = virtual_inputs(table.relid)?;
-        table.columns =
-            expand_read_columns(referenced_columns(view_oid, table.relid)?, &virtual_columns);
+        let named = referenced_columns(view_oid, table.relid)?;
+        let read = walked
+            .columns
+            .get(&table.relid)
+            .cloned()
+            .unwrap_or_default();
+        check_columns_agree(entity, table, &named, &read)?;
+        table.columns = expand_read_columns(named, &virtual_columns);
+        table.read_set = read_set(
+            whole_reads.contains_key(&table.relid),
+            &read,
+            &virtual_columns,
+        );
         if whole_reads.contains_key(&table.relid) {
             // Every column is read: every one may link a row, and none is a
             // copy alone. Writes skip nothing (`catalog::stopgap`).
@@ -476,6 +547,7 @@ pub fn analyze(
         data: graph.data,
         references,
         whole_reads,
+        settings,
     })
 }
 

@@ -132,6 +132,41 @@ pub fn get_queue_contents() -> Vec<RefreshKey> {
     TXN.with(|t| t.borrow().pending.queue.iter().cloned().collect())
 }
 
+/// How many pieces of refresh work are pending in every queue (keys, direct
+/// patches, fan-out patches), and the entities they are for.
+pub fn pending_work() -> (usize, std::collections::BTreeSet<String>) {
+    TXN.with(|t| {
+        let t = t.borrow();
+        let p = &t.pending;
+        let entities = p
+            .queue
+            .iter()
+            .chain(p.patches.keys())
+            .map(|k| k.entity.clone())
+            .chain(p.fanout.keys().map(|(entity, _, _)| entity.clone()))
+            .collect();
+        // Mutant G3: the fan-out patches are not counted (the defect the check
+        // once had: a statement whose rows all fan out queued no key).
+        let fanout = if crate::mutant::on("G3") {
+            0
+        } else {
+            p.fanout.len()
+        };
+        (p.queue.len() + p.patches.len() + fanout, entities)
+    })
+}
+
+/// TEST ONLY: the work queued, every queue counted (keys, patches, fan-out patches)
+/// apart from [`pending_work`], so a test can tell it what it should have seen.
+#[cfg(feature = "test-hooks")]
+#[must_use]
+pub fn pending_count() -> usize {
+    TXN.with(|t| {
+        let p = &t.borrow().pending;
+        p.queue.len() + p.patches.len() + p.fanout.len()
+    })
+}
+
 /// Change `key`'s patch through `change`, which sees `None` when it has none.
 pub fn update_patch<R>(key: RefreshKey, change: impl FnOnce(&mut Option<PatchState>) -> R) -> R {
     TXN.with(|t| {

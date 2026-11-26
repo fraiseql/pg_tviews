@@ -11,6 +11,8 @@ const FLUSH_HANDLER: &str = "pg_tview_flush_trigger";
 const DELTA_HANDLER: &str = "pg_tview_delta_trigger";
 /// Statement-level `TRUNCATE` trigger function: refreshes the whole TVIEW.
 const TRUNCATE_HANDLER: &str = "pg_tview_truncate_trigger";
+/// The guard of a TVIEW's own table ([`crate::guard`]).
+const GUARD_HANDLER: &str = crate::guard::GUARD_HANDLER;
 
 /// Transition tables of the delta triggers, as the handler reads them.
 pub const OLD_TABLE: &str = "pg_tviews_old";
@@ -279,13 +281,18 @@ pub fn trigger_problems() -> TViewResult<TriggerProblems> {
     );
     crate::utils::spi::connect(|client| {
         let mut problems = TriggerProblems::default();
-        for row in client.select(&query, None, &[])? {
-            if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
-                match kind.as_str() {
-                    "orphaned" => problems.orphaned.push(what),
-                    "missing" => problems.missing.push(what),
-                    "disabled" => problems.disabled.push(what),
-                    _ => problems.per_tview.push(what),
+        for query in [
+            query.as_str(),
+            crate::catalog::queries::guard_problems_sql(GUARD_HANDLER).as_str(),
+        ] {
+            for row in client.select(query, None, &[])? {
+                if let (Some(kind), Some(what)) = (row.get::<String>(1)?, row.get::<String>(2)?) {
+                    match kind.as_str() {
+                        "orphaned" => problems.orphaned.push(what),
+                        "missing" => problems.missing.push(what),
+                        "disabled" => problems.disabled.push(what),
+                        _ => problems.per_tview.push(what),
+                    }
                 }
             }
         }

@@ -292,6 +292,12 @@ pub struct DataEmbed {
     pub path: Vec<String>,
     /// Inside `jsonb_agg`: one element per child row.
     pub array: bool,
+    /// The level reads the child's document nowhere else than where it places
+    /// it: a patch of it at `path` is all the level reads of it changed (S30).
+    pub only_in_data: bool,
+    /// The base column of its level the document is read from (the walk's
+    /// own numbering), for counting its other reads.
+    pub read: Option<(usize, i16)>,
 }
 
 /// The identity the walk found: the output column, and the base column it stands
@@ -333,8 +339,14 @@ pub struct TableLineage {
     pub sql: Option<String>,
     /// With `sql`: what a refresh reads of the table, for value locks.
     pub reads: Vec<ReadSet>,
-    /// Columns of the table the TVIEW reads (name, attnum); empty when unknown.
+    /// Columns of the table the definition names (name, attnum), as
+    /// `pg_depend` records them: what the plan's templates number.
     pub columns: Vec<(String, i16)>,
+    /// Every column of the table the TVIEW reads, by attnum, from the walk of
+    /// its views' every Var (the inputs of a virtual generated column among
+    /// them included); `None` when it reads the table beyond its columns (whole,
+    /// a system column, inside a declared function): no column skip, no patch.
+    pub read_set: Option<Vec<i16>>,
     /// Tables the mapping query joins, with the columns it looks up in each.
     pub lookups: Vec<(String, Vec<String>)>,
     /// Expressions the mapping query looks rows up by (array membership, computed

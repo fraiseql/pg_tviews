@@ -12,6 +12,10 @@
 -- created WITH (fillfactor = 85) unless their options say otherwise, so
 -- single-row refreshes stay heap-only.
 --
+-- So do they with the indexes a row security policy on tv_* needs (the FraiseQL
+-- pattern: a GiST index on (tenant_id, path), a partial index), as long as the
+-- refresh leaves the indexed columns unchanged.
+--
 --   psql -v ON_ERROR_STOP=1 -f test/sql/regress/operations/regress_hot_defaults.sql
 -- expect-output: hot_defaults: PASS
 
@@ -117,6 +121,51 @@ DO $$ BEGIN
     IF (SELECT reloptions FROM pg_class WHERE oid = 'tv_tag'::regclass) IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL #73: fillfactor = 100 should leave reloptions empty, got %',
             (SELECT reloptions FROM pg_class WHERE oid = 'tv_tag'::regclass);
+    END IF;
+END $$;
+
+-- ── The indexes of a policy on tv_* keep refreshes heap-only ───────────────
+CREATE EXTENSION btree_gist;
+CREATE EXTENSION ltree;
+CREATE TABLE tb_node (
+    pk_node   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id        UUID DEFAULT gen_random_uuid() NOT NULL UNIQUE,
+    tenant_id INTEGER NOT NULL,
+    path      ltree NOT NULL,
+    title     TEXT
+);
+INSERT INTO tb_node (tenant_id, path, title)
+SELECT g % 7, ('n' || g % 7 || '.c' || g)::ltree, 'node ' || g FROM generate_series(1, 2000) g;
+SELECT pg_tviews_create('tv_node', $TV$
+    SELECT pk_node, id, tenant_id, path, jsonb_build_object('title', title) AS data FROM tb_node
+$TV$);
+CREATE INDEX tv_node_scope ON tv_node USING gist (tenant_id, path);
+CREATE INDEX tv_node_tenant_three ON tv_node (pk_node) WHERE tenant_id = 3;
+ALTER TABLE tv_node ENABLE ROW LEVEL SECURITY;
+CREATE POLICY scope ON tv_node FOR SELECT TO PUBLIC
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::int
+           AND path <@ nullif(current_setting('app.scope', true), '')::ltree);
+
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_reset_single_table_counters('tv_node'::regclass);
+SELECT format('UPDATE tb_node SET title = %L WHERE pk_node = %s', 'edited ' || g, g)
+FROM generate_series(1, 2000) g \gexec
+SELECT pg_stat_force_next_flush();
+
+DO $$
+DECLARE r record;
+BEGIN
+    SELECT n_tup_upd, n_tup_hot_upd INTO r FROM pg_stat_user_tables WHERE relname = 'tv_node';
+    IF r.n_tup_upd < 2000 THEN
+        RAISE EXCEPTION 'setup: tv_node got % updates, expected >= 2000', r.n_tup_upd;
+    END IF;
+    IF r.n_tup_hot_upd::float / r.n_tup_upd < 0.95 THEN
+        RAISE EXCEPTION 'FAIL: tv_node with GiST and partial indexes: HOT ratio % (% of %), expected >= 95%%',
+            round(100.0 * r.n_tup_hot_upd / r.n_tup_upd, 1), r.n_tup_hot_upd, r.n_tup_upd;
+    END IF;
+    IF EXISTS (SELECT 1 FROM tv_node t FULL JOIN tviews.public__tv_node v USING (pk_node)
+               WHERE (t.tenant_id, t.path, t.data) IS DISTINCT FROM (v.tenant_id, v.path, v.data)) THEN
+        RAISE EXCEPTION 'FAIL: tv_node diverges from its backing view';
     END IF;
 END $$;
 

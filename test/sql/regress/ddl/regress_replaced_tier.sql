@@ -194,7 +194,7 @@ SELECT must(tviews.pg_tviews_create_or_replace('tv_tag', $$
     FROM tb_tag t ORDER BY t.pk_tag $$) = 'replaced', 'DISTINCT ON the same key is replaced');
 SELECT must(tviews.pg_tviews_create_or_replace('tv_tag', $$
     SELECT DISTINCT ON (t.id) t.pk_tag, t.id, jsonb_build_object('label', t.label) AS data
-    FROM tb_tag t ORDER BY t.id $$) = 'rebuilt', 'DISTINCT ON another key rebuilds');
+    FROM tb_tag t ORDER BY t.id, t.pk_tag $$) = 'rebuilt', 'DISTINCT ON another key rebuilds');
 SELECT must((SELECT array_agg(a.attname::text) FROM pg_index i
              JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
              WHERE i.indrelid = 'tv_tag'::regclass AND i.indisprimary) = '{id}',

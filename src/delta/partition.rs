@@ -244,15 +244,24 @@ fn map_partition_rows(entity: &str, partition: Oid, root: Oid, entering: bool) -
 
 /// Map one changed row of a partitioned `mapped` / `all_keys` table, from the row
 /// trigger that `PostgreSQL` copied onto the partition the row is in (only row
-/// triggers are copied). Returns false when `entity` has no such mapping of the
-/// table.
+/// triggers are copied). Returns false when `entity`'s plan maps the table
+/// otherwise (a local path, through an embed).
+///
+/// # Errors
+/// An internal error when the plan does not map the table at all.
 pub fn map_row(trigger: &PgTrigger<'_>, entity: &str, table_oid: Oid) -> TViewResult<bool> {
+    // The table's readers name the entity: a plan that does not map the table
+    // contradicts them, and mapping nothing would leave its rows stale (S21).
+    let unknown = |what: &str| crate::TViewError::CatalogError {
+        operation: format!("Map a written row to tv_{entity} keys"),
+        pg_error: format!("{what} does not map the table its triggers serve it for"),
+    };
     let Some(meta) = TviewMeta::load_by_entity(entity)? else {
-        return Ok(false);
+        return Err(unknown("no catalog row"));
     };
     let root = crate::catalog::partition_root(table_oid)?;
     let Some(mapping) = meta.key_mapping(table_oid, Some(root)) else {
-        return Ok(false);
+        return Err(unknown("its plan"));
     };
     let full_refresh = meta.policy_for(Oid::from(mapping.relid)) == UncascadedPolicy::FullRefresh;
     match mapping.kind {

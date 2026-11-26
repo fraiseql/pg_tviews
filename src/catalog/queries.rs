@@ -17,6 +17,8 @@ pub struct Declared<'a> {
     pub function_read_functions: Vec<String>,
     pub function_read_tables: Vec<Oid>,
     pub time_refresh: Option<&'a str>,
+    /// The custom settings the owner frames pin, as a JSON object.
+    pub frame_settings: serde_json::Value,
 }
 
 /// A TVIEW's row as registration derives it.
@@ -62,7 +64,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
             uncascaded_oids, uncascaded_policy, identity,
             uncascaded_table_oids, uncascaded_table_policies,
             function_read_functions, function_read_tables, time_refresh, time_dependent,
-            graphql_typename, typename
+            graphql_typename, typename, frame_settings
         ) VALUES (
             $1, $2::pg_catalog.oid::pg_catalog.regclass, $3::pg_catalog.oid::pg_catalog.regclass,
             $4, $5, $6, $7::pg_catalog.oid[]::pg_catalog.regclass[], $8,
@@ -71,7 +73,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
                     'name', $10::pg_catalog.text,
                     'type', pg_catalog.format_type($11::pg_catalog.oid, NULL)))),
             $12::pg_catalog.oid[]::pg_catalog.regclass[], $13,
-            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19)
+            $14, $15::pg_catalog.oid[]::pg_catalog.regclass[], $16, $17, $18, $19, $20)
         {on_conflict}",
         super::meta_table()
     );
@@ -114,6 +116,7 @@ pub fn write_registration(row: Registration<'_>, replace: bool) -> TViewResult<(
         crate::utils::spi::boolean(time_dependent),
         crate::utils::spi::text(declared_typename),
         crate::utils::spi::text(typename.as_str()),
+        crate::utils::spi::jsonb(pgrx::JsonB(declared.frame_settings)),
     ];
     crate::owner::as_extension_owner(|| {
         crate::utils::spi::run(&sql, &args).map_err(|e| TViewError::SpiError {
@@ -138,10 +141,11 @@ pub fn store_declared(entity: &str, declared: Declared<'_>) -> TViewResult<()> {
             crate::utils::spi::text_array(declared.function_read_functions),
             crate::utils::spi::oid_array(declared.function_read_tables),
             crate::utils::spi::text(declared.time_refresh),
+            crate::utils::spi::jsonb(pgrx::JsonB(declared.frame_settings)),
         ];
         crate::utils::spi::run(
             &format!(
-                "UPDATE {} SET uncascaded_policy = $2, \
+                "UPDATE {} SET uncascaded_policy = $2, frame_settings = $8, \
                      uncascaded_table_oids = $3::pg_catalog.oid[]::pg_catalog.regclass[], \
                      uncascaded_table_policies = $4, function_read_functions = $5, \
                      function_read_tables = $6::pg_catalog.oid[]::pg_catalog.regclass[], \
@@ -424,6 +428,92 @@ pub fn owned_time_dependent() -> TViewResult<Vec<String>> {
     )
 }
 
+/// Every TVIEW whose definition reads the current time.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT m.entity::text FROM {} m WHERE m.time_dependent ORDER BY m.entity",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// The TVIEWs whose definitions read the current time that the caller does not own
+/// (nor may change as a member of its owner's role), schema-qualified: those
+/// [`owned_time_dependent`] leaves out.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn unowned_time_dependent() -> TViewResult<Vec<String>> {
+    crate::utils::spi::strings(
+        &format!(
+            "SELECT pg_catalog.quote_ident(n.nspname) || '.' || pg_catalog.quote_ident(c.relname) \
+             FROM {} m JOIN pg_catalog.pg_class c ON c.oid = m.table_oid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE m.time_dependent AND NOT pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+             ORDER BY 1",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// Record that this transaction wrote rows `keys` of `entity` (`None`: the whole
+/// TVIEW) after its time boundary `boundary` was announced, though it began
+/// before it: the drain refreshes them again once it commits. As the extension's
+/// owner: the writer's right to write them was checked by the write itself.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn hand_off(
+    entity: &str,
+    keys: &[Option<i64>],
+    boundary: pgrx::pg_sys::TimestampTz,
+) -> TViewResult<()> {
+    let whole = keys.iter().any(Option::is_none);
+    let pks: Vec<i64> = keys.iter().filter_map(|k| *k).collect();
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_handoff (entity, pk, boundary) \
+                 SELECT $1, k, $3 \
+                 FROM pg_catalog.unnest(CASE WHEN $4 THEN ARRAY[NULL::pg_catalog.int8] \
+                                             ELSE $2 END) k",
+                crate::utils::ext_schema()
+            ),
+            &[
+                crate::utils::spi::text(entity),
+                crate::utils::spi::int8_array(pks),
+                crate::utils::spi::timestamptz(boundary),
+                crate::utils::spi::boolean(whole),
+            ],
+        )
+    })
+}
+
+/// Record that the time refresh brought `entity`'s rows to this transaction's
+/// `now()`, as the extension's owner: the caller's right to refresh it was checked.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be written.
+pub fn record_time_boundary(entity: &str) -> TViewResult<()> {
+    crate::owner::as_extension_owner(|| {
+        crate::utils::spi::run(
+            &format!(
+                "INSERT INTO {}.pg_tview_time_boundary AS b (entity, boundary) \
+                 VALUES ($1, pg_catalog.now()) \
+                 ON CONFLICT (entity) DO UPDATE SET boundary = EXCLUDED.boundary",
+                crate::utils::ext_schema()
+            ),
+            &[crate::utils::spi::text(entity)],
+        )
+    })
+}
+
 /// TVIEWs whose backing view's own rule depends on column `column` of `relid`
 /// (the column-level `pg_depend` entries of its rewrite rule): the definitions
 /// that name the column, as `(entity, schema, view)`. A view the TVIEW reads
@@ -574,6 +664,26 @@ fn entities(
 ) -> TViewResult<Vec<String>> {
     crate::utils::spi::strings(sql, args)
         .map_err(|e| crate::utils::spi::catalog_error(operation, &e))
+}
+
+/// The TVIEWs whose plan does not know which columns of `table` they read (a
+/// whole-row read, a system column, a declared function reading it, a plan
+/// stored without read sets), by entity: what a change of its row type (a
+/// column added, dropped or renamed) may change without a trigger firing.
+///
+/// # Errors
+/// A [`TViewError::CatalogError`] when the catalog cannot be read.
+pub fn whole_readers_of(table: Oid) -> TViewResult<Vec<String>> {
+    let mut readers = Vec::new();
+    for entity in table_readers_of(table)? {
+        let unknown = super::TviewMeta::load_by_entity(&entity)?.is_none_or(|meta| {
+            super::facts::read_set(&meta, table.to_u32()) == crate::decide::ReadSet::Unknown
+        });
+        if unknown {
+            readers.push(entity);
+        }
+    }
+    Ok(readers)
 }
 
 /// The TVIEWs whose plan reads `table`, by entity, whatever triggers they have
@@ -767,4 +877,140 @@ pub fn typenames_and_tables(
         operation: "Load TVIEWs for the report".to_string(),
         pg_error: e.to_string(),
     })
+}
+
+// --- Visibility (the guard, row security on tv_*) ------------------------------
+
+/// The guards of the TVIEWs' own tables (`crate::guard`, whose trigger function
+/// is `handler`) as the trigger check's problem rows: one missing, disabled, switched to `ENABLE
+/// REPLICA`, or on a table a logical replication subscription writes (its apply
+/// worker fires no ordinary trigger: `pg_tviews` is no longer the table's only
+/// writer).
+pub fn guard_problems_sql(handler: &str) -> String {
+    format!(
+        "WITH guards AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS relid, t.tgname, t.tgenabled \
+             FROM {schema}.pg_tview_meta m \
+             LEFT JOIN (pg_catalog.pg_trigger t \
+                        JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+                         AND p.pronamespace = '{schema}'::pg_catalog.regnamespace \
+                         AND p.proname = '{handler}') \
+               ON t.tgrelid = m.table_oid::pg_catalog.oid \
+         ) \
+         SELECT 'missing', pg_catalog.format('{handler} on %s (%s)', \
+                                             g.relid::pg_catalog.regclass, g.entity) \
+         FROM guards g WHERE g.tgname IS NULL \
+         UNION ALL \
+         SELECT 'disabled', pg_catalog.format('%I on %s%s', g.tgname, \
+                                              g.relid::pg_catalog.regclass, \
+                                              CASE g.tgenabled WHEN 'R' THEN \
+                                                ' (ENABLE REPLICA: refuses writes only when \
+                                                 session_replication_role is replica)' \
+                                              WHEN 'D' THEN '' \
+                                              ELSE ' (a logical replication subscription \
+                                                 writes the TVIEW table: pg_tviews is no \
+                                                 longer its only writer)' END) \
+         FROM guards g WHERE g.tgenabled IN ('D', 'R') \
+            OR (g.tgname IS NOT NULL \
+                AND EXISTS (SELECT 1 FROM pg_catalog.pg_subscription_rel s \
+                            WHERE s.srrelid = g.relid)) \
+         ORDER BY 1, 2",
+        schema = crate::utils::ext_schema(),
+    )
+}
+
+/// The TVIEW tables with row security enabled.
+///
+/// # Errors
+/// The catalog cannot be read.
+pub fn tables_with_row_security() -> TViewResult<Vec<Oid>> {
+    crate::utils::spi::oids(
+        &format!(
+            "SELECT m.table_oid::pg_catalog.oid FROM {} m \
+             JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) m.table_oid::pg_catalog.oid \
+             WHERE c.relrowsecurity ORDER BY 1",
+            super::meta_table()
+        ),
+        &[],
+    )
+}
+
+/// The health check's `tv_policies` warnings, one message per row: a TVIEW others
+/// read without row security while a table it reads filters its readers, and one
+/// embedding rows of a table whose policies differ from its own (its root tables,
+/// whose rows are its own, aside).
+///
+/// # Errors
+/// The catalog or the policies cannot be read.
+pub fn tv_policy_warnings() -> TViewResult<Vec<String>> {
+    let (entities, roots): (Vec<String>, Vec<Oid>) = super::TviewMeta::load_all()?
+        .iter()
+        .flat_map(|meta| {
+            meta.plan
+                .paths
+                .iter()
+                .filter(|path| path.root)
+                .map(|path| (meta.entity_name.clone(), path.source_oid))
+                .collect::<Vec<_>>()
+        })
+        .unzip();
+    crate::utils::spi::strings(
+        &tv_policy_warnings_sql(),
+        &[
+            crate::utils::spi::text_array(entities),
+            crate::utils::spi::oid_array(roots),
+        ],
+    )
+}
+
+/// The query of [`tv_policy_warnings`]: `$1` and `$2` pair each TVIEW with a root
+/// table of its plan.
+fn tv_policy_warnings_sql() -> String {
+    format!(
+        "WITH tv AS ( \
+             SELECT m.entity, m.table_oid::pg_catalog.oid AS tv, c.relrowsecurity AS rls, \
+                    c.relowner, c.relacl \
+             FROM {schema}.pg_tview_meta m \
+             JOIN pg_catalog.pg_class c ON c.oid = m.table_oid::pg_catalog.oid \
+         ), \
+         policed AS ( \
+             SELECT DISTINCT r.entity, r.relid \
+             FROM {schema}.reads r \
+             JOIN pg_catalog.pg_class c ON c.oid = r.relid \
+             WHERE c.relkind IN ('r', 'p') AND c.relrowsecurity \
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_policy p WHERE p.polrelid = r.relid) \
+         ), \
+         roots AS ( \
+             SELECT r.entity, r.relid \
+             FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.text[]), \
+                            pg_catalog.unnest($2::pg_catalog.oid[])) r(entity, relid) \
+         ), \
+         sig AS ( \
+             SELECT p.polrelid AS relid, \
+                    pg_catalog.string_agg(pg_catalog.format('%s/%s/%s/%s', p.polcmd, \
+                        p.polpermissive, pg_catalog.pg_get_expr(p.polqual, p.polrelid), \
+                        pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)), ';' ORDER BY 1) AS s \
+             FROM pg_catalog.pg_policy p GROUP BY p.polrelid \
+         ) \
+         SELECT pg_catalog.format('%s has no row security while %s, which it reads, filters \
+                                   its readers: whoever reads %s reads what that policy hides', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass, \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         WHERE NOT tv.rls \
+           AND EXISTS (SELECT 1 FROM pg_catalog.aclexplode(tv.relacl) a \
+                       WHERE a.grantee <> tv.relowner AND a.privilege_type = 'SELECT') \
+         UNION ALL \
+         SELECT pg_catalog.format('%s embeds rows of %s, whose policies differ from its own: a \
+                                   reader may read in a document a row that table hides from it', \
+                                  tv.tv::pg_catalog.oid::pg_catalog.regclass, x.relid::pg_catalog.oid::pg_catalog.regclass) \
+         FROM tv JOIN policed x ON x.entity = tv.entity \
+         LEFT JOIN sig child ON child.relid = x.relid \
+         LEFT JOIN sig own ON own.relid = tv.tv \
+         WHERE tv.rls \
+           AND NOT EXISTS (SELECT 1 FROM roots r WHERE r.entity = tv.entity AND r.relid = x.relid) \
+           AND child.s IS DISTINCT FROM own.s \
+         ORDER BY 1",
+        schema = crate::utils::ext_schema(),
+    )
 }

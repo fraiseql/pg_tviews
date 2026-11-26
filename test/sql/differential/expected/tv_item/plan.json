@@ -1,10 +1,5 @@
 {
-  "direct": [
-    [
-      "name",
-      "name"
-    ]
-  ],
+  "direct": [],
   "embeds": [],
   "key": {
     "column": "pk_item",
@@ -15,6 +10,12 @@
       "entity_name": "item",
       "initial_attnum": "public.tb_item.pk_item",
       "initial_col": "pk_item",
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "root": true,
       "source_columns": [
         "pk_item",
@@ -44,6 +45,12 @@
         "name"
       ],
       "kind": "local",
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "relid": "public.tb_item",
       "table": "public.tb_item"
     },
@@ -59,6 +66,11 @@
         "name"
       ],
       "kind": "all_keys",
+      "read_set": [
+        1,
+        3,
+        4
+      ],
       "reason": "read in a recursive CTE (public.v_category_path), read through view public.v_category_path, with no condition linking it to the TVIEW key",
       "relid": "public.tb_category",
       "table": "public.tb_category"

@@ -66,6 +66,7 @@ impl Walker<'_> {
                     .map(|(tle, out)| {
                         let column = match out {
                             Resolved::Col(c) => Some(c.clone()),
+                            // walk: U an output that is no column: it carries no key
                             _ => None,
                         };
                         (cstr((**tle).resname), column)
@@ -74,6 +75,8 @@ impl Walker<'_> {
                 // The key root is the identity's column (ADR 0169).
                 let root_position = match &self.graph.identity {
                     Some(Ok(identity)) => Some(identity.position),
+                    // walk: n/a(no identity: the key column found by name stands in, as for
+                    // registration)
                     _ => key_position,
                 };
                 if opaque.is_none()
@@ -95,13 +98,14 @@ impl Walker<'_> {
                 Link::Top,
             );
             let mut leaves = Vec::new();
-            setop_leaves((*query).setOperations, &mut leaves);
+            setop_leaves((*query).setOperations, &mut leaves)?;
             let union = self.next_union();
             let result: TViewResult<()> = (|| {
                 for (branch, rtindex) in leaves.into_iter().enumerate() {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
                         .get(rtindex.wrapping_sub(1))
                     else {
+                        // walk: n/a(a set operation's leaf names an entry of its range table)
                         continue;
                     };
                     let opaque = whole.clone().or_else(|| top_opaque_reason((*rte).subquery));
@@ -115,6 +119,8 @@ impl Walker<'_> {
                     let outputs = self.level((*rte).subquery, &leaf_flags, Link::Top)?;
                     match key_position.and_then(|p| outputs.get(p)) {
                         Some(key) if opaque.is_none() => self.add_roots(key, &unions),
+                        // walk: U the rows it stands for map to no key: a hole, refreshed by
+                        // full recompute
                         _ => self.graph.holes.push(unions),
                     }
                 }
@@ -246,8 +252,31 @@ impl Walker<'_> {
                 self.sublinks((*tle).expr.cast(), tle_flags, false)?;
             }
             self.sublinks((*query).havingQual, flags, false)?;
+            // And in LIMIT and OFFSET, and in the expressions of entries of the
+            // range table: VALUES lists, the arguments of functions in FROM,
+            // table functions. Their rows feed this level's.
+            self.sublinks((*query).limitCount, flags, false)?;
+            self.sublinks((*query).limitOffset, flags, false)?;
+            for rte in elements::<pg_sys::RangeTblEntry>((*query).rtable) {
+                match (*rte).rtekind {
+                    pg_sys::RTEKind::RTE_VALUES => {
+                        self.sublinks((*rte).values_lists.cast(), flags, false)?;
+                    }
+                    pg_sys::RTEKind::RTE_FUNCTION => {
+                        for function in elements::<pg_sys::RangeTblFunction>((*rte).functions) {
+                            self.sublinks((*function).funcexpr, flags, false)?;
+                        }
+                    }
+                    pg_sys::RTEKind::RTE_TABLEFUNC => {
+                        self.sublinks((*rte).tablefunc.cast(), flags, false)?;
+                    }
+                    // walk: n/a(no expression of this level: relations, joins,
+                    // subqueries and CTEs are walked as levels or resolved)
+                    _ => {}
+                }
+            }
             self.note_functions(query.cast());
-            self.note_time(query.cast());
+            self.note_time(query.cast())?;
             if identity_level {
                 let tles = elements::<pg_sys::TargetEntry>((*query).targetList);
                 self.graph.identity = Some(self.identity(query, &tles));
@@ -286,6 +315,8 @@ impl Walker<'_> {
                     .filter(|tle| in_clause((***tle).ressortgroupref, clause))
                     .filter_map(|tle| match self.resolve_expr((**tle).expr.cast()) {
                         Resolved::Col(c) => Some(c),
+                        // walk: U a DISTINCT ON entry that is no column: no key column is read
+                        // off it
                         _ => None,
                     })
                     .collect()
@@ -336,6 +367,7 @@ impl Walker<'_> {
                         Resolved::Col(c) | Resolved::Inbound(c) if first_row && !skip => {
                             Resolved::Inbound(c)
                         }
+                        // walk: U an output not passed up as a column: opaque
                         _ => Resolved::Opaque,
                     }
                 })
@@ -373,6 +405,8 @@ impl Walker<'_> {
                     .find(|p| matches!(p, Piece::Column { .. }))
                     .cloned()
                 else {
+                    // walk: U the rows it stands for map to no key: a hole, refreshed by full
+                    // recompute
                     self.graph.holes.push(scope.clone());
                     return;
                 };
@@ -395,6 +429,7 @@ impl Walker<'_> {
                 }
                 self.graph.holes.extend(holes.iter().cloned());
             }
+            // walk: U the rows it stands for map to no key: a hole, refreshed by full recompute
             _ => self.graph.holes.push(scope.clone()),
         }
     }
@@ -457,6 +492,17 @@ impl Walker<'_> {
         unsafe {
             match (*rte).rtekind {
                 pg_sys::RTEKind::RTE_RELATION => {
+                    // Which rows a sample returns depends on where they lie on
+                    // disk, which every UPDATE changes.
+                    if !(*rte).tablesample.is_null() {
+                        return Err(TViewError::DefinitionRefused {
+                            reason: format!(
+                                "the definition reads {} with TABLESAMPLE: which rows it \
+                                 returns changes with any write to the table",
+                                cstr(pg_sys::get_rel_name((*rte).relid))
+                            ),
+                        });
+                    }
                     if !flags.unread
                         && (*rte).inh
                         && pg_sys::get_rel_relkind((*rte).relid).cast_unsigned() == b'r'
@@ -477,6 +523,7 @@ impl Walker<'_> {
                     let name = cstr((*rte).ctename);
                     let Some((cte, defined_at)) = self.cte(&name, (*rte).ctelevelsup as usize)
                     else {
+                        // walk: U a CTE the walk cannot find: its outputs are opaque
                         return Ok(RteInfo::Other);
                     };
                     self.read_ctes
@@ -492,6 +539,7 @@ impl Walker<'_> {
                     let recursive = Flags {
                         opaque_level: Some(format!(
                             "read in a recursive CTE ({})",
+                            // walk: n/a(the name in a message)
                             flags.via_view.as_deref().unwrap_or("the definition")
                         )),
                         ..flags.clone()
@@ -504,6 +552,8 @@ impl Walker<'_> {
                 // Grouped Vars point at the GROUP entry, whose
                 // expressions are those of the level.
                 pg_sys::RTEKind::RTE_GROUP => Ok(RteInfo::Join((*rte).groupexprs)),
+                // walk: U VALUES, a table function, a tuplestore, an empty FROM: their outputs
+                // are opaque; the sub-selects in their expressions are walked by level()
                 _ => Ok(RteInfo::Other),
             }
         }
@@ -598,9 +648,13 @@ impl Walker<'_> {
                             .iter()
                             .filter_map(|t| match t {
                                 Resolved::Col(c) => Some(c.clone()),
+                                // walk: U a key under a set operation that is no column: no
+                                // lookup, the embedding rows are found otherwise
                                 _ => None,
                             })
                             .collect(),
+                        // walk: U no output holding the embedded TVIEW's key: no lookup, the
+                        // embedding rows are found otherwise
                         _ => Vec::new(),
                     };
                     self.graph
@@ -611,7 +665,15 @@ impl Walker<'_> {
                 }
                 Ok(RteInfo::Outputs(outputs))
             }
-            _ => Ok(RteInfo::Other),
+            // walk: R a relation of another kind (an index, a composite type),
+            // which no query reads in FROM
+            _ => Err(TViewError::DefinitionRefused {
+                reason: format!(
+                    "the definition reads {} (relkind '{}'), which pg_tviews cannot track",
+                    qualified,
+                    char::from(relkind)
+                ),
+            }),
         }
     }
 
@@ -625,6 +687,7 @@ impl Walker<'_> {
         unsafe {
             let functions = elements::<pg_sys::RangeTblFunction>((*rte).functions);
             let [function] = functions[..] else {
+                // walk: U a function in FROM other than unnest of one array: opaque
                 return RteInfo::Other;
             };
             if (*rte).funcordinality {
@@ -672,6 +735,7 @@ impl Walker<'_> {
         // SAFETY: each node is checked by tag before it is cast.
         unsafe {
             match tag(node) {
+                None => Ok(HashSet::new()),
                 Some(pg_sys::NodeTag::T_RangeTblRef) => {
                     let rtindex = super::index((*node.cast::<pg_sys::RangeTblRef>()).rtindex);
                     Ok(self.occurrences_of(rtindex))
@@ -702,6 +766,8 @@ impl Walker<'_> {
                             pg_sys::JoinType::JOIN_INNER => Origin::Required,
                             pg_sys::JoinType::JOIN_LEFT => Origin::Outer { nullable: &right },
                             pg_sys::JoinType::JOIN_RIGHT => Origin::Outer { nullable: &left },
+                            // walk: U a FULL JOIN condition requires nothing of either side: it
+                            // maps no key
                             _ => Origin::None,
                         };
                         self.predicate(qual, origin);
@@ -709,6 +775,7 @@ impl Walker<'_> {
                             pg_sys::JoinType::JOIN_INNER => self.guard(qual, None),
                             pg_sys::JoinType::JOIN_LEFT => self.guard(qual, Some(&right)),
                             pg_sys::JoinType::JOIN_RIGHT => self.guard(qual, Some(&left)),
+                            // walk: U a FULL JOIN condition guards neither side: refreshed more
                             _ => {}
                         }
                     }
@@ -718,11 +785,17 @@ impl Walker<'_> {
                         pg_sys::JoinType::JOIN_INNER => {}
                         pg_sys::JoinType::JOIN_LEFT => self.nullable.extend(&right),
                         pg_sys::JoinType::JOIN_RIGHT => self.nullable.extend(&left),
+                        // walk: n/a(a FULL JOIN NULL-extends both sides; semi and anti joins
+                        // are the planner's)
                         _ => self.nullable.extend(left.iter().chain(&right)),
                     }
                     Ok(left.union(&right).copied().collect())
                 }
-                _ => Ok(HashSet::new()),
+                // walk: R a join tree node PostgreSQL does not build
+                _ => Err(TViewError::DefinitionRefused {
+                    reason: "the definition's FROM clause holds a node pg_tviews does not know"
+                        .to_string(),
+                }),
             }
         }
     }
@@ -733,6 +806,8 @@ impl Walker<'_> {
         match level.rtes.get(rtindex.wrapping_sub(1)) {
             Some(RteInfo::Base(occ) | RteInfo::Tview { occ, .. }) => HashSet::from([*occ]),
             Some(RteInfo::Outputs(outputs)) => outputs.iter().flat_map(Resolved::occs).collect(),
+            // walk: n/a(an entry over no table, VALUES, a function, a CTE's self reference,
+            // stands for no occurrence)
             _ => HashSet::new(),
         }
     }

@@ -33,6 +33,8 @@ pub const VALUE_TAG: u16 = 0x5476;
 pub const RELATION_TAG: u16 = 0x5477;
 /// `field4` of a TVIEW's registration lock.
 pub const REGISTRATION_TAG: u16 = 0x5478;
+/// `field4` of a time-dependent TVIEW's boundary lock (`crate::boundary`).
+pub const BOUNDARY_TAG: u16 = 0x5479;
 
 /// Which end of the protocol takes a lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -63,7 +65,7 @@ impl Space {
 }
 
 /// The columns of a relation whose values are locked: one value per row, the
-/// columns' text forms combined when there are several.
+/// columns' lock forms ([`lock_value`]) combined when there are several.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LockTarget {
     /// The relation (a partition's root, a TVIEW's table for an embed).
@@ -205,6 +207,46 @@ pub const fn relation_tag(database: u32, relid: u32, space: Space) -> pg_sys::LO
 #[must_use]
 pub const fn registration_tag(database: u32, hash: u32) -> pg_sys::LOCKTAG {
     tag(database, hash, 0, REGISTRATION_TAG)
+}
+
+/// The tag of a time-dependent TVIEW's boundary lock.
+#[must_use]
+pub const fn boundary_tag(database: u32, tview: u32) -> pg_sys::LOCKTAG {
+    tag(database, tview, 0, BOUNDARY_TAG)
+}
+
+/// Hold `tview`'s boundary lock in `ShareLock` until the transaction ends: a
+/// writer of its rows, before it reads the announced boundary
+/// (`crate::boundary::check_flush`). Writers never conflict with each other, and
+/// the time refresh never queues for the lock: no writer waits on it.
+pub fn lock_boundary(tview: u32) {
+    // SAFETY: a transaction is in progress (a flush runs in one) and the tag is a
+    // well-formed advisory tag private to pg_tviews; the lock belongs to the
+    // current resource owner and ends with the transaction.
+    unsafe {
+        pg_sys::LockAcquire(
+            &boundary_tag(database(), tview),
+            pg_sys::ShareLock.cast_signed(),
+            false,
+            false,
+        );
+    }
+}
+
+/// Wait until every transaction holding `tview`'s boundary lock now has ended,
+/// without joining the lock's queue (as `CREATE INDEX CONCURRENTLY` waits for
+/// writers): writers that take it meanwhile do not wait, and are not waited for.
+/// Honours `lock_timeout` and deadlock detection, which raise an ERROR.
+pub fn wait_for_boundary_writers(tview: u32) {
+    // SAFETY: a transaction is in progress; WaitForLockers only reads the lock
+    // table and waits on each conflicting holder's virtual transaction.
+    unsafe {
+        pg_sys::WaitForLockers(
+            boundary_tag(database(), tview),
+            pg_sys::ExclusiveLock.cast_signed(),
+            false,
+        );
+    }
 }
 
 /// The registration lock's hash of `entity`, keyed with the server's secret

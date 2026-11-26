@@ -10,6 +10,13 @@
       "entity_name": "user",
       "initial_attnum": "public.tb_post.fk_user",
       "initial_col": "fk_user",
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
       "root": true,
       "source_columns": [
         "pk_post",
@@ -56,6 +63,13 @@
         "public.tb_post.pk_post",
         "public.tb_post.fk_user",
         "public.tb_post.score"
+      ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4,
+        5
       ],
       "relid": "public.tb_post",
       "table": "public.tb_post"

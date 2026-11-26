@@ -174,7 +174,11 @@ END $$;
 DO $$
 DECLARE rc0 bigint; fb0 bigint;
 BEGIN
-  DELETE FROM tv_user WHERE pk_user = 1;   -- child row missing
+  -- Child row missing: pg_tviews refuses a direct write (D14), which a
+  -- session in replica role bypasses, as every ordinary trigger.
+  PERFORM set_config('session_replication_role', 'replica', true);
+  DELETE FROM tv_user WHERE pk_user = 1;
+  PERFORM set_config('session_replication_role', 'origin', true);
   rc0 := _rc(); fb0 := (pg_tviews_show_queue()->>'direct_patch_fallbacks')::bigint;
   UPDATE tb_user SET name = 'Eve' WHERE pk_user = 1;
 

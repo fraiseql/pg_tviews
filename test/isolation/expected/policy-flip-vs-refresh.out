@@ -1,0 +1,73 @@
+Parsed test spec with 3 sessions
+
+starting permutation: m_begin m_move r_begin r_refresh m_commit r_commit c_check c_reader
+step m_begin: BEGIN;
+step m_move: UPDATE tb_contract SET tenant_id = 20 WHERE pk_contract = 1;
+step r_begin: BEGIN;
+step r_refresh: SELECT tviews.pg_tviews_refresh('tv_contract') IS NOT NULL AS refreshed; <waiting ...>
+step m_commit: COMMIT;
+step r_refresh: <... completed>
+refreshed
+---------
+t        
+(1 row)
+
+step r_commit: COMMIT;
+step c_check: 
+  SELECT t.pk_contract, t.tenant_id, t.tenant_id = v.tenant_id AND t.data = v.data AS fresh
+  FROM tv_contract t JOIN tviews.public__tv_contract v USING (pk_contract) ORDER BY 1;
+
+pk_contract|tenant_id|fresh
+-----------+---------+-----
+          1|       20|t    
+          2|       10|t    
+(2 rows)
+
+step c_reader: 
+  BEGIN;
+  SET LOCAL ROLE regress_pf_reader;
+  SET LOCAL app.tenant_id = '20';
+  SELECT pk_contract FROM tv_contract ORDER BY 1;
+  COMMIT;
+
+pk_contract
+-----------
+          1
+(1 row)
+
+
+starting permutation: r_begin r_refresh m_begin m_move r_commit m_commit c_check c_reader
+step r_begin: BEGIN;
+step r_refresh: SELECT tviews.pg_tviews_refresh('tv_contract') IS NOT NULL AS refreshed;
+refreshed
+---------
+t        
+(1 row)
+
+step m_begin: BEGIN;
+step m_move: UPDATE tb_contract SET tenant_id = 20 WHERE pk_contract = 1; <waiting ...>
+step r_commit: COMMIT;
+step m_move: <... completed>
+step m_commit: COMMIT;
+step c_check: 
+  SELECT t.pk_contract, t.tenant_id, t.tenant_id = v.tenant_id AND t.data = v.data AS fresh
+  FROM tv_contract t JOIN tviews.public__tv_contract v USING (pk_contract) ORDER BY 1;
+
+pk_contract|tenant_id|fresh
+-----------+---------+-----
+          1|       20|t    
+          2|       10|t    
+(2 rows)
+
+step c_reader: 
+  BEGIN;
+  SET LOCAL ROLE regress_pf_reader;
+  SET LOCAL app.tenant_id = '20';
+  SELECT pk_contract FROM tv_contract ORDER BY 1;
+  COMMIT;
+
+pk_contract
+-----------
+          1
+(1 row)
+

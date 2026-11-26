@@ -109,7 +109,7 @@ SELECT pg_tviews_create('tv_contract', $TV$
            jsonb_build_object('status', c.status, 'version', c.version_no) AS data
     FROM tb_contract c
     WHERE c.note IS DISTINCT FROM 'hidden'
-    ORDER BY c.id_contract, c.version_no DESC
+    ORDER BY c.id_contract, c.version_no DESC, c.pk_contract
 $TV$);
 
 -- Bookkeeping: tuple updates per tview since the last mark, plus the rows'
@@ -187,9 +187,10 @@ SELECT pg_stat_force_next_flush();
 SELECT _expect('tv_user', 0, 'cascade no-op (own)');
 SELECT _expect('tv_post', 0, 'cascade no-op (parent)');
 
--- ── 4. direct patch: jsonb datum changes (1.0 -> 1.00), jsonb value does not ─
--- The captured column differs byte-wise, so the #56 fast path builds a patch;
--- the patched document equals the stored one.
+-- ── 4. a jsonb datum changes (1.0 -> 1.00), its jsonb value does not ───────
+-- The view now renders 1.00: a change, compared byte for byte (D10), and a
+-- jsonb copy is not exact (its numbers would go through f64, G2), so the rows
+-- are recomputed, not patched, and rewritten.
 SET pg_tviews.direct_patch_enabled = on;
 CREATE TABLE _rc0 AS SELECT _recomputes() AS v;
 SELECT pg_stat_force_next_flush();
@@ -197,13 +198,13 @@ SELECT _set_mark();
 UPDATE _skip0 SET v = _skipped();
 UPDATE tb_item SET meta = '{"k": 1.00}' WHERE pk_item <= 5;
 SELECT pg_stat_force_next_flush();
-SELECT _expect('tv_item', 0, 'direct-patch no-op');
-SELECT _expect_skipped(5, 'direct-patch no-op');
+SELECT _expect('tv_item', 5, 'jsonb scale change');
 DO $$ BEGIN
-    IF _recomputes() <> (SELECT v FROM _rc0) THEN
-        RAISE EXCEPTION 'FAIL #72 [direct-patch no-op]: % view recompute(s); an unchanged '
-                        'materialised row must not fall back to recompute',
-                        _recomputes() - (SELECT v FROM _rc0);
+    IF _recomputes() = (SELECT v FROM _rc0) THEN
+        RAISE EXCEPTION 'FAIL #72 [jsonb scale change]: patched, not recomputed';
+    END IF;
+    IF (SELECT count(*) FROM tv_item WHERE pk_item <= 5 AND (data->'meta')::text <> '{"k": 1.00}') > 0 THEN
+        RAISE EXCEPTION 'FAIL #72 [jsonb scale change]: the scale was not kept';
     END IF;
 END $$;
 

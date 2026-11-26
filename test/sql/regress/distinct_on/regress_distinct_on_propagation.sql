@@ -31,7 +31,7 @@ INSERT INTO tb_desk (fk_deal, label) VALUES (1, 'k1'), (2, 'k2');
 SELECT pg_tviews_create('tv_contract', $$
   SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
          jsonb_build_object('status', c.status) AS data
-  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+  FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract $$);
 SELECT pg_tviews_create('tv_deal', $$
   SELECT d.pk_deal, d.id, d.fk_contract,
          jsonb_build_object('name', d.name, 'contract', vc.data) AS data
@@ -71,7 +71,7 @@ CREATE TABLE tb_note (pk_note int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 INSERT INTO tb_note (fk_doc, text) VALUES (1, 'n1'), (2, 'n2');
 SELECT pg_tviews_create('tv_doc', $$
   SELECT DISTINCT ON (d.id) d.pk_doc, d.id, jsonb_build_object('body', d.body) AS data
-  FROM tb_doc d ORDER BY d.id, d.rev DESC $$);
+  FROM tb_doc d ORDER BY d.id, d.rev DESC, d.pk_doc $$);
 SELECT pg_tviews_create('tv_note', $$
   SELECT n.pk_note, n.id, n.fk_doc,
          jsonb_build_object('text', n.text, 'doc', vd.data) AS data

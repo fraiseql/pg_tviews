@@ -51,7 +51,7 @@ DROP TABLE tv_order;
 DO $$ BEGIN
     PERFORM tviews.pg_tviews_create('tv_order', $q$
         SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data
-        FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $q$);
+        FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id, o.pk_order $q$);
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION '#164 FAIL: DISTINCT ON a non-key column is refused: %', SQLERRM;
 END $$;
@@ -69,7 +69,7 @@ DROP TABLE tv_order;
 -- ── the same under full_refresh: accepted, fresh ───────────────────────────
 SELECT pg_tviews_create('tv_order', $$
     SELECT DISTINCT ON (o.id) o.pk_order, o.id, jsonb_build_object('n', v.n) AS data
-    FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id $$, '{"uncascaded_policy": "full_refresh"}');
+    FROM tb_order o LEFT JOIN v_cnt v ON v.fk_order = o.pk_order ORDER BY o.id, o.pk_order $$, '{"uncascaded_policy": "full_refresh"}');
 INSERT INTO tb_line (fk_order, sku) VALUES (1, 'e');
 SELECT check_fresh('an INSERT into tb_line (full_refresh)');
 UPDATE tb_order SET ref = 'y' WHERE pk_order = 2;

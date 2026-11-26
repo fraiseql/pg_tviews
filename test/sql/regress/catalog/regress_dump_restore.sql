@@ -88,8 +88,27 @@ SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::text AS au
 
 -- A user's index, and the indexes pg_tviews created (#219), as names.
 CREATE INDEX post_title ON app.tv_post ((data->>'title'));
+-- Row security on a TVIEW's table (D6): pg_restore runs FORCE before CREATE POLICY.
+ALTER TABLE app.tv_post ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY;
+CREATE POLICY tviews_owner ON app.tv_post FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+CREATE POLICY readers ON app.tv_post FOR SELECT TO PUBLIC USING (pk_post > 0);
+-- The audit trail (E1-12): an audited create, whose entry a restore brings back (the
+-- TVIEW itself is dropped again: the counts below are of the two TVIEWs above).
+SET pg_tviews.audit_enabled = on;
+CREATE TABLE tb_note (pk_note int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(), body text);
+CREATE TABLE tv_note AS SELECT pk_note, id, jsonb_build_object('body', body) AS data FROM tb_note;
+RESET pg_tviews.audit_enabled;
+DROP TABLE tv_note;
+DROP TABLE tb_note;
+SELECT count(*) AS audit_before, max(log_id) AS audit_last FROM tviews.pg_tview_audit_log \gset
+\if `test :audit_before -gt 0 && echo true || echo false`
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'E1-12 FAIL: the audited create wrote no audit entry'; END $$;
+\endif
+
 SELECT string_agg(r.entity || ':' || c.relname, ',' ORDER BY r.entity, c.relname) AS managed_before
 FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i \gset
+
 
 -- ========================================================================
 -- Round trip: pg_dump -Fc | pg_restore --exit-on-error into a fresh database
@@ -104,6 +123,16 @@ FROM tviews.registry r, unnest(r.managed_indexes) i JOIN pg_class c ON c.oid = i
 \set restored :DBNAME '_restored'
 \c :restored
 SET client_min_messages TO WARNING;
+
+-- The audit trail came back, and the next entry follows the restored ones.
+SELECT count(*) = :audit_before
+       AND nextval(pg_get_serial_sequence('tviews.pg_tview_audit_log', 'log_id')) > :audit_last
+       AS audit_ok
+FROM tviews.pg_tview_audit_log \gset
+\if :audit_ok
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'E1-12 FAIL: the audit log or its sequence was not restored'; END $$;
+\endif
 
 SELECT (SELECT options FROM tviews.registry WHERE entity = 'author')::jsonb = :'author_options'::jsonb
        AND :'author_options'::jsonb @> '{"data_storage": "external", "toast_tuple_target": 3000, "indexes": [["name"]]}'
@@ -174,6 +203,33 @@ DO $$ BEGIN
                     WHERE m.entity = 'post')
   THEN
     RAISE EXCEPTION '#96 FAIL: the plan still carries the source database''s relids';
+  END IF;
+END $$;
+
+-- The guard came back with each table (D14, created after the data): a direct
+-- write is refused.
+DO $$
+DECLARE state text;
+BEGIN
+  IF (SELECT count(*) FROM pg_trigger
+      WHERE tgname = 'trg_tview_guard'
+        AND tgrelid IN ('public.tv_author'::regclass, 'app.tv_post'::regclass)) <> 2 THEN
+    RAISE EXCEPTION 'D14 FAIL: a restored TVIEW table lost its guard';
+  END IF;
+  BEGIN
+    UPDATE public.tv_author SET data = '{}';
+    RAISE EXCEPTION 'D14 FAIL: a direct UPDATE of a restored TVIEW table was accepted';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL;
+  END;
+END $$;
+
+-- The row security of app.tv_post came back.
+DO $$ BEGIN
+  IF NOT (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
+          WHERE oid = 'app.tv_post'::regclass)
+     OR (SELECT array_agg(polname ORDER BY polname) FROM pg_policy
+         WHERE polrelid = 'app.tv_post'::regclass) IS DISTINCT FROM '{readers,tviews_owner}' THEN
+    RAISE EXCEPTION 'D6 FAIL: the row security of app.tv_post was not restored';
   END IF;
 END $$;
 
@@ -258,9 +314,47 @@ DO $$ BEGIN
 END $$;
 
 -- ========================================================================
+-- Cycle 5: a data-only restore of a TVIEW table into an existing schema is
+-- refused (D14), with the way out in the hint: leave the TVIEW tables' data
+-- out, and the restored-empty refill rebuilds them
+-- ========================================================================
+\c postgres
+\! dropdb --if-exists "${PGTV_SRC}_data" && createdb "${PGTV_SRC}_data" && pg_restore --exit-on-error --schema-only -d "${PGTV_SRC}_data" "$PGTV_DUMPDIR/src.dump"
+\if :SHELL_ERROR
+  DO $$ BEGIN RAISE EXCEPTION 'D14 FAIL: the schema-only restore failed'; END $$;
+\endif
+\! pg_restore --exit-on-error --data-only -n public -t tv_author -d "${PGTV_SRC}_data" "$PGTV_DUMPDIR/src.dump" 2> "$PGTV_DUMPDIR/data_only.err"
+\if :SHELL_ERROR
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'D14 FAIL: a data-only restore wrote a TVIEW table'; END $$;
+\endif
+\! grep -q 'is written by pg_tviews only' "$PGTV_DUMPDIR/data_only.err" && grep -q -- '--exclude-table-data' "$PGTV_DUMPDIR/data_only.err"
+\if :SHELL_ERROR
+  \! cat "$PGTV_DUMPDIR/data_only.err"
+  DO $$ BEGIN RAISE EXCEPTION 'D14 FAIL: the data-only restore was not refused by the guard, with its hint'; END $$;
+\endif
+-- The catalog, then the tables in key order; the TVIEW tables' data left out.
+\! for t in "-n tviews -t pg_tview_meta" "-n public -t tb_author" "-n app -t tb_post"; do pg_restore --exit-on-error --data-only $t -d "${PGTV_SRC}_data" "$PGTV_DUMPDIR/src.dump" || exit 1; done
+\if :SHELL_ERROR
+  DO $$ BEGIN RAISE EXCEPTION 'D14 FAIL: the data-only restore without the TVIEW tables failed'; END $$;
+\endif
+\set data_db :src '_data'
+\c :data_db
+SET client_min_messages TO WARNING;
+SET search_path = public, app;
+UPDATE public.tb_author SET name = 'ann4' WHERE pk_author = 1;
+DO $$ BEGIN
+  IF (SELECT data->>'author_name' FROM app.tv_post WHERE pk_post = 1) IS DISTINCT FROM 'ann4'
+     OR (SELECT count(*) FROM public.tv_author) <> 2 OR (SELECT count(*) FROM app.tv_post) <> 2 THEN
+    RAISE EXCEPTION 'D14 FAIL: after a data-only restore without the TVIEW tables, they were not refilled (% / % rows)',
+      (SELECT count(*) FROM public.tv_author), (SELECT count(*) FROM app.tv_post);
+  END IF;
+END $$;
+
+-- ========================================================================
 -- Cleanup
 -- ========================================================================
 \c postgres
-\! dropdb --if-exists "${PGTV_SRC}_restored"; dropdb --if-exists "${PGTV_SRC}_plain"; rm -rf "$PGTV_DUMPDIR"
+\! dropdb --if-exists "${PGTV_SRC}_restored"; dropdb --if-exists "${PGTV_SRC}_plain"; dropdb --if-exists "${PGTV_SRC}_data"; rm -rf "$PGTV_DUMPDIR"
 
 \echo 'dump_restore: PASS'

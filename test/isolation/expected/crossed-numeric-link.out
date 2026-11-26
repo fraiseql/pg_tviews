@@ -1,0 +1,42 @@
+Parsed test spec with 2 sessions
+
+starting permutation: o_begin o_move t_move o_commit t_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_cat created
+(1 row)
+
+step o_begin: BEGIN;
+step o_move: UPDATE tb_cat SET code = 1.0 WHERE pk_cat = 1;
+step t_move: UPDATE tb_item SET code = 1.00 WHERE pk_item = 2; <waiting ...>
+step o_commit: COMMIT;
+step t_move: <... completed>
+step t_check: 
+  SELECT t.pk_cat, t.data->'items' AS items, t.data = v.data AS fresh
+  FROM tv_cat t FULL JOIN tviews.public__tv_cat v USING (pk_cat) ORDER BY 1;
+
+pk_cat|items       |fresh
+------+------------+-----
+     1|["i1", "i2"]|t    
+(1 row)
+
+
+starting permutation: o_begin o_move t_other o_commit t_check
+pg_tviews_create           
+---------------------------
+TVIEW public.tv_cat created
+(1 row)
+
+step o_begin: BEGIN;
+step o_move: UPDATE tb_cat SET code = 1.0 WHERE pk_cat = 1;
+step t_other: UPDATE tb_item SET code = 3 WHERE pk_item = 2;
+step o_commit: COMMIT;
+step t_check: 
+  SELECT t.pk_cat, t.data->'items' AS items, t.data = v.data AS fresh
+  FROM tv_cat t FULL JOIN tviews.public__tv_cat v USING (pk_cat) ORDER BY 1;
+
+pk_cat|items |fresh
+------+------+-----
+     1|["i1"]|t    
+(1 row)
+

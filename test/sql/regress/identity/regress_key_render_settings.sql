@@ -29,11 +29,11 @@ INSERT INTO tb_byday VALUES (1, DEFAULT, '2026-12-05', 1, 'a'), (2, DEFAULT, '20
 SELECT tviews.pg_tviews_create('tv_byscore', $$
   SELECT DISTINCT ON (i.score) i.pk_byscore, i.id, i.score,
          jsonb_build_object('label', i.label) AS data
-  FROM tb_byscore i ORDER BY i.score, i.rev DESC $$);
+  FROM tb_byscore i ORDER BY i.score, i.rev DESC, i.pk_byscore $$);
 SELECT tviews.pg_tviews_create('tv_byday', $$
   SELECT DISTINCT ON (i.day) i.pk_byday, i.id, i.day,
          jsonb_build_object('label', i.label) AS data
-  FROM tb_byday i ORDER BY i.day, i.rev DESC $$);
+  FROM tb_byday i ORDER BY i.day, i.rev DESC, i.pk_byday $$);
 
 -- The writer's settings.
 SET extra_float_digits = 0;

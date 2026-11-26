@@ -241,6 +241,8 @@ owner and the roles granted them may run them.
 | `pg_tviews_reregister_all(strict)` | Re-derive every TVIEW's plan and triggers |
 | `pg_tviews_ensure_propagation_indexes_all(dry_run)` | Create every TVIEW's missing propagation indexes |
 | `pg_tviews_reset_stats_all()` | Zero every TVIEW's counters in `tviews.stats` |
+| `pg_tviews_time_boundary_all()` (procedure) | The time refresh of every time-dependent TVIEW, one transaction each |
+| `pg_tviews_refresh_time_dependent_all(tview)` | The same in the caller's transaction, or for one TVIEW |
 | `pg_tviews_suspend_triggers()` | Suspend refresh for the rest of the transaction (a bulk load) |
 | `pg_tviews_resume_triggers()` | Resume it: rebuild every TVIEW the transaction changed, and those that embed them |
 | `pg_tviews_invalidate_caches(relid)` | Internal: invalidate cached metadata |
@@ -252,6 +254,16 @@ TVIEW's owner, never as the caller, so the grant alone is enough for
 `pg_tviews_refresh_all()`.
 `pg_tviews_rebuild_all()` also reads each TVIEW as the caller, to find the empty ones
 and count the rows it filled, so the role needs `SELECT` on the `tv_*` tables too.
+
+The time refresh run by the owner of the TVIEWs (`CALL tviews.pg_tviews_time_boundary()`)
+refreshes the ones it owns and names the others in a WARNING. A scheduler role that owns
+none is granted the operator forms; each TVIEW is refreshed as its owner:
+
+```sql
+CREATE ROLE ops_doc_cron;
+GRANT EXECUTE ON PROCEDURE tviews.pg_tviews_time_boundary_all() TO ops_doc_cron;
+GRANT EXECUTE ON FUNCTION tviews.pg_tviews_refresh_time_dependent_all(text) TO ops_doc_cron;
+```
 
 A role that loads data in bulk with refresh suspended is granted the two:
 
@@ -317,8 +329,8 @@ The roles created on this page are cluster-wide; drop them:
 
 ```sql
 DROP TABLE tv_user;
-DROP OWNED BY ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
-DROP ROLE ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
+DROP OWNED BY ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app, ops_doc_cron;
+DROP ROLE ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app, ops_doc_cron;
 ```
 
 ## See also

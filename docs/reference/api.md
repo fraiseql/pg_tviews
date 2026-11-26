@@ -40,6 +40,9 @@ INSERT INTO tb_post (fk_user, title) VALUES (1, 'Hello'), (1, 'Again'), (2, 'Hi'
 | [`pg_tviews_reregister_all(strict boolean DEFAULT false)`](#pg_tviews_reregister_all) | `TABLE(entity text, status text)` | operator, and owner of each TVIEW |
 | [`pg_tviews_refresh(tview text)`](#pg_tviews_refresh) | `void` | owner |
 | [`pg_tviews_refresh_time_dependent(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | owner |
+| [`pg_tviews_time_boundary()`](#pg_tviews_time_boundary) (procedure) | — | owner of each TVIEW |
+| [`pg_tviews_time_boundary_all()`](#pg_tviews_time_boundary) (procedure) | — | operator |
+| [`pg_tviews_refresh_time_dependent_all(tview text DEFAULT NULL)`](#pg_tviews_refresh_time_dependent) | `SETOF text` | operator |
 | [`pg_tviews_resync(source regclass, keys bigint[])`](#pg_tviews_resync) | `TABLE(tview text, rows_changed bigint)` | `UPDATE` and `SELECT` on `source`, `USAGE` on its schema |
 | [`pg_tviews_refresh_all()`](#pg_tviews_refresh_all) | `jsonb` | operator |
 | [`pg_tviews_show_cascade_path(tview text)`](#pg_tviews_show_cascade_path) | `TABLE(depth integer, entity text, depends_on text)` | owner |
@@ -121,6 +124,7 @@ of a TVIEW, defaults included.
 | `function_reads` | object | `{}` | the tables each non-immutable function reads, `{"public.label_suffix()": ["public.tb_setting"]}` (`[]` for none); functions are named with their argument types ([details](ddl.md#functions-that-read-tables)) |
 | `time_refresh` | `"external"` or `null` | `null` | accept a definition reading the current time; `pg_tviews_refresh_time_dependent()` is called at the boundary ([details](ddl.md#time-dependent-tviews)) |
 | `typename` | string or `null` | `null` (the PascalCase of the entity) | the GraphQL type name [`pg_tviews_flush_and_report()`](#pg_tviews_flush_and_report) reports; one TVIEW per name: a name another TVIEW's rows have is refused (`42710`) |
+| `settings` | object | `{}` | custom settings pinned in the TVIEW's owner frames, `{"app.locale": "fr-FR"}`: its fill and every refresh read these values, never a session's; only names with a dot, not `pg_tviews.*`, with string values (`22023`) ([details](owner-frame.md#custom-settings)) |
 
 ### pg_tviews_create
 
@@ -325,10 +329,17 @@ SELECT * FROM tviews.pg_tviews_resync('tb_user', ARRAY[1]);
 tviews.pg_tviews_refresh_time_dependent(tview text DEFAULT NULL) RETURNS SETOF text
 ```
 
-Refreshes in full the TVIEWs whose definitions read the current time
-(`tviews.registry.time_dependent`): `tview`, or every such TVIEW the caller owns.
-The TVIEWs reading them follow in the same flush. Returns the TVIEWs refreshed,
-dependencies first. A TVIEW that reads no time is `22023`.
+Brings up to date the TVIEWs whose definitions read the current time
+(`tviews.registry.time_dependent`): `tview`, or every such TVIEW the caller owns, in
+the caller's transaction. Each TVIEW's rows are compared with its view's, as its
+owner and without a lock, and the rows that differ are refreshed through the flush,
+as a write's are, under their value locks; the TVIEWs reading them follow. Each
+records the instant it was brought to, `tviews.registry.time_boundary`. Returns the
+TVIEWs refreshed, dependencies first. A TVIEW that reads no time is `22023`.
+Called with no TVIEW by a role that does not own every time-dependent TVIEW, it
+refreshes those it owns and names the others in a WARNING.
+`pg_tviews_refresh_time_dependent_all(tview)`, an operator's, refreshes them whoever
+owns them, each as its owner ([operator role](../user-guides/operators.md#operator-role)).
 Call it at the boundary the rows depend on, from pg_cron or the application
 ([Time-dependent TVIEWs](ddl.md#time-dependent-tviews)).
 
@@ -339,6 +350,20 @@ SELECT tviews.pg_tviews_create_or_replace('tv_recent_post', $$
     FROM tb_post $$, '{"time_refresh": "external"}');
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent();
 ```
+
+### pg_tviews_time_boundary
+
+```text
+CALL tviews.pg_tviews_time_boundary()
+```
+
+The time refresh of every time-dependent TVIEW the caller owns, one transaction each,
+dependencies first: `pg_tviews_refresh_time_dependent(<tview>)`, then `COMMIT`. A
+writer waits at most for the rows of the TVIEW being refreshed. The others are named in a
+WARNING. `CALL tviews.pg_tviews_time_boundary_all()`, an operator's, refreshes every
+time-dependent TVIEW, each as its owner. A procedure: `CALL`
+it outside a transaction block, from pg_cron or the application
+([Time-dependent TVIEWs](ddl.md#time-dependent-tviews)).
 
 ### pg_tviews_refresh_all
 
@@ -569,8 +594,9 @@ tviews.pg_tviews_check_health()
 One row per check. `status` is `OK`, `WARNING` or `ERROR`; `severity` is `info`,
 `warning` or `error`; `component` is one of `extension`, `catalog`, `metadata`,
 `plans` (stored plans that do not decode), `columns` (column numbers a plan holds that
-no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`, `reregister`
-(TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
+no longer match the table), `seq_scans`, `contents`, `function_paths`, `owner_reads`,
+`tv_policies`, `frame_settings`, `tv_writers`, `tv_triggers`, `change_feed`, `time_handoff`,
+`reregister` (TVIEWs marked `needs_reregister`), `triggers` and `tviews`. A check that cannot run is
 an `ERROR` row.
 
 `function_paths` is an `ERROR` listing the functions a TVIEW's refresh runs (those its
@@ -578,6 +604,27 @@ definition calls, through operators, aggregates and views, and the user triggers
 table) whose `search_path` setting does not end in `pg_temp`, with the setting that
 fixes each. Creating or replacing such a TVIEW is refused (`42P13`); one registered
 before the rule stays, and is reported here and warned about whenever it is re-derived.
+
+`frame_settings` lists, per TVIEW, the custom settings its definition reads by name and the
+value its refreshes read (its `settings` option's, else the server's, the database's or `ALTER
+ROLE ALL`'s), never a session's; a `WARNING` when one is unset there.
+
+`tv_writers` is a `WARNING` listing, per TVIEW table, each role other than its owner
+granted `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on it (`PUBLIC` included). pg_tviews is a
+TVIEW table's only writer and its guard refuses every other write: revoke them.
+
+`tv_triggers` is a `WARNING` naming each user trigger or rule on a TVIEW table (not
+pg_tviews' own triggers): it changes what pg_tviews writes there.
+
+`change_feed` is `OK` while `pg_tviews.publish_changes` is `off` or `types`. With `rows`, it
+is a `WARNING` naming each login role, not a superuser, that may connect to the database
+but not `SELECT` a TVIEW, with the TVIEWs: `LISTEN` takes no privilege, so it receives the
+keys of their changed rows.
+
+`time_handoff` counts the keys written across a time boundary by a transaction older
+than it, which the drain worker refreshes again once that transaction commits: `OK`
+while there are none or the oldest is under a minute old, then a `WARNING` (the worker
+did not run; the next time refresh of each TVIEW refreshes its keys).
 
 `owner_reads` is an `ERROR` listing the TVIEWs read for by a role that may no longer read
 what it reads: the TVIEW's owner or the owner of a view it reads through, lacking

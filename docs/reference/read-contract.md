@@ -47,6 +47,7 @@ Every role can read all three.
 | `needs_reregister` | `boolean` | a release changed what registration derives since this TVIEW was last registered; `SELECT * FROM tviews.pg_tviews_reregister_all()` clears it, and so does `ALTER EXTENSION pg_tviews UPDATE`, which re-derives every TVIEW |
 | `references` | `jsonb` | each output column that holds another TVIEW's key, proven by a `FOREIGN KEY` → that TVIEW and how to read by it (below); `{}` for none. `references` is a reserved word: qualify it (`r.references`) or quote it |
 | `typename` | `text` | the GraphQL type name of the rows, as `pg_tviews_flush_and_report()` and the change feed name them: the `typename` option, else the PascalCase of the entity; unique among TVIEWs. A collection key is `<child typename>.<reference column>` |
+| `time_boundary` | `timestamptz` | the instant the time refresh last brought the rows to (its transaction's `now()`); NULL for a TVIEW that reads no time, or that it never refreshed (below) |
 
 Columns removed in contract version 2, now `options` keys:
 
@@ -106,7 +107,8 @@ or CTE it reads: `CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME
 `full_refresh` policies such a TVIEW exists only with the option
 `time_refresh: "external"`;
 `tviews.pg_tviews_refresh_time_dependent()` brings it up to date
-([DDL](ddl.md#time-dependent-tviews)).
+([DDL](ddl.md#time-dependent-tviews)), and records the instant it was brought to in
+**`time_boundary`**.
 
 **`managed_indexes`** are the indexes pg_tviews created on the TVIEW's table: on `id`
 and each UUID FK column, the `(<lookup>, <key>)` propagation indexes, the one on
@@ -202,6 +204,7 @@ registered ([ADR 0157](../adr/0157-cascade-key-mapping.md)). Another TVIEW's
 | `function_reads` | `object` | each function the definition calls that may read tables, `schema.name(argument types)` → the tables it reads (as `regclass` text), as declared; `{}` for most TVIEWs |
 | `time_refresh` | `text` or `null` | `external` when a time-dependent TVIEW declared it; `null` otherwise |
 | `typename` | `text` or `null` | the declared GraphQL type name; `null`: the PascalCase of the entity |
+| `settings` | `object` | the custom settings pinned in the TVIEW's owner frames, name → value, as declared; `{}` for most TVIEWs |
 
 Values come from the system catalogs where they can, so the view reports the truth
 after a manual `ALTER TABLE`. A registration whose table is gone (dropped without pg_tviews
@@ -284,6 +287,7 @@ TVIEW is created and **also when it exists**. Pass every option the TVIEW should
 | `function_reads` | object: function → array of tables | `{}`: the tables each non-immutable function the definition calls reads (`[]` for none), the function named with its argument types (`"public.price(bigint, date)"`); every such function must be declared under `error` and `full_refresh`, and every declared one called |
 | `time_refresh` | `"external"` or `null` | `null`: `"external"` accepts a definition that reads the time, brought up to date by `pg_tviews_refresh_time_dependent()`; refused for one that reads none |
 | `typename` | string or `null` | `null`: the GraphQL type name `pg_tviews_flush_and_report()` reports, the PascalCase of the entity when `null` |
+| `settings` | object: setting → string | `{}`: custom settings (a dot in the name, not `pg_tviews.*`) pinned in the TVIEW's owner frames, which every refresh reads instead of the server's value ([owner frame](owner-frame.md#custom-settings)) |
 
 **What counts as the same.** The definition goes through the creation pipeline, is
 created as a temporary view, and is the same when `pg_get_viewdef` renders it like the
@@ -299,11 +303,12 @@ under the current `search_path` does. An invalid definition raises its error. Pa
   transaction.
 - `altered`: only `logged`, `fillfactor`, `data_gin_index`, `data_compression`,
   `data_storage`, `toast_tuple_target`, `indexes`, `uncascaded_policy`,
-  `uncascaded_tables`, `function_reads`, `time_refresh` or `typename` differ, or a
-  declared index is missing; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a
+  `uncascaded_tables`, `function_reads`, `time_refresh`, `typename` or `settings`
+  differ, or a declared index is missing; changed in place (`ALTER TABLE … SET LOGGED/UNLOGGED`, a
   reset UNLOGGED TVIEW filled first, `SET (fillfactor = n)`, pg_tviews' GIN index and
   declared indexes created or dropped, never a user's, the declarations stored and the
-  TVIEW re-registered), rows kept. A change of `data_compression`, `data_storage` or
+  TVIEW re-registered), rows kept, except after a change of `settings`, which computes
+  them again under the new values. A change of `data_compression`, `data_storage` or
   `toast_tuple_target` writes the rows again: PostgreSQL stores only new values the new
   way, and the declared storage is the stored one.
 - `replaced`: the definition differs but produces the same columns (names and types,

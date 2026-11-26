@@ -117,7 +117,7 @@ FROM pg_catalog.pg_extension WHERE extname = 'pg_tviews' \gset
 SELECT pg_tviews_create('tv_contract', $$
     SELECT DISTINCT ON (c.id_contract) c.id_contract AS pk_contract, c.id,
            jsonb_build_object('status', c.status) AS data
-    FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC $$);
+    FROM tb_contract c ORDER BY c.id_contract, c.version_no DESC, c.pk_contract $$);
 -- DISTINCT ON a unique root column, a table read through a join (0.1.0-beta.22
 -- keys it with a unique index on pk_<entity>).
 SELECT pg_tviews_create('tv_shipment', $$

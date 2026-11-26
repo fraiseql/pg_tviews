@@ -122,7 +122,8 @@ SELECT
                    GROUP BY r.function) f),
             '{}'),
         'time_refresh', m.time_refresh,
-        'typename', m.graphql_typename) END AS options,
+        'typename', m.graphql_typename,
+        'settings', m.frame_settings) END AS options,
     v.oid::pg_catalog.regclass AS view,
     CASE WHEN m.identity IS NULL THEN ARRAY['pk_' || m.entity]
          ELSE ARRAY(SELECT c->>'name'
@@ -157,7 +158,9 @@ SELECT
          FROM @extschema@.references x
          WHERE x.entity = m.entity AND x.chosen),
         '{}') AS references,
-    m.typename
+    m.typename,
+    (SELECT b.boundary FROM @extschema@.pg_tview_time_boundary b
+     WHERE b.entity = m.entity) AS time_boundary
 FROM @extschema@.pg_tview_meta m
 LEFT JOIN pg_catalog.pg_class c ON c.oid = m.table_oid
 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

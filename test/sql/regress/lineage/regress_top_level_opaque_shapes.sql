@@ -58,10 +58,10 @@ SET client_min_messages TO ERROR;
 SELECT pg_tviews_create('tv_win', $$
     SELECT pk_win, id, jsonb_build_object('s', s, 'n', count(*) OVER ()) AS data FROM tb_win $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_rank', $$
-    SELECT pk_rank, id, jsonb_build_object('rank', row_number() OVER (PARTITION BY g ORDER BY s)) AS data
+    SELECT pk_rank, id, jsonb_build_object('rank', row_number() OVER (PARTITION BY g ORDER BY s, pk_rank)) AS data
     FROM tb_rank $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_top', $$
-    SELECT pk_top, id, jsonb_build_object('s', s) AS data FROM tb_top ORDER BY s DESC LIMIT 2 $$, '{"uncascaded_policy": "full_refresh"}');
+    SELECT pk_top, id, jsonb_build_object('s', s) AS data FROM tb_top ORDER BY s DESC, pk_top LIMIT 2 $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_srf', $$
     SELECT pk_srf, id, jsonb_build_object('x', unnest(ARRAY[s])) AS data FROM tb_srf $$, '{"uncascaded_policy": "full_refresh"}');
 SELECT pg_tviews_create('tv_gs', $$

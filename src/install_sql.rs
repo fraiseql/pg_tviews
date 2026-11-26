@@ -58,3 +58,14 @@ extension_sql_file!(
         "tview_reads"
     ],
 );
+
+extension_sql_file!(
+    "../sql/install/10-time-boundary.sql",
+    name = "time_boundary",
+    requires = [
+        pg_tviews_refresh_time_dependent,
+        pg_tviews_refresh_time_dependent_all,
+        "create_metadata_tables",
+        "tview_reads"
+    ],
+);

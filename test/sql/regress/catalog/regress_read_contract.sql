@@ -69,7 +69,7 @@ SELECT must(
     = 'schema text, name text, entity text, query text, options jsonb, view regclass, '
       'identity text[], base_tables regclass[], cascade_kinds jsonb, uncascaded_tables regclass[], '
       'time_dependent boolean, managed_indexes regclass[], needs_reregister boolean, '
-      'references jsonb, typename text',
+      'references jsonb, typename text, time_boundary timestamp with time zone',
     'tviews.registry columns differ from contract 2');
 
 -- 2. One row per TVIEW, with catalog truth.
@@ -80,7 +80,7 @@ SELECT must(
                             "data_storage": "main", "toast_tuple_target": null, "indexes": [],
                             "group_keys": null, "uncascaded_policy": "error",
                             "uncascaded_tables": {}, "function_reads": {},
-                            "time_refresh": null, "typename": null}'::jsonb
+                            "time_refresh": null, "typename": null, "settings": {}}'::jsonb
      FROM tviews.registry WHERE entity = 'user'),
     'tv_user row: ' || (SELECT row(schema, name, options)::text
                         FROM tviews.registry WHERE entity = 'user'));

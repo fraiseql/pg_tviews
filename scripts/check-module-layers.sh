@@ -3,10 +3,12 @@
 # modules below it, so no two of them depend on each other, directly or through a
 # third. The order, bottom first, is LAYERS below; a module not listed (the
 # triggers, hooks, DDL, API, ...) sits above all of them. Comments and tests do not
-# count. Prints the violations; exits 1 on any.
+# count. `decide`, the bottom layer, names no other module of the crate and no
+# `pgrx` or `pg_sys` at all: it builds alone (decide/Cargo.toml). Prints the
+# violations; exits 1 on any.
 set -u
 cd "$(dirname "$0")/.."
-LAYERS=(config error cache metrics utils owner visibility lineage catalog stats queue concurrency refresh propagate flush)
+LAYERS=(decide config error cache metrics utils owner visibility lineage catalog stats queue concurrency boundary refresh propagate flush)
 python3 - "${LAYERS[@]}" <<'PY'
 import os, re, sys
 layers = sys.argv[1:]
@@ -34,6 +36,14 @@ for m in layers:
             for t in sorted(set(re.findall(r'crate::([a-z_]+)', line))):
                 if t in rank and rank[t] > rank[m]:
                     bad.append(f'{f}:{n}: {m} names {t}, above it')
+# The decisions are plain Rust: no pgrx, no pg_sys, no crate module.
+for f in files('decide'):
+    for n, line in enumerate(open(f), 1):
+        s = line.strip()
+        if s.startswith('//'):
+            continue
+        if re.search(r'\b(pgrx|pg_sys)\b|crate::', s):
+            bad.append(f'{f}:{n}: decide names pgrx, pg_sys or another module: {s}')
 if bad:
     print('lower modules naming a module above them (order: ' + ' < '.join(layers) + '):')
     print('\n'.join(bad))

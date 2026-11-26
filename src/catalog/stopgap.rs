@@ -78,11 +78,24 @@ pub fn refuse_row_security(meta: &super::TviewMeta) -> TViewResult<()> {
     }) {
         return refusal.map_or(Ok(()), Err);
     }
-    let refusal = check_row_security(meta).err();
+    let refusal = check_refresh(meta).err();
     ROW_SECURITY.with_borrow_mut(|m| {
         m.insert(meta.entity_name.clone(), (command, refusal.clone()));
     });
     refusal.map_or(Ok(()), Err)
+}
+
+/// What a refresh of `meta`'s TVIEW is refused for, probed now: row security
+/// on a table it reads ([`check_row_security`]), or on its own table for its
+/// owner (D6, [`crate::guard::refuse_filtered_owner`]). The second is not
+/// [`check_row_security`]'s: `FORCE ROW LEVEL SECURITY` on a TVIEW's table
+/// warns rather than fails, since `pg_restore` runs it before its policies.
+///
+/// # Errors
+/// As [`check_row_security`], or [`TViewError::WrongState`].
+pub fn check_refresh(meta: &super::TviewMeta) -> TViewResult<()> {
+    check_row_security(meta)?;
+    crate::guard::refuse_filtered_owner(meta.tview_oid)
 }
 
 /// [`refuse_row_security`], probed now: at `CREATE TVIEW`, at a re-derive, at a

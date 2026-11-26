@@ -11,7 +11,7 @@ pub mod report;
 
 pub use report::{
     Change, NetChange, Recorded, Summary, begin_flush, changed_in_flush,
-    changed_in_flush_by_entity, summarize,
+    changed_in_flush_by_entity, summarize, written_in_flush,
 };
 
 /// Record that a refresh write changed a TVIEW row: in the flush's changed rows,
@@ -36,6 +36,7 @@ pub fn record(recorded: Recorded) {
 /// # Errors
 /// Returns an error if the catalog cannot be read.
 pub fn record_rebuilt(entity: &str) -> crate::TViewResult<()> {
+    report::note_flush_rebuilt(entity);
     report::append_rebuilt(entity);
     if crate::config::publish_changes().is_some()
         && let Some(meta) = crate::catalog::TviewMeta::load_by_entity(entity)?

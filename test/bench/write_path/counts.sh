@@ -18,7 +18,7 @@ while [[ $# -gt 0 && "$1" != -- ]]; do builds+=("$1"); shift; done
 [[ $# -gt 0 ]] && shift
 txs="${1:-50}"; shift $(( $# > 0 ? 1 : 0 ))
 writes=("$@")
-[[ ${#writes[@]} -eq 0 ]] && writes=(bio username title comment_insert bio_bulk100 untracked_insert username_two_hop username_array)
+[[ ${#writes[@]} -eq 0 ]] && writes=(bio username title comment_insert bio_bulk100 untracked_insert username_two_hop username_array price)
 [[ ${#builds[@]} -lt 1 ]] && { echo "usage: $0 <label>=<port> ... -- [transactions] [write ...]" >&2; exit 2; }
 tpl=pg_tviews_write_bench; db=pg_tviews_write_bench_run
 

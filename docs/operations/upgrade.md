@@ -168,7 +168,11 @@ ORDER BY 1, 2, 3, 4;
 <!-- upgrade-precheck:end -->
 
 Every row of these queries is a TVIEW the update will leave to re-register; fix it
-before the update, or after it as above. With the new package installed (writers
+before the update, or after it as above. A rule only the new release applies is not
+among them: from 0.1.0-beta.41, a definition that aggregates or picks rows in an order
+nothing fixes (`jsonb_agg` without an `ORDER BY` that determines every row, `DISTINCT
+ON` whose `ORDER BY` does not) is left to re-register, and named by the update below.
+Give it that order with `pg_tviews_create_or_replace`, then re-register it. With the new package installed (writers
 paused), the update itself is the exact check: `BEGIN; ALTER EXTENSION pg_tviews
 UPDATE; ROLLBACK;` prints its WARNING and changes nothing. Run it in a session of its
 own.

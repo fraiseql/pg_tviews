@@ -326,8 +326,10 @@ fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
 }
 
 /// A SELECT without a `pk_*` column, rewritten to the TVIEW shape: its key column
-/// (`pk`, else the first integer column, else `id`) as `pk_<entity>`, a generated
-/// `id`, and every column under its own name in `data`.
+/// (`pk`, else the first integer column, else `id`) as `pk_<entity>`, its `uuid`
+/// column `id` as `id`, else one derived from the entity and the key
+/// (`pg_tviews_row_id`, the same on every evaluation), and every column under its
+/// own name in `data`.
 fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewResult<String> {
     let integer = |t: &str| matches!(t, "smallint" | "integer" | "bigint");
     let key = columns
@@ -353,13 +355,35 @@ fn raw_to_tview(entity: &str, select_sql: &str, columns: &ViewColumns) -> TViewR
             )
         })
         .collect();
+    let key = ident::quote_if_needed(&key);
+    let id = if columns
+        .columns
+        .iter()
+        .any(|(c, t)| c == "id" && t == "pg_catalog.uuid")
+    {
+        "source.id".to_string()
+    } else {
+        format!(
+            "{}.pg_tviews_row_id({}, source.{key}::pg_catalog.text)",
+            crate::utils::ext_schema(),
+            crate::utils::quote_literal(entity)
+        )
+    };
     Ok(format!(
-        "SELECT source.{} AS {}, gen_random_uuid() AS id, jsonb_build_object({}) AS data \
+        "SELECT source.{key} AS {}, {id} AS id, jsonb_build_object({}) AS data \
          FROM ({select_sql}) AS source",
-        ident::quote_if_needed(&key),
         ident::quoted(&crate::lineage::plan::key_column(entity)),
         fields.join(", ")
     ))
+}
+
+/// The bytes of the `UUIDv5` `pg_tviews_row_id(entity, key)` returns: name
+/// `<entity>:<key>` in `pg_tviews`' own namespace.
+#[must_use]
+pub fn row_id(entity: &str, key: &str) -> [u8; 16] {
+    /// The namespace of the `id`s `pg_tviews` derives (a fixed random UUID).
+    const NAMESPACE: uuid::Uuid = uuid::uuid!("efb05b40-0b11-4b59-bcbe-f32b477f73b0");
+    *uuid::Uuid::new_v5(&NAMESPACE, format!("{entity}:{key}").as_bytes()).as_bytes()
 }
 
 #[cfg(test)]

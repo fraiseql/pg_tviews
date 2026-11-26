@@ -10,6 +10,12 @@
       "entity_name": "doc",
       "initial_attnum": "public.tb_doc.id",
       "initial_col": "id",
+      "read_set": [
+        1,
+        2,
+        3,
+        4
+      ],
       "root": true,
       "source_columns": [
         "pk_doc",
@@ -43,6 +49,12 @@
         "public.tb_doc.pk_doc",
         "public.tb_doc.id",
         "public.tb_doc.rev"
+      ],
+      "read_set": [
+        1,
+        2,
+        3,
+        4
       ],
       "relid": "public.tb_doc",
       "table": "public.tb_doc"

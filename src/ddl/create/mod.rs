@@ -22,7 +22,7 @@ pub use storage::{Compression, DataStorage, Storage, TOAST_TUPLE_TARGET};
 #[cfg(test)]
 mod tests;
 
-pub use select::ViewColumns;
+pub use select::{ViewColumns, row_id};
 
 use super::uncascaded::Declarations;
 use crate::error::{TViewError, TViewResult};
@@ -269,7 +269,13 @@ fn create_tview_inner(
     let rows = if rebuilt_for.is_some() {
         0
     } else {
-        fill_new(&schema_name, &tv_table_name, view_oid, lineage)?
+        fill_new(
+            &schema_name,
+            &tv_table_name,
+            view_oid,
+            lineage,
+            &declarations.settings,
+        )?
     };
 
     // Reject a TVIEW no write can ever refresh: its definition reads no
@@ -318,6 +324,7 @@ fn fill_new(
     table: &str,
     view_oid: pg_sys::Oid,
     lineage: &crate::lineage::Lineage,
+    settings: &[(String, String)],
 ) -> TViewResult<u64> {
     if lineage.set_operation {
         // The current user, the creator or a replace's owner frame, owns the new
@@ -339,7 +346,7 @@ fn fill_new(
             )
         })?;
     }
-    populate_initial_data(table, schema, view_oid)
+    populate_initial_data(table, schema, view_oid, settings)
 }
 
 /// What follows a new TVIEW's registration: its indexes recorded, its backing
@@ -353,6 +360,8 @@ fn finish(
     definition: &str,
 ) -> TViewResult<()> {
     crate::catalog::indexes::record(table_oid, indexes)?;
+    // Filled: from now on, only pg_tviews writes it (D14).
+    crate::guard::install(table_oid)?;
     // Whoever reads the TVIEW's table reads its backing view.
     super::privileges::follow(Some(table_oid), false)?;
     // Filled in this transaction (or by the caller, before it commits): an
@@ -499,6 +508,7 @@ pub(crate) fn rederive(entity: &str) -> TViewResult<()> {
     if let Some(meta) = crate::catalog::TviewMeta::load_to_rederive(entity)? {
         // Its backing view is its owner's alone, whatever was granted on it before.
         super::privileges::follow(Some(meta.tview_oid), false)?;
+        crate::guard::install(meta.tview_oid)?;
         warn_function_paths(entity, &meta)?;
     }
     crate::catalog::row::clear_needs_reregister(entity)

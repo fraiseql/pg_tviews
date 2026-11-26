@@ -1,4 +1,4 @@
--- A TVIEW reading a system column of a table (xmin, ctid, tableoid) refreshes on
+-- A TVIEW reading a system column of a table (xmin, tableoid) refreshes on
 -- every UPDATE of the table: each UPDATE changes the row's system columns.
 --
 --   PGTZ=UTC psql -v ON_ERROR_STOP=1 -f test/sql/regress/lineage/regress_system_column_read.sql
@@ -29,19 +29,20 @@ SELECT tviews.pg_tviews_create('tv_v', $$
     SELECT v.pk_v, v.id, jsonb_build_object('name', v.name, 'version', v.xmin::text) AS data
     FROM tb_v v $$) IS NOT NULL AS created;
 
--- A child table read through ctid, on the statement path.
+-- A child table read through xmin, on the statement path (ctid, xmax, cmin and
+-- cmax change with no write, and are refused: regress_dialect_refusals).
 CREATE TABLE tb_vc (pk_vc int PRIMARY KEY, id uuid NOT NULL DEFAULT gen_random_uuid(),
                     fk_v int NOT NULL REFERENCES tb_v, note text);
 INSERT INTO tb_vc (pk_vc, fk_v) VALUES (1, 1), (2, 1);
 SELECT tviews.pg_tviews_create('tv_vp', $$
-    SELECT v.pk_v AS pk_vp, v.id, jsonb_build_object('places',
-        (SELECT jsonb_agg(c.ctid::text ORDER BY c.pk_vc) FROM tb_vc c WHERE c.fk_v = v.pk_v)) AS data
+    SELECT v.pk_v AS pk_vp, v.id, jsonb_build_object('versions',
+        (SELECT jsonb_agg(c.xmin::text ORDER BY c.pk_vc) FROM tb_vc c WHERE c.fk_v = v.pk_v)) AS data
     FROM tb_v v $$) IS NOT NULL AS created;
 
 UPDATE tb_v SET note = 'x' WHERE pk_v = 1;
 SELECT assert_fresh('tv_v', 'pk_v', 'an UPDATE of a column the TVIEW reads only through xmin');
 UPDATE tb_vc SET note = 'y' WHERE pk_vc = 2;
-SELECT assert_fresh('tv_vp', 'pk_vp', 'an UPDATE of a child row read only through ctid');
+SELECT assert_fresh('tv_vp', 'pk_vp', 'an UPDATE of a child row read only through xmin');
 
 SELECT must(stopgap('syscol') IS NULL OR stopgap('syscol') > 0, 'no stopgap:syscol counted');
 

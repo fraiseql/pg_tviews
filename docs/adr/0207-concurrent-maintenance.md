@@ -353,3 +353,13 @@ threshold and fails with 54000 past it ([Escalation](#escalation)). The registra
 serializing DDL on one entity moved from `pg_advisory_xact_lock(1953917285, …)`, which any
 role could take, to an advisory tag of pg_tviews' own (`field4` 21624).
 
+
+**0.1.0-beta.41: a statement that changed no row changes no link.** A recompute writes a
+TVIEW's rows with `INSERT ... ON CONFLICT DO UPDATE`, which fires the statement-level `INSERT`
+trigger of the TVIEW's table over an empty transition table. The delta trigger of an embedding
+TVIEW counted it as an insert, a link change, so every later refresh of the transaction
+locked its read set shared, and two value-only writers deadlocked as in #263 whenever they
+recomputed instead of patching (the concurrent fuzzer's `values` kind with the direct patch
+off: 37 of 79 transactions; also writes of a `numeric`, floating-point or `jsonb` column, which
+no patch copies). The delta trigger now ignores a statement whose transition table is empty
+(`regress_recompute_upsert_no_link`).

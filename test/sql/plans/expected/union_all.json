@@ -24,6 +24,11 @@
       "links": [
         "public.tb_user.pk_user"
       ],
+      "read_set": [
+        1,
+        2,
+        3
+      ],
       "relid": "public.tb_user",
       "sql": "SELECT DISTINCT (d.{c:public.tb_user.pk_user} OPERATOR(pg_catalog.*) '2'::integer) FROM pg_tviews_delta d",
       "table": "public.tb_user"
@@ -42,6 +47,11 @@
       "kind": "mapped",
       "links": [
         "public.tb_post.pk_post"
+      ],
+      "read_set": [
+        1,
+        2,
+        4
       ],
       "relid": "public.tb_post",
       "sql": "SELECT DISTINCT ((d.{c:public.tb_post.pk_post} OPERATOR(pg_catalog.*) '2'::integer) OPERATOR(pg_catalog.+) '1'::integer) FROM pg_tviews_delta d",

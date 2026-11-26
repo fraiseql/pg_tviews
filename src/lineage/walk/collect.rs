@@ -42,6 +42,7 @@ pub(super) unsafe fn referenced_columns(
                     refs.depth -= 1;
                     done
                 }
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }
@@ -72,6 +73,7 @@ pub(super) unsafe fn referenced_columns(
             continue;
         }
         let Some(&rte) = rtable.get(varno.wrapping_sub(1)) else {
+            // walk: n/a(a Var names an entry of its own level's range table)
             continue;
         };
         // SAFETY: fields of a valid RTE of this level.
@@ -79,6 +81,7 @@ pub(super) unsafe fn referenced_columns(
             match (*rte).rtekind {
                 pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
                 pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
+                // walk: n/a(another entry is read as itself)
                 _ => None,
             }
         };
@@ -90,6 +93,7 @@ pub(super) unsafe fn referenced_columns(
                 exprs
             } else {
                 exprs
+                    // walk: n/a(attno is positive here)
                     .get(usize::try_from(attno - 1).unwrap_or(usize::MAX))
                     .copied()
                     .into_iter()
@@ -137,6 +141,7 @@ pub(super) unsafe fn const_text(node: *mut pg_sys::Node) -> Option<String> {
         match (*c).consttype {
             pg_sys::TEXTOID | pg_sys::VARCHAROID => String::from_datum((*c).constvalue, false),
             pg_sys::UNKNOWNOID => Some(cstr((*c).constvalue.cast_mut_ptr())),
+            // walk: U a key that is no text constant: the caller marks the shape opaque
             _ => None,
         }
     }
@@ -178,6 +183,7 @@ pub(super) unsafe fn column_read_counts(
                     refs.depth -= 1;
                     done
                 }
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }
@@ -216,6 +222,18 @@ pub(super) unsafe fn column_read_counts(
             *counts.entry(read).or_default() += 1;
         }
     }
+    // A whole-row read of an entry reads every column of it: a column also
+    // copied by name is read beyond its copy (E1-02b).
+    let whole: Vec<(usize, usize)> = counts
+        .iter()
+        .filter(|((_, attno), _)| *attno == 0)
+        .map(|((rt, _), n)| (*rt, *n))
+        .collect();
+    for (rt, n) in whole {
+        for ((_, _), count) in counts.iter_mut().filter(|((r, a), _)| *r == rt && *a > 0) {
+            *count += n;
+        }
+    }
     counts
 }
 
@@ -248,6 +266,7 @@ pub(super) unsafe fn base_read(
     let (varno, attno) = unsafe { (super::index((*var).varno), (*var).varattno) };
     match base_reads(query, varno, attno)[..] {
         [read] => Some(read),
+        // walk: U no single base column (a merged join column): the caller copies nothing of it
         _ => None,
     }
 }
@@ -258,6 +277,7 @@ pub(super) fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) ->
     // SAFETY: the range table of a valid Query.
     let rtable = unsafe { elements::<pg_sys::RangeTblEntry>((*query).rtable) };
     let Some(&rte) = rtable.get(varno.wrapping_sub(1)) else {
+        // walk: n/a(a Var names an entry of its own level's range table)
         return Vec::new();
     };
     // SAFETY: fields of a valid RTE of this level.
@@ -265,10 +285,12 @@ pub(super) fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) ->
         match (*rte).rtekind {
             pg_sys::RTEKind::RTE_JOIN => Some((*rte).joinaliasvars),
             pg_sys::RTEKind::RTE_GROUP => Some((*rte).groupexprs),
+            // walk: n/a(another entry is read as itself)
             _ => None,
         }
     };
     let Some(list) = behind else {
+        // walk: n/a(another entry is read as itself)
         return vec![(varno, attno)];
     };
     // SAFETY: the alias expressions of the entry; Vars there point at this level.
@@ -277,6 +299,7 @@ pub(super) fn base_reads(query: *mut pg_sys::Query, varno: usize, attno: i16) ->
         exprs
     } else {
         exprs
+            // walk: n/a(attno is positive here)
             .get(usize::try_from(attno - 1).unwrap_or(usize::MAX))
             .copied()
             .into_iter()
@@ -321,6 +344,7 @@ pub(super) unsafe fn collect_vars(node: *mut pg_sys::Node, out: &mut Vec<*mut pg
                     false
                 }
                 Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }
@@ -347,6 +371,7 @@ pub(super) unsafe fn collect_params(node: *mut pg_sys::Node, out: &mut Vec<*mut 
                     false
                 }
                 Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }
@@ -376,6 +401,7 @@ pub(super) unsafe fn collect_sublinks(
                     false
                 }
                 Some(pg_sys::NodeTag::T_Query) => false,
+                // walk: leaf(descend) nothing of its own: its children are walked
                 Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
             }
         }
@@ -394,8 +420,23 @@ pub(super) unsafe fn has_sublink(node: *mut pg_sys::Node) -> bool {
     !found.is_empty()
 }
 
-/// The functions called by a query level's own expressions (`FuncExpr`, and the
-/// functions of `RTE_FUNCTION` entries), not those of nested subqueries.
+/// The function an operator node calls: its `opfuncid`, or the operator's
+/// function when the node does not carry it yet (a stored rule's does not).
+///
+/// SAFETY: catalog lookups by OID.
+unsafe fn operator_function(opfuncid: Oid, opno: Oid) -> Oid {
+    if opfuncid == pg_sys::InvalidOid {
+        // SAFETY: a syscache lookup by OID.
+        unsafe { pg_sys::get_opcode(opno) }
+    } else {
+        opfuncid
+    }
+}
+
+/// The functions called by a query level's own expressions, not those of
+/// nested subqueries: function calls, the functions behind operators (also
+/// `IS DISTINCT FROM`, `NULLIF`, `= ANY`), aggregates and window functions
+/// (whose parts the caller adds), and the functions of `RTE_FUNCTION` entries.
 ///
 /// SAFETY: `node` is a valid Query.
 pub(super) unsafe fn collect_functions(node: *mut pg_sys::Node, out: &mut Vec<Oid>) {
@@ -404,17 +445,38 @@ pub(super) unsafe fn collect_functions(node: *mut pg_sys::Node, out: &mut Vec<Oi
         node: *mut pg_sys::Node,
         ctx: *mut std::ffi::c_void,
     ) -> bool {
-        // SAFETY: `ctx` is the Vec passed below; `node` is valid.
+        // SAFETY: `ctx` is the Vec passed below; `node` is valid, cast by tag.
         unsafe {
+            let out = &mut *ctx.cast::<Vec<Oid>>();
             match tag(node) {
-                None => false,
+                None => return false,
                 Some(pg_sys::NodeTag::T_FuncExpr) => {
-                    (*ctx.cast::<Vec<Oid>>()).push((*node.cast::<pg_sys::FuncExpr>()).funcid);
-                    pg_sys::expression_tree_walker(node, Some(walker), ctx)
+                    out.push((*node.cast::<pg_sys::FuncExpr>()).funcid);
                 }
-                Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => false,
-                Some(_) => pg_sys::expression_tree_walker(node, Some(walker), ctx),
+                // `DistinctExpr` and `NullIfExpr` are `OpExpr`s.
+                Some(
+                    pg_sys::NodeTag::T_OpExpr
+                    | pg_sys::NodeTag::T_DistinctExpr
+                    | pg_sys::NodeTag::T_NullIfExpr,
+                ) => {
+                    let op = node.cast::<pg_sys::OpExpr>();
+                    out.push(operator_function((*op).opfuncid, (*op).opno));
+                }
+                Some(pg_sys::NodeTag::T_ScalarArrayOpExpr) => {
+                    let op = node.cast::<pg_sys::ScalarArrayOpExpr>();
+                    out.push(operator_function((*op).opfuncid, (*op).opno));
+                }
+                Some(pg_sys::NodeTag::T_Aggref) => {
+                    out.push((*node.cast::<pg_sys::Aggref>()).aggfnoid);
+                }
+                Some(pg_sys::NodeTag::T_WindowFunc) => {
+                    out.push((*node.cast::<pg_sys::WindowFunc>()).winfnoid);
+                }
+                Some(pg_sys::NodeTag::T_SubLink | pg_sys::NodeTag::T_Query) => return false,
+                // walk: leaf(descend) calls no function of its own: its children are walked
+                Some(_) => {}
             }
+            pg_sys::expression_tree_walker(node, Some(walker), ctx)
         }
     }
     // SAFETY: walk the level's expressions; QTW flags skip subqueries and range

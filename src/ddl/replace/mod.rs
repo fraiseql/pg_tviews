@@ -145,6 +145,17 @@ pub(crate) fn create_or_replace(
             // tables no cascade reaches.
             declared.declarations.store(&entity)?;
             create::reregister_tview(&entity)?;
+            if declared.declarations.settings != current.declarations.settings {
+                // Its rows are computed again under the settings it now pins.
+                let meta = TviewMeta::load_by_entity(&entity)?.ok_or_else(|| {
+                    TViewError::TviewNotFound {
+                        name: entity.clone(),
+                    }
+                })?;
+                crate::owner::AsOwner::run(crate::owner::Owner::of_tview(&meta)?, |frame| {
+                    crate::refresh::full::reconcile(frame, &entity, &meta)
+                })?;
+            }
         }
         check_time_declared(&entity, declares_time)?;
         return Ok("altered");
@@ -477,8 +488,9 @@ fn replace_in_place(
     let read_before = crate::catalog::readers::tables_of(entity)?;
     let reads = create::reregister_metadata(entity, definition)?;
     crate::dependency::sync_read_tables(&reads, &read_before, entity)?;
-    // The rows are recomputed as the TVIEW's owner, as every refresh is.
-    crate::owner::AsOwner::run(crate::owner::Owner::of_tview(meta)?, |frame| {
+    // The rows are recomputed as the TVIEW's owner, as every refresh is, in its
+    // frame as now registered (the settings option it now declares).
+    crate::owner::AsOwner::run(crate::owner::Owner::of_entity(entity)?, |frame| {
         crate::refresh::full::reconcile(frame, entity, meta)
     })?;
 
@@ -535,5 +547,25 @@ mod tests {
         );
         assert!(parse_options(&serde_json::json!({"typename": "blog-post"})).is_err());
         assert!(parse_options(&serde_json::json!({"typename": "9Lives"})).is_err());
+    }
+
+    #[test]
+    fn test_parse_options_settings() {
+        let options =
+            parse_options(&serde_json::json!({"settings": {"app.locale": "fr-FR"}})).unwrap();
+        assert_eq!(
+            options.settings,
+            Some(vec![("app.locale".to_string(), "fr-FR".to_string())])
+        );
+        for refused in [
+            serde_json::json!({"settings": {"work_mem": "1MB"}}),
+            serde_json::json!({"settings": {"pg_tviews.direct_patch_enabled": "off"}}),
+            serde_json::json!({"settings": {"app.": "x"}}),
+            serde_json::json!({"settings": {"app.9x": "x"}}),
+            serde_json::json!({"settings": {"app.locale": 1}}),
+            serde_json::json!({"settings": ["app.locale"]}),
+        ] {
+            assert!(parse_options(&refused).is_err(), "{refused}");
+        }
     }
 }

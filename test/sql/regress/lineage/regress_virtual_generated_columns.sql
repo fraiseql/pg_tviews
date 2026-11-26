@@ -80,7 +80,7 @@ INSERT INTO tb_ver VALUES (1, default, 'a', default, 1, 'b1'), (2, default, 'a',
                           (3, default, 'b', default, 1, 'b3');
 SELECT pg_tviews_create('tv_ver', $$
   SELECT DISTINCT ON (v.code) v.pk_ver, v.id, v.code, jsonb_build_object('body', v.body) AS data
-  FROM tb_ver v ORDER BY v.code, v.rev DESC $$);
+  FROM tb_ver v ORDER BY v.code, v.rev DESC, v.pk_ver $$);
 UPDATE tb_ver SET body = body || '!';
 SELECT assert_fresh('tv_ver', 'code', 'a DISTINCT ON TVIEW keyed on a virtual column');
 UPDATE tb_ver SET raw = 'c' WHERE pk_ver = 2;

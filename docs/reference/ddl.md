@@ -69,6 +69,7 @@ A TVIEW is its definition and its options; no setting changes it
 | `function_reads` | `{}` | tables a non-immutable function reads ([below](#functions-that-read-tables)) |
 | `time_refresh` | `null` | `"external"` for a definition that reads the current time ([below](#time-dependent-tviews)) |
 | `typename` | `null` (the PascalCase of the entity) | the GraphQL type name in `pg_tviews_flush_and_report()`; unique among TVIEWs (`42710`) |
+| `settings` | `{}` | custom settings pinned in the owner frames, `{"app.locale": "fr-FR"}` ([owner frame](owner-frame.md#custom-settings)) |
 
 `tviews.registry.options` lists every option of a TVIEW, defaults included.
 
@@ -166,8 +167,10 @@ own: a definition can project a `created_at` or `updated_at` of the domain under
 names. Name columns in queries rather than relying on `SELECT *` order.
 
 A definition with no `pk_*` column is rewritten to the shape `pk_<entity>, id, data`:
-its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, `id`
-is generated, and every column goes into `data` under its own name. With none of
+its column `pk`, else its first integer column, else `id`, becomes `pk_<entity>`, and
+every column goes into `data` under its own name. `id` is the source's `uuid` column
+`id` when it has one, else `tviews.pg_tviews_row_id('<entity>', <key>::text)`, a UUIDv5
+of the entity and the key: the same at every evaluation, and different across entities. With none of
 these, it fails (`no column to key the rows on`, `42601`). `tviews.registry.query`
 shows the definition as stored.
 
@@ -277,8 +280,8 @@ JOIN tb_user u ON u.pk_user = p.fk_user;
 5. The TVIEW is registered in `tviews.pg_tview_meta`, with what step 3 derived stored
    as one propagation plan (`plan`); tools read it through `tviews.registry`
    ([Contract for tools](read-contract.md)).
-6. Triggers are installed on the tables the definition reads (see
-   [Triggers](#triggers)).
+6. Triggers are installed on the tables the definition reads, and the table gets its
+   guard (see [Triggers](#triggers)).
 
 All of it happens in the caller's transaction: a rollback leaves nothing behind.
 
@@ -437,8 +440,81 @@ A definition is refused, nothing created, when:
 - it reads a table a logical replication subscription writes (`0A000`): the apply
   worker fires no statement trigger. Create the TVIEW on the publisher and publish its
   table ([Replication](../operations/replication.md));
+- it reads who reads it, `CURRENT_USER`, `CURRENT_ROLE` or `USER`, at any level of
+  its view chain (`0A000`): a TVIEW's rows are the same for every reader and are
+  refreshed as its owner. Filter what each role reads with a row security policy on
+  `tv_<entity>` ([Row-level security on `tv_*`](#row-level-security-on-tv_));
+- it reads a system column that changes with no write pg_tviews sees, `ctid`,
+  `xmax`, `cmin` or `cmax` (`VACUUM FULL`, `CLUSTER`, a row lock change them;
+  `0A000`): read the key instead, or `xmin` for a row version (every `UPDATE`
+  changes `xmin`, so a TVIEW reading it refreshes on every `UPDATE`);
+- it calls a volatile function anywhere, in its output, a filter or a join, at any
+  level of its view chain, an operator or a cast backed by one included
+  (`random()`, `gen_random_uuid()`, `nextval()`, `clock_timestamp()`, a function of
+  yours declared `VOLATILE`; `0A000`): two evaluations over the same rows may differ,
+  and the TVIEW stores one. Compute the value when the row is written and store it
+  in a column;
+- it calls a built-in that reads something other than the rows: the session
+  (`SESSION_USER`, `SYSTEM_USER`, `pg_backend_pid()`, `inet_client_addr()`), the
+  transaction (`txid_current()`, `pg_current_xact_id()`), the server
+  (`pg_postmaster_start_time()`), privileges (`has_table_privilege(…)`,
+  `pg_has_role(…)`), statistics (`pg_stat_*`) or relations it does not name
+  (`table_to_xml(…)`; `0A000`). Its value changes with no write, and no refresh
+  follows it. Built-ins that read only their arguments and the settings the owner
+  frame pins (`to_char`, casts, `current_database()`) are accepted. A function of
+  yours is judged by its declared volatility, and its body is not read;
+- the order of rows reaches its output and nothing fixes it (`0A000`, below);
 - it reads a temporary table: PostgreSQL refuses the backing view it would need
   (`cannot create temporary relation in non-temporary schema`).
+
+#### Row order
+
+A TVIEW stores one result of its definition; where the definition's result depends on
+the order rows are read in, an `UPDATE` that moves a row in the heap would change it
+with no column changed. So wherever row order reaches the output, it must be total:
+
+- an order-sensitive aggregate (`jsonb_agg`, `array_agg`, `json_agg`, `string_agg`,
+  `jsonb_object_agg`, `xmlagg`, any aggregate of yours, `sum`/`avg` of a float);
+- `LIMIT`, a non-zero `OFFSET`, and `ARRAY(SELECT …)`, whose rows become elements in
+  order;
+- `DISTINCT ON`, which keeps the first row of each group;
+- `row_number()`, `ntile()`, `first_value()`, `last_value()`, `nth_value()`, `lag()`,
+  `lead()`, and an order-sensitive aggregate used as a window function.
+  (`rank()`, `dense_rank()`, `count()`, `min()`, `max()` are not order-sensitive.)
+
+Such a place is accepted when one of these holds:
+
+1. its `ORDER BY` determines every row it orders: with the `GROUP BY` or `PARTITION
+   BY` keys and the outer query's columns, and the level's equalities (`WHERE` and
+   inner `JOIN … ON` conditions `a.x = b.y`, `a.x = <constant>`, `a.x = (SELECT …)`
+   reading known columns), it reaches a unique key of every table read there: its
+   primary key, or a unique index (partial when the `WHERE`, or the `LEFT JOIN`
+   condition the table is joined by, implies its predicate; over nullable columns when
+   they are equated or filtered `IS NOT NULL`, since rows NULL in a sort key tie). A
+   view, subquery or CTE counts as keyed by the outputs its own rows are determined by,
+   or that fix its `GROUP BY` or `DISTINCT` columns; its other outputs are known where
+   its known outputs fix them; a function `WITH ORDINALITY` by its ordinality. For an
+   aggregate, `LIMIT`, `ARRAY(SELECT …)` or `DISTINCT ON`, it is enough that the rows
+   the `ORDER BY` leaves tied are identical in what it reads;
+2. at most one row reaches it (`WHERE c.pk_c = p.fk_c`);
+3. an aggregate is ordered by every value it aggregates (or is `DISTINCT`), and equal
+   values of their type render the same: integers, `bool`, `uuid`, `date`,
+   `timestamp`, `timestamptz`, `bytea`, and text under a deterministic collation; not
+   `numeric` (`1.0 = 1.00`), floats, `jsonb` or `interval`;
+4. a `UNION ALL` of branches each keyed by its own rows is ordered by an output that
+   holds a different constant in each branch, written there or in the subquery or CTE
+   the branch reads (`SELECT 1 AS rank, … UNION ALL SELECT 2, … ORDER BY rank LIMIT 1`).
+
+Otherwise the definition is refused, the message naming the place and a key to append:
+
+```text
+jsonb_agg() in the definition aggregates rows in an order nothing fixes, so the stored
+document is one of several the view may return: give it an ORDER BY that determines
+every row: public.tb_comment c (append c.pk_comment)
+```
+
+`ORDER BY c.created_at` becomes `ORDER BY c.created_at, c.pk_comment`. A top-level
+`ORDER BY` is not such a place: the TVIEW is a set keyed by `pk_<entity>`.
 
 The [error reference](../error-reference.md) lists every SQLSTATE.
 
@@ -704,17 +780,27 @@ and `options->>'time_refresh'` the declaration. Writes refresh it as usual; at t
 something outside calls
 
 ```sql fragment
-SELECT * FROM tviews.pg_tviews_refresh_time_dependent();               -- every one you own
+CALL tviews.pg_tviews_time_boundary();                                   -- every one you own
 SELECT * FROM tviews.pg_tviews_refresh_time_dependent('public.tv_contract');
 ```
 
-which refreshes it in full, as a write to a `full_refresh` table does (the TVIEWs
-reading it follow), and returns the TVIEWs refreshed. With pg_cron, just after
-midnight:
+Each compares the TVIEW's rows with its view's at that instant and refreshes the rows
+that differ, as writes refresh theirs (the TVIEWs reading them follow): a writer waits
+only when it writes a row the boundary changes, and only for that row. The procedure
+refreshes every time-dependent TVIEW you own, dependencies first, and commits after
+each; the function does one TVIEW, or all of them in your transaction
+(`pg_tviews_refresh_time_dependent()`), and returns the TVIEWs refreshed.
+`tviews.registry.time_boundary` is the instant each TVIEW was last brought to: the
+refreshing transaction's `now()`. Every row equals the definition evaluated at an instant no
+earlier than the last boundary, with one window: a transaction that began before the
+boundary computes its rows with its own, earlier `now()`. If it writes the TVIEW after
+the boundary was announced, its keys are recorded as it commits and a background worker
+refreshes them again right after (the health component `time_handoff` counts them); if
+it was writing the TVIEW already, the time refresh waits for it to end. A transaction
+that only reads, such as `pg_dump`'s, is never waited for. With pg_cron, just after midnight:
 
 ```sql fragment
-SELECT cron.schedule('tviews-day', '1 0 * * *',
-                     'SELECT tviews.pg_tviews_refresh_time_dependent()');
+SELECT cron.schedule('tviews-day', '1 0 * * *', 'CALL tviews.pg_tviews_time_boundary()');
 ```
 
 `time_refresh` on a definition that reads no time is refused, at creation as when
@@ -751,7 +837,8 @@ TVIEW's rows (creation, refreshes on writes, `pg_tviews_refresh()`, the time ref
 | `default_text_search_config` | the creating session's, kept with the TVIEW |
 
 so a TVIEW's rows don't depend on who wrote last, nor on settings a role carries
-(`ALTER ROLE … SET`). The session's own settings are left
+(`ALTER ROLE … SET`). The frame as a whole (role, `search_path`, these settings) is specified in
+[owner-frame.md](owner-frame.md). The session's own settings are left
 as they were. The definition itself is parsed under the caller's settings, as `CREATE
 VIEW` parses it; a text-to-date conversion inside it runs at refresh time and reads
 `ISO, YMD`.
@@ -796,6 +883,57 @@ and `TRIGGER` on each base table. Replacing, dropping, refreshing or re-register
 TVIEW requires owning it (or being a member of its owner, or of the extension's
 owner), otherwise `42501`. The maintenance functions that act on every TVIEW are not
 executable by `PUBLIC` ([Operator role](../user-guides/operators.md#operator-role)).
+
+## Row-level security on `tv_*`
+
+A TVIEW's rows are the same for every reader: pg_tviews computes them as the TVIEW's
+owner. What each reader may read of them is the policies on `tv_<entity>`, as on any
+table. The pattern:
+
+```sql fragment
+-- The scope columns, projected beside data.
+SELECT tviews.pg_tviews_create('tv_contract', $$
+    SELECT c.pk_contract, c.id, c.tenant_id, c.path,
+           jsonb_build_object('name', c.name, 'sites', …) AS data
+    FROM tb_contract c … $$);
+ALTER TABLE tv_contract ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON tv_contract FOR SELECT
+    USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+```
+
+- **What a reader reads of a row is everything in it.** A document embeds its children
+  and copies columns whole: every embedded collection, and every copied column, must be
+  readable by every reader of its parent row. Content scoped more narrowly than its
+  parent (a child table whose policy is narrower, a column some readers may not
+  select) is not embedded: make it a TVIEW of its own, read through its own table and
+  policy. The health check's `tv_policies` component reports a TVIEW embedding rows of
+  a table with row security whose policies differ from its own, and a TVIEW without row
+  security that other roles read while a table it reads filters its readers.
+- **The owner reads every row.** `ENABLE ROW LEVEL SECURITY` leaves the table's owner
+  out of its policies, as PostgreSQL does. Under `FORCE ROW LEVEL SECURITY` a policy
+  would hide rows from the refresh, which would leave them stale: every statement
+  pg_tviews runs on the table (refreshes, the rebuild, the time refresh) fails with
+  `55000` unless the owner has a permissive policy that filters nothing, and no
+  restrictive policy applies to it:
+
+  ```sql fragment
+  CREATE POLICY tviews_owner ON tv_contract FOR ALL TO app_owner
+      USING (true) WITH CHECK (true);
+  ```
+
+  `ALTER TABLE … FORCE ROW LEVEL SECURITY` is not refused, since `pg_restore` runs it
+  before `CREATE POLICY`: it warns, and the health check's `tv_policies` component
+  reports the table until it is fixed. pg_tviews' statements run with `row_security =
+  on` whatever the session says ([The owner frame](owner-frame.md)).
+- **A definition does not read its reader**: `CURRENT_USER`, `CURRENT_ROLE` and `USER`
+  are refused ([Refused definitions](#refused-definitions)).
+- **Indexes.** Every column whose name ends in `_id` gets a managed B-tree index,
+  `tenant_id` included: add only what the policies need besides, such as a GiST index
+  on `(tenant_id, path)` (`btree_gist`). A refresh that leaves `tenant_id` and `path`
+  unchanged stays a HOT update with these indexes, as long as none is on `data`.
+- **Changing the TVIEW.** A `pg_tviews_create_or_replace()` that rebuilds the table
+  puts its row security and policies back on the new table; a policy naming a column
+  the new definition dropped fails the change, naming the policy.
 
 ## DROP TABLE tv_*
 
@@ -909,6 +1047,28 @@ DISABLE TRIGGER` cannot stop one TVIEW alone. Use
 needs installing by hand: `tviews.pg_tviews_check_health()` reports missing, orphaned
 or disabled triggers, and `SELECT * FROM tviews.pg_tviews_reregister_all()`
 re-installs them.
+
+### The TVIEW's own table
+
+pg_tviews is the only writer of a TVIEW's table. Each `tv_<entity>` carries a statement
+trigger, `trg_tview_guard` (`tviews.pg_tview_guard_trigger`), that refuses an `INSERT`,
+`UPDATE`, `DELETE` or `TRUNCATE` from outside pg_tviews with `55000`, whoever runs it,
+its owner and a superuser included: a row written by hand would leave the table, and
+every document embedding the row, differing from the definition until the next refresh.
+
+- **The owner's `TRUNCATE`** is allowed, to rebuild the table with
+  `SELECT tviews.pg_tviews_refresh('tv_<entity>')`.
+- **`pg_dump` and `pg_restore`**: a full restore creates the trigger after loading the
+  data. A **data-only** restore into an existing schema is refused at the first TVIEW
+  table: leave the TVIEW tables' data out (`pg_dump --exclude-table-data='*.tv_*'`), and
+  pg_tviews refills each empty TVIEW from its definition. Do not use
+  `--disable-triggers`, which also skips the rebind of pg_tviews' catalog rows.
+- **Logical replication and `session_replication_role = replica`**: the guard is an
+  ordinary trigger, so a session in replica role, and a subscription's apply worker,
+  bypass it as they bypass every ordinary trigger. The health check reports a TVIEW
+  table a subscription writes (component `triggers`).
+- The health check also reports a guard missing or disabled; `pg_tviews_reregister()`
+  restores a missing one.
 
 ### Firing order
 

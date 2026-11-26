@@ -60,18 +60,41 @@ pub(crate) fn derive_as(
     view_oid: pg_sys::Oid,
     declarations: &Declarations,
 ) -> TViewResult<Derivation> {
+    // Its frames pin the settings it declares.
+    let owner = owner.with_settings(&declarations.settings);
     let mut derivation = crate::owner::AsOwner::run(owner, |frame| {
-        derive(
+        let derivation = derive(
             frame,
             entity_name,
             group_keys,
             base_tables,
             view_oid,
             declarations,
-        )
+        )?;
+        report_settings(entity_name, &derivation.plan.settings_read);
+        Ok(derivation)
     })?;
     derivation.plan.text_search = owner.text_search().map(str::to_string);
     Ok(derivation)
+}
+
+/// Tell, for each custom setting the definition reads by name, the value its
+/// refreshes read: the frame's, whatever a session sets. Inside the owner frame.
+fn report_settings(entity: &str, names: &[String]) {
+    for name in names {
+        if let Some(value) = crate::owner::setting_value(name) {
+            pgrx::notice!(
+                "tv_{entity} reads the setting {name}: its refreshes read it as '{value}', \
+                 whatever a session sets"
+            );
+        } else {
+            pgrx::notice!(
+                "tv_{entity} reads the setting {name}: its refreshes read it as unset, \
+                 whatever a session sets; give it a value with the settings option, or for \
+                 the server or the database"
+            );
+        }
+    }
 }
 
 /// Analyze the backing view `view_oid` (ADR 0157) and derive its plan: the local
@@ -91,6 +114,12 @@ fn derive(
     aggregate_embeds(&lineage, entity_name)?;
     let undeclared_functions =
         crate::ddl::uncascaded::apply_function_reads(entity_name, declarations, &mut lineage)?;
+    // Test builds check the read sets against PostgreSQL's plan of the view.
+    // Mutant W02 skips it, for the generator's perturbation to catch alone.
+    #[cfg(feature = "test-hooks")]
+    if undeclared_functions.is_empty() && !crate::mutant::on("W02") {
+        crate::lineage::plan_reads::check(frame, entity_name, view_oid, &lineage)?;
+    }
     let mut paths = local_paths(entity_name, &lineage);
     if let Some(keys) = group_keys {
         crate::ddl::aggregate::check_group_keys(entity_name, keys, &paths)?;
@@ -123,6 +152,7 @@ pub(crate) fn local_paths(entity_name: &str, lineage: &crate::lineage::Lineage) 
                 entity_name: entity_name.to_string(),
                 initial_col: column.clone(),
                 source_columns: t.columns.iter().map(|(name, _)| name.clone()).collect(),
+                read_set: t.read_set.clone(),
                 root: t.root,
                 initial_attnum: t.columns.iter().find(|(n, _)| n == column).map(|(_, a)| *a),
             }),

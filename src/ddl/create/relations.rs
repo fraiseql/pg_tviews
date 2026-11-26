@@ -331,6 +331,7 @@ pub(crate) fn populate_initial_data(
     tview_name: &str,
     schema_name: &str,
     view_oid: pg_sys::Oid,
+    settings: &[(String, String)],
 ) -> TViewResult<u64> {
     // Get actual column names from the backing view (like pg_tviews_refresh does)
     // This ensures consistency and handles any discrepancies between inferred schema and actual view
@@ -360,8 +361,9 @@ pub(crate) fn populate_initial_data(
          SELECT {col_list} FROM {view}"
     );
     // Rendered as every refresh renders; the definition itself was parsed
-    // under the caller's settings, as CREATE VIEW parses it.
-    let _pin = crate::owner::RenderPin::new();
+    // under the caller's settings, as CREATE VIEW parses it. The custom settings
+    // are its frames': the session's set back, its settings option pinned.
+    let _pin = crate::owner::RenderPin::with_settings(settings);
 
     let rows = crate::utils::spi::connect_mut(|client| {
         client.update(&insert_sql, None, &[]).map(|t| t.len())

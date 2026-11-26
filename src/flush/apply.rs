@@ -279,10 +279,9 @@ impl Flush {
                     // The parent's patch stands for its owner's read of the child,
                     // and is all the parent reads of the child's row.
                     Some(chain) => self.cached_meta(&parent.entity)?.and_then(|m| {
-                        (crate::catalog::owner_reads::patch_stands_for_read(&m)
-                            && crate::stats::patch_columns_known(&m, child_table))
-                        .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
-                        .flatten()
+                        crate::stats::patch_reads_known(&m, child_table)
+                            .then(|| crate::refresh::direct::derive_parent_chain(&m, entity, chain))
+                            .flatten()
                     }),
                     None => None,
                 };
@@ -336,7 +335,10 @@ impl Flush {
     /// after it was refreshed late (a user trigger wrote what it reads during the
     /// flush), and the parent read the child's old row.
     fn queue(&mut self, key: RefreshKey) {
-        self.processed.remove(&key);
+        // Mutant S24: a key refreshed already in this flush is not refreshed again.
+        if !crate::mutant::on("S24") {
+            self.processed.remove(&key);
+        }
         self.pending.insert(key);
     }
 
@@ -357,7 +359,7 @@ impl Flush {
         // A refresh reads every row of the tables the TVIEW reads: probed again
         // here, not taken from the writes' probes of this command.
         if let Some(meta) = &meta {
-            crate::catalog::stopgap::check_row_security(meta)?;
+            crate::catalog::stopgap::check_refresh(meta)?;
         }
         self.metas.insert(entity.to_string(), meta.clone());
         Ok(meta)

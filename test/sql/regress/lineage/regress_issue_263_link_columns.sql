@@ -83,8 +83,8 @@ SELECT expect('feed', 'tb_user', 'pk_user,active');
 SELECT tviews.pg_tviews_create('tv_latest', $$
   SELECT p.pk_post AS pk_latest, p.id,
          jsonb_build_object('title', p.title, 'latest', (
-           SELECT jsonb_agg(x.content) FROM (
-             SELECT c.content FROM tb_comment c WHERE c.fk_post = p.pk_post
+           SELECT jsonb_agg(x.content ORDER BY x.created_at DESC, x.pk_comment) FROM (
+             SELECT c.content, c.created_at, c.pk_comment FROM tb_comment c WHERE c.fk_post = p.pk_post
              ORDER BY c.created_at DESC, c.pk_comment LIMIT 3) x)) AS data
   FROM tb_post p $$);
 SELECT expect('latest', 'tb_comment', 'pk_comment,fk_post,created_at');

@@ -76,6 +76,8 @@ INSERT INTO public.maintenance VALUES
     ('tviews.pg_tviews_reregister_all(boolean)'),
     ('tviews.pg_tviews_ensure_propagation_indexes_all(boolean)'),
     ('tviews.pg_tviews_reset_stats_all()'),
+    ('tviews.pg_tviews_refresh_time_dependent_all(text)'),
+    ('tviews.pg_tviews_time_boundary_all()'),
     ('tviews.pg_tviews_invalidate_caches(oid)'),
     ('tviews.pg_tviews_audit_write(jsonb)'),
     -- suspending refresh: an operator's (E1-06)
@@ -98,11 +100,12 @@ BEGIN
     -- event-trigger function.
     SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY 1) INTO unclassified
       FROM pg_proc p
-     WHERE p.pronamespace = 'tviews'::regnamespace AND p.prokind = 'f'
+     WHERE p.pronamespace = 'tviews'::regnamespace AND p.prokind IN ('f', 'p')
        AND p.oid NOT IN (SELECT fn FROM public.maintenance)
        AND p.oid NOT IN (SELECT f::regprocedure FROM unnest(ARRAY[
            -- reads
            'tviews.contract_version()', 'tviews.pg_tviews_version()',
+           'tviews.pg_tviews_row_id(text,text)',
            'tviews.pg_tviews_catalog_revision()',
            'tviews.pg_tviews_check_health()', 'tviews.pg_tviews_profile(text,bigint)',
            'tviews.pg_tviews_resolve(text)', 'tviews.pg_tviews_count_feed_gaps()',
@@ -111,6 +114,7 @@ BEGIN
            'tviews.pg_tviews_plan_tables(jsonb)', 'tviews.pg_tviews_plan_references(jsonb)',
            'tviews.pg_tviews_plan_roots(jsonb)', 'tviews.pg_tviews_plan_lookups(jsonb)',
            'tviews.pg_tviews_plan_rebind(text,jsonb)', 'tviews.pg_tviews_plan_of(oid,text)',
+           'tviews.pg_tviews_time_dependent_order()',
            -- the caller's session
            'tviews.pg_tviews_flush_and_report(integer,boolean,boolean,text[])',
            'tviews.pg_tviews_show_suspended()', 'tviews.pg_tviews_show_queue()',
@@ -119,7 +123,7 @@ BEGIN
            'tviews.pg_tviews_create_or_replace(text,text,jsonb)',
            'tviews.pg_tviews_drop(text,boolean,boolean)', 'tviews.pg_tviews_refresh(text)',
            'tviews.pg_tviews_reregister(text)',
-           'tviews.pg_tviews_refresh_time_dependent(text)',
+           'tviews.pg_tviews_refresh_time_dependent(text)', 'tviews.pg_tviews_time_boundary()',
            'tviews.pg_tviews_ensure_propagation_indexes(text,boolean)',
            'tviews.pg_tviews_reset_stats(text)',
            'tviews.pg_tviews_show_cascade_path(text)',
@@ -131,6 +135,7 @@ BEGIN
            -- triggers and event triggers
            'tviews.pg_tview_trigger_handler()', 'tviews.pg_tview_delta_trigger()',
            'tviews.pg_tview_flush_trigger()', 'tviews.pg_tview_truncate_trigger()',
+           'tviews.pg_tview_guard_trigger()',
            'tviews.pg_tviews_handle_ddl_event()', 'tviews.pg_tviews_handle_drop_event()',
            'tviews.pg_tviews_meta_rebind()', 'tviews.pg_tviews_meta_changed()']) f);
     IF unclassified IS NOT NULL THEN

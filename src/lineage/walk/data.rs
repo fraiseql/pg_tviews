@@ -2,8 +2,9 @@
 
 use super::{
     Column, DataEmbed, DataField, DataShape, Flags, HashMap, Link, Maps, OutputColumn, Resolved,
-    RteInfo, Scope, TViewResult, WalkedIdentity, Walker, base_read, column_read_counts, const_text,
-    cstr, elements, in_clause, list_len, pg_sys, relation_entry, setop_leaves, strip_relabel, tag,
+    RteInfo, Scope, TViewResult, WalkedIdentity, Walker, base_read, collect_params,
+    column_read_counts, const_text, cstr, elements, has_sublink, in_clause, list_len, pg_sys,
+    relation_entry, setop_leaves, strip_relabel, tag,
 };
 
 impl Walker<'_> {
@@ -41,6 +42,8 @@ impl Walker<'_> {
                 Some(Ok(identity)) => tles
                     .get(identity.position)
                     .is_some_and(|tle| in_clause((**tle).ressortgroupref, (*query).groupClause)),
+                // walk: U no identity found: the level counts as combining rows, so no column
+                // is only in data
                 _ => false,
             };
             let grouped = (*query).hasAggs || !(*query).groupClause.is_null();
@@ -63,7 +66,15 @@ impl Walker<'_> {
                         // subquery whose other clauses may read it too.
                         let only_in_data = !combined
                             && read.is_some_and(|r| {
-                                relation_entry(query, r.0) && reads.get(&r) == copied.get(&r)
+                                // Mutant S41: one read of the column goes uncounted.
+                                let read_count = reads.get(&r).map(|&n| {
+                                    if crate::mutant::on("S41") {
+                                        n.saturating_sub(1)
+                                    } else {
+                                        n
+                                    }
+                                });
+                                relation_entry(query, r.0) && read_count.as_ref() == copied.get(&r)
                             });
                         let relid = self.graph.occurrences[column.occ].relid;
                         let root = matches!(&self.graph.identity,
@@ -76,7 +87,20 @@ impl Walker<'_> {
                             only_in_data,
                         });
                     }
+                    // walk: U a field that is no column of a table: the shape is opaque
                     _ => shape.opaque = true,
+                }
+            }
+            // A document placed in `data` and read again elsewhere (in another
+            // field's expression, a filter…): a patch at its path is not all
+            // that changes.
+            let mut placed: HashMap<(usize, i16), usize> = HashMap::new();
+            for read in shape.embeds.iter().filter_map(|e| e.read) {
+                *placed.entry(read).or_default() += 1;
+            }
+            for embed in &mut shape.embeds {
+                if let Some(read) = embed.read {
+                    embed.only_in_data = !combined && reads.get(&read) == placed.get(&read);
                 }
             }
             Some(shape)
@@ -105,11 +129,15 @@ impl Walker<'_> {
                     if self.function((*f).funcid).0 != "pg_catalog.jsonb_build_object"
                         || !args.len().is_multiple_of(2)
                     {
-                        shape.opaque = true;
+                        // walk: U a computed value is followed when its inputs are
+                        // this level's columns (`computed_here`); else the shape is
+                        // opaque
+                        shape.opaque |= !computed_here(node);
                         return;
                     }
                     for pair in args.chunks(2) {
                         let Some(key) = const_text(pair[0]) else {
+                            // walk: U a key that is no text constant: the shape is opaque
                             shape.opaque = true;
                             continue;
                         };
@@ -120,14 +148,18 @@ impl Walker<'_> {
                 }
                 Some(pg_sys::NodeTag::T_Var) => {
                     let var = node.cast::<pg_sys::Var>();
-                    if (*var).varlevelsup == 0
-                        && let Some(entity) = base_read(query, var)
-                            .and_then(|(varno, attno)| self.tview_data(query, varno, attno))
+                    let read = ((*var).varlevelsup == 0)
+                        .then(|| base_read(query, var))
+                        .flatten();
+                    if let Some(entity) =
+                        read.and_then(|(varno, attno)| self.tview_data(query, varno, attno))
                     {
                         shape.embeds.push(DataEmbed {
                             entity,
                             path: path.clone(),
                             array: false,
+                            only_in_data: true,
+                            read,
                         });
                     } else {
                         fields.push((path.clone(), var));
@@ -137,12 +169,6 @@ impl Walker<'_> {
                 Some(pg_sys::NodeTag::T_CoalesceExpr) => {
                     let args =
                         elements::<pg_sys::Node>((*node.cast::<pg_sys::CoalesceExpr>()).args);
-                    if args[1..]
-                        .iter()
-                        .any(|a| tag(strip_relabel(*a)) != Some(pg_sys::NodeTag::T_Const))
-                    {
-                        shape.opaque = true;
-                    }
                     // Only around an aggregate: around a column the fallback
                     // replaces its NULLs, so the field is no copy of it.
                     match args
@@ -152,8 +178,19 @@ impl Walker<'_> {
                         Some((
                             first,
                             Some(pg_sys::NodeTag::T_Aggref | pg_sys::NodeTag::T_SubLink),
-                        )) => self.data_value(query, first, path, shape, fields),
-                        _ => shape.opaque = true,
+                        )) => {
+                            // An embed's fallback is a constant (`'[]'`).
+                            if args[1..]
+                                .iter()
+                                .any(|a| tag(strip_relabel(*a)) != Some(pg_sys::NodeTag::T_Const))
+                            {
+                                shape.opaque = true;
+                            }
+                            self.data_value(query, first, path, shape, fields);
+                        }
+                        // walk: U COALESCE around anything but an aggregate: a computed
+                        // value, opaque unless computed_here
+                        _ => shape.opaque |= !computed_here(node),
                     }
                 }
                 Some(pg_sys::NodeTag::T_Aggref) => {
@@ -162,6 +199,8 @@ impl Walker<'_> {
                             entity,
                             path: path.clone(),
                             array: true,
+                            only_in_data: true,
+                            read: None,
                         }),
                         None => shape.opaque = true,
                     }
@@ -182,6 +221,8 @@ impl Walker<'_> {
                                 strip_relabel((*tle).expr.cast()).cast(),
                             )
                         }
+                        // walk: U a sub-select that is no jsonb_agg of a TVIEW: the shape is
+                        // opaque
                         _ => None,
                     });
                     match embedded {
@@ -189,12 +230,16 @@ impl Walker<'_> {
                             entity,
                             path: path.clone(),
                             array: true,
+                            only_in_data: true,
+                            read: None,
                         }),
                         None => shape.opaque = true,
                     }
                 }
                 Some(pg_sys::NodeTag::T_Const) => {}
-                _ => shape.opaque = true,
+                // walk: U any other expression: a computed value, opaque unless
+                // computed_here
+                _ => shape.opaque |= !computed_here(node),
             }
         }
     }
@@ -213,6 +258,7 @@ impl Walker<'_> {
                 return None;
             }
             let [arg] = elements::<pg_sys::TargetEntry>((*aggref).args)[..] else {
+                // walk: U jsonb_agg with several arguments embeds no TVIEW: the shape is opaque
                 return None;
             };
             let value = strip_relabel((*arg).expr.cast());
@@ -299,10 +345,16 @@ impl Walker<'_> {
                             .into_iter()
                             .map(|term| match term {
                                 Resolved::Col(c) => Some(c),
+                                // walk: U a UNION branch that is no column: the output stands
+                                // for no base column
                                 _ => None,
                             })
                             .collect::<Option<Vec<_>>>()
+                            // walk: U a UNION branch that is no column: the output stands for
+                            // no base column
                             .unwrap_or_default(),
+                        // walk: U an output that is no column: it stands for no base column,
+                        // and maps no write by key
                         _ => Vec::new(),
                     },
                     type_oid: pg_sys::exprType((*tle).expr.cast()).to_u32(),
@@ -349,7 +401,7 @@ impl Walker<'_> {
             );
             self.set_operation_links((*query).setOperations);
             let mut leaves = Vec::new();
-            setop_leaves((*query).setOperations, &mut leaves);
+            setop_leaves((*query).setOperations, &mut leaves)?;
             let width = list_len((*query).targetList);
             let union = self.next_union();
             let mut columns: Vec<(Vec<Resolved>, Vec<Scope>)> =
@@ -359,6 +411,7 @@ impl Walker<'_> {
                     let Some(&rte) = elements::<pg_sys::RangeTblEntry>((*query).rtable)
                         .get(rtindex.wrapping_sub(1))
                     else {
+                        // walk: n/a(a set operation's leaf names an entry of its range table)
                         continue;
                     };
                     let mut unions = flags.unions.clone();
@@ -399,5 +452,21 @@ impl Walker<'_> {
                 })
                 .collect())
         }
+    }
+}
+
+/// Whether `node`, a value of `data` that is no copy, is computed from this
+/// level's columns alone: no sub-select and no parameter. Every column it reads
+/// is then counted by `column_read_counts`, so none of them is `only_in_data`
+/// and no patch writes around it: the walk follows it. Anything else may read
+/// what the walk does not see from here (the shape is opaque).
+///
+/// SAFETY: `node` is a valid expression.
+unsafe fn computed_here(node: *mut pg_sys::Node) -> bool {
+    let mut params = Vec::new();
+    // SAFETY: read-only walks of a valid expression.
+    unsafe {
+        collect_params(node, &mut params);
+        !has_sublink(node) && params.is_empty()
     }
 }

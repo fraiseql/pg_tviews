@@ -10,6 +10,11 @@
       "entity_name": "nbadge",
       "initial_attnum": "public.tb_node.pk_node",
       "initial_col": "pk_node",
+      "read_set": [
+        1,
+        2,
+        4
+      ],
       "root": true,
       "source_columns": [
         "pk_node",
@@ -40,6 +45,11 @@
         "public.tb_node.pk_node",
         "public.tb_node.name"
       ],
+      "read_set": [
+        1,
+        2,
+        4
+      ],
       "relid": "public.tb_node",
       "table": "public.tb_node"
     },
@@ -55,6 +65,10 @@
       "kind": "mapped",
       "links": [
         "public.tb_badge.code"
+      ],
+      "read_set": [
+        1,
+        2
       ],
       "reads": [
         {

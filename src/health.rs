@@ -49,6 +49,12 @@ pub(crate) fn health_check() -> Vec<(String, String, String, String)> {
             contents_check(),
             function_paths_check(),
             owner_reads_check(),
+            tv_policies_check(),
+            frame_settings_check(),
+            tv_writers_check(),
+            tv_triggers_check(),
+            change_feed_check(),
+            time_handoff_check(),
             reregister_check(),
             trigger_check(),
             count_check(),
@@ -449,6 +455,103 @@ fn owner_reads_check() -> Check {
     }
 }
 
+/// Row security on the TVIEWs' own tables (D6, D8):
+/// - an ERROR for a table whose owner a policy can filter (`FORCE ROW LEVEL
+///   SECURITY` without a policy letting it read and write every row): its
+///   refreshes fail ([`crate::guard::filtered_tviews`]);
+/// - a WARNING for a table other roles may read, without row security, while a
+///   table it reads filters its readers: the TVIEW publishes what they hide;
+/// - a WARNING for a table embedding rows of a table with row security whose
+///   policies differ from its own: a reader may read, inside a document, rows
+///   that table hides from it. Policies are compared as written (command,
+///   permissive, `USING`, `WITH CHECK`), roles aside.
+fn tv_policies_check() -> Check {
+    let filtered = match crate::guard::filtered_tviews() {
+        Ok(filtered) => filtered,
+        Err(e) => return error("tv_policies", format!("could not be checked: {e}")),
+    };
+    if !filtered.is_empty() {
+        let found: Vec<String> = filtered
+            .iter()
+            .map(|(table, owner, why)| format!("{table} ({owner}: {why})"))
+            .collect();
+        return error(
+            "tv_policies",
+            format!(
+                "row security applies to the owner of {}: its refreshes fail; give the owner a \
+                 policy USING (true) WITH CHECK (true), or NO FORCE ROW LEVEL SECURITY",
+                sample(&found)
+            ),
+        );
+    }
+    let warnings = crate::catalog::queries::tv_policy_warnings();
+    match warnings {
+        Ok(found) if found.is_empty() => ok(
+            "tv_policies",
+            "No TVIEW publishes rows a policy of a table it reads hides",
+        ),
+        Ok(found) => warning("tv_policies", sample(&found)),
+        Err(e) => error("tv_policies", format!("could not be checked: {e}")),
+    }
+}
+
+/// The custom settings each TVIEW's definition reads by name, with the value its
+/// refreshes read (the server's, the database's, `ALTER ROLE ALL`'s, or its
+/// `settings` option's), never a session's. A WARNING when one is unset there:
+/// a per-request setting, which no refresh sees.
+fn frame_settings_check() -> Check {
+    let metas = match crate::catalog::TviewMeta::load_all() {
+        Ok(metas) => metas,
+        Err(e) => return error("frame_settings", format!("could not be checked: {e}")),
+    };
+    let reads: Vec<(&str, &str, Option<&str>)> = metas
+        .iter()
+        .flat_map(|meta| {
+            meta.plan.settings_read.iter().map(|name| {
+                let pinned = meta
+                    .frame_settings
+                    .iter()
+                    .find(|(pinned, _)| pinned == name)
+                    .map(|(_, value)| value.as_str());
+                (meta.entity_name.as_str(), name.as_str(), pinned)
+            })
+        })
+        .collect();
+    if reads.is_empty() {
+        return ok("frame_settings", "No TVIEW reads a custom setting by name");
+    }
+    let _frame = crate::owner::RenderPin::new();
+    let mut unset = Vec::new();
+    let mut read = Vec::new();
+    for &(entity, name, pinned) in &reads {
+        // The TVIEW's settings option pins it, else the frame reads the server's.
+        let value = match pinned {
+            Some(pinned) => (!pinned.is_empty()).then(|| pinned.to_string()),
+            None => crate::owner::setting_value(name),
+        };
+        match value {
+            Some(value) => read.push(format!("tv_{entity} reads {name} as '{value}'")),
+            None => unset.push(format!("tv_{entity} reads {name}")),
+        }
+    }
+    if unset.is_empty() {
+        ok(
+            "frame_settings",
+            format!("{}; a session's value reaches no refresh", sample(&read)),
+        )
+    } else {
+        warning(
+            "frame_settings",
+            format!(
+                "{}, unset where its refreshes run: they read no session's value (a \
+                 per-request setting); set it for the server or the database, or pin it \
+                 with the settings option",
+                sample(&unset)
+            ),
+        )
+    }
+}
+
 /// Whether the caller has the privileges of the owner of `meta`'s TVIEW: only
 /// then is the TVIEW's own code run as its owner on the caller's behalf.
 fn acts_for_owner(meta: &crate::catalog::TviewMeta) -> crate::TViewResult<bool> {
@@ -610,6 +713,7 @@ pub(crate) fn queue_stats() -> crate::TViewResult<serde_json::Value> {
     #[cfg(feature = "test-hooks")]
     {
         json_value["cache_resets"] = crate::cache::resets().into();
+        json_value["pending_work"] = crate::queue::state::pending_count().into();
         json_value["patch_stats"] = crate::stats::patch_stats()
             .into_iter()
             .map(|(code, n)| (code, serde_json::Value::from(n)))
@@ -674,6 +778,179 @@ fn count(n: usize, what: &str) -> String {
 }
 
 /// The first ten items, and how many more there are.
+/// The TVIEW tables' OIDs, for the checks reading their grants.
+fn tview_tables() -> crate::TViewResult<Vec<pgrx::pg_sys::Oid>> {
+    Ok(crate::catalog::TviewMeta::load_all()?
+        .iter()
+        .map(|meta| meta.tview_oid)
+        .collect())
+}
+
+/// Roles other than a TVIEW table's owner granted INSERT, UPDATE, DELETE or
+/// TRUNCATE on it (E1-15). `pg_tviews` is the table's only writer, and its guard
+/// refuses every other write: such a grant serves nothing, and writes as soon as
+/// the guard is disabled.
+fn tv_writers_check() -> Check {
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT pg_catalog.format('%s: %s %s', t.oid::pg_catalog.regclass, \
+                    CASE a.grantee WHEN 0 THEN 'PUBLIC' \
+                         ELSE pg_catalog.pg_get_userbyid(a.grantee)::pg_catalog.text END, \
+                    pg_catalog.string_agg(a.privilege_type, '/' ORDER BY a.privilege_type)) \
+             FROM pg_catalog.pg_class t, pg_catalog.aclexplode(t.relacl) a \
+             WHERE t.oid OPERATOR(pg_catalog.=) ANY ($1) \
+               AND a.grantee OPERATOR(pg_catalog.<>) t.relowner \
+               AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') \
+             GROUP BY t.oid, a.grantee ORDER BY 1",
+            &[crate::utils::spi::oid_array(tables)],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => ok(
+            "tv_writers",
+            "No role but its owner may write a TVIEW table",
+        ),
+        Ok(found) => warning(
+            "tv_writers",
+            format!(
+                "writes granted on TVIEW tables, which only pg_tviews writes (its guard refuses \
+                 the others): {}; REVOKE INSERT, UPDATE, DELETE, TRUNCATE from these roles",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("tv_writers", format!("could not be checked: {e}")),
+    }
+}
+
+/// User triggers and rules on TVIEW tables: each changes what a maintenance write
+/// leaves in the table, which freshness assumes nothing does. A WARNING naming
+/// them; `pg_tviews`' own triggers (functions of its schema) are not reported.
+fn tv_triggers_check() -> Check {
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT x.what FROM ( \
+               SELECT pg_catalog.format('%s on %s', t.tgname, \
+                          t.tgrelid::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) AS what \
+               FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid \
+               WHERE NOT t.tgisinternal AND t.tgrelid OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND p.pronamespace NOT IN (SELECT n.oid FROM pg_catalog.pg_namespace n \
+                                            WHERE n.nspname OPERATOR(pg_catalog.=) $2) \
+               UNION ALL \
+               SELECT pg_catalog.format('rule %s on %s', r.rulename, \
+                          r.ev_class::pg_catalog.oid::pg_catalog.regclass::pg_catalog.text) \
+               FROM pg_catalog.pg_rewrite r \
+               WHERE r.ev_class OPERATOR(pg_catalog.=) ANY ($1) \
+                 AND r.rulename OPERATOR(pg_catalog.<>) '_RETURN') x \
+             ORDER BY x.what",
+            &[
+                crate::utils::spi::oid_array(tables),
+                crate::utils::spi::text(crate::utils::ext_schema()),
+            ],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => {
+            ok("tv_triggers", "No user trigger or rule on a TVIEW table")
+        }
+        Ok(found) => warning(
+            "tv_triggers",
+            format!(
+                "user triggers or rules on TVIEW tables change what pg_tviews writes there, \
+                 and its rows may then differ from their definitions: {}",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("tv_triggers", format!("could not be checked: {e}")),
+    }
+}
+
+/// The change feed (`pg_tviews.publish_changes = rows`) sends the keys of every
+/// TVIEW's changed rows to every role that can `LISTEN`, whatever it may read
+/// (E1-05): a WARNING naming the login roles that may connect but not read a TVIEW.
+fn change_feed_check() -> Check {
+    match crate::config::publish_changes() {
+        None => return ok("change_feed", "The change feed is off"),
+        Some(crate::config::Publish::Types) => {
+            return ok(
+                "change_feed",
+                "The change feed publishes type names only: no keys of rows",
+            );
+        }
+        Some(crate::config::Publish::Rows) => {}
+    }
+    let found = tview_tables().and_then(|tables| {
+        crate::utils::spi::strings(
+            "SELECT pg_catalog.format('%s (%s)', r.rolname, \
+                    pg_catalog.string_agg(t.oid::pg_catalog.regclass::pg_catalog.text, ' ' \
+                                          ORDER BY t.oid::pg_catalog.regclass::pg_catalog.text)) \
+             FROM pg_catalog.pg_roles r, pg_catalog.pg_class t \
+             WHERE r.rolcanlogin AND NOT r.rolsuper \
+               AND pg_catalog.has_database_privilege(r.oid, \
+                       pg_catalog.current_database(), 'CONNECT') \
+               AND t.oid OPERATOR(pg_catalog.=) ANY ($1) \
+               AND NOT pg_catalog.has_table_privilege(r.oid, t.oid, 'SELECT') \
+             GROUP BY r.rolname ORDER BY r.rolname",
+            &[crate::utils::spi::oid_array(tables)],
+        )
+    });
+    match found {
+        Ok(found) if found.is_empty() => ok(
+            "change_feed",
+            "The change feed publishes row keys; every role that may connect may read every TVIEW",
+        ),
+        Ok(found) => warning(
+            "change_feed",
+            format!(
+                "the change feed publishes the keys of changed rows to any role that can LISTEN: \
+                 these may connect but not read the TVIEWs named: {}; set \
+                 pg_tviews.publish_changes to types or off, or REVOKE CONNECT",
+                sample(&found)
+            ),
+        ),
+        Err(e) => error("change_feed", format!("could not be checked: {e}")),
+    }
+}
+
+/// Keys written across a time boundary by a transaction older than it, waiting
+/// for the drain (`crate::time_drain`): a WARNING once the oldest waited a minute,
+/// which the drain worker takes milliseconds to clear. Counts only, read as the
+/// extension's owner: the keys are rows of TVIEWs the caller may not read.
+fn time_handoff_check() -> Check {
+    let found = crate::owner::as_extension_owner(|| {
+        crate::utils::spi::two::<i64, f64>(
+            &format!(
+                "SELECT pg_catalog.count(*), \
+                        COALESCE(pg_catalog.date_part('epoch', \
+                            pg_catalog.clock_timestamp() OPERATOR(pg_catalog.-) \
+                            pg_catalog.min(h.handed_at)), 0)::pg_catalog.float8 \
+                 FROM {}.pg_tview_time_handoff h",
+                crate::utils::ext_schema()
+            ),
+            &[],
+        )
+    });
+    match found {
+        Ok((Some(0) | None, _)) => ok(
+            "time_handoff",
+            "No key written across a time boundary waits to be refreshed",
+        ),
+        Ok((Some(pending), age)) if age.unwrap_or(0.0) < 60.0 => ok(
+            "time_handoff",
+            format!("keys written across a time boundary, being refreshed: {pending}"),
+        ),
+        Ok((Some(pending), age)) => warning(
+            "time_handoff",
+            format!(
+                "keys written across a time boundary wait to be refreshed: {pending}, the oldest \
+                 for {:.0} s: the drain worker did not run (see the server log); the next \
+                 time refresh of each TVIEW refreshes them",
+                age.unwrap_or(0.0)
+            ),
+        ),
+        Err(e) => error("time_handoff", format!("could not be checked: {e}")),
+    }
+}
+
 fn sample(items: &[String]) -> String {
     const SHOWN: usize = 10;
     let text = items

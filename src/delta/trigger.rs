@@ -130,6 +130,13 @@ fn pg_tview_delta_trigger<'a>(
         Ok(PgTriggerOperation::Delete) => Event::Delete,
         _ => return Ok(None),
     };
+    // A statement that changed no row changes no TVIEW row and no link (#263):
+    // the recompute's upsert of a TVIEW's rows fires the INSERT trigger of the
+    // TVIEW's table with no row inserted.
+    // SAFETY: an AFTER statement trigger's TriggerData.
+    if unsafe { super::transition::changed_no_row(trigger.trigger_data(), event) } {
+        return Ok(None);
+    }
     if let Err((entity, e)) = map_statement(trigger, &entities, table_oid, event) {
         e.raise_in(&format!(
             "pg_tviews: could not map the changed rows to tv_{entity} keys"

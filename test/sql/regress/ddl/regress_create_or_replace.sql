@@ -152,11 +152,17 @@ SELECT must(error_of($x$SELECT cor('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data
     FROM app.tb_post p $$)$x$) LIKE '%post_titles%', 'dependent view named');
 DROP VIEW app.post_titles;
+-- Row security and the table's policies are carried over (D6), not refused.
+BEGIN;
 ALTER TABLE app.tv_post ENABLE ROW LEVEL SECURITY;
-SELECT must(error_of($x$SELECT cor('app.tv_post', $$
+CREATE POLICY readers ON app.tv_post FOR SELECT TO PUBLIC USING (pk_post > 0);
+SELECT cor('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data
-    FROM app.tb_post p $$)$x$) LIKE '%row level security%', 'RLS refused');
-ALTER TABLE app.tv_post DISABLE ROW LEVEL SECURITY;
+    FROM app.tb_post p $$) IS NOT NULL AS rebuilt;
+SELECT must(c.relrowsecurity AND EXISTS (SELECT FROM pg_policy WHERE polrelid = c.oid
+                                         AND polname = 'readers'), 'RLS carried over')
+FROM pg_class c WHERE c.oid = 'app.tv_post'::regclass;
+ROLLBACK;
 ALTER TABLE app.tv_post ADD CONSTRAINT tv_post_pk_positive CHECK (pk_post > 0);
 SELECT must(error_of($x$SELECT cor('app.tv_post', $$
     SELECT p.pk_post, p.id, p.fk_user, jsonb_build_object('t', p.title) AS data

@@ -1,0 +1,3 @@
+# S24, flush: a key refreshed already in this flush is dropped unless queued again.
+# Mutant: a key queued again in the flush is still dropped.
+features: embed
