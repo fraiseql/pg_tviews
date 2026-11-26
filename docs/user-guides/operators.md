@@ -329,8 +329,8 @@ The roles created on this page are cluster-wide; drop them:
 
 ```sql
 DROP TABLE tv_user;
-DROP OWNED BY ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
-DROP ROLE ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app;
+DROP OWNED BY ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app, ops_doc_cron;
+DROP ROLE ops_doc_deploy, ops_doc_loader, ops_doc_reader, ops_doc_app, ops_doc_cron;
 ```
 
 ## See also
