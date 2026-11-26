@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.41] - 2026-11-26
+
 ### Security
 
 - **A refresh no longer depends on the writer's session** (GHSA-hcqw-rg77-5658). A
@@ -3090,7 +3092,8 @@ First beta: a feature-complete transactional materialized JSONB view system.
 
 - Initial project structure on pgrx.
 
-[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.40...HEAD
+[Unreleased]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.41...HEAD
+[0.1.0-beta.41]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.40...v0.1.0-beta.41
 [0.1.0-beta.40]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.39...v0.1.0-beta.40
 [0.1.0-beta.39]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.38...v0.1.0-beta.39
 [0.1.0-beta.38]: https://github.com/fraiseql/pg_tviews/compare/v0.1.0-beta.37...v0.1.0-beta.38
