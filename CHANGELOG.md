@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **A refresh no longer depends on the writer's session** (E1-01, advisory to be
-  published with the release). Below, under Added: the `settings` option and the
-  health component `frame_settings`.
+- **A refresh no longer depends on the writer's session** (GHSA-hcqw-rg77-5658). A
+  definition re-evaluated by a write read the writer's custom settings (`app.*`: `SET`,
+  `SET LOCAL`, `set_config()`, a function's `SET`, a connection option, `ALTER ROLE`),
+  directly or through a row-level security policy applying to the owner, so the last
+  writer chose what every reader saw. Every refresh now resets them; the database's and
+  the server's values stay. Below, under Added: the `settings` option and the health
+  component `frame_settings`.
 
 ### Changed (breaking)
 
