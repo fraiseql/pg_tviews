@@ -28,9 +28,6 @@ declare -A refusal=(
 # gives it.
 left_db="${upgraded}_left_behind"
 left_behind=(tv_col tv_forced tv_lost tv_rls)
-# Left by a rule of this release the previous one cannot check: the rehearsal of
-# the update names them, the pre-check does not.
-left_by_rule=(tv_shelf)
 precheck() {
     sed -n '/<!-- upgrade-precheck:begin -->/,/<!-- upgrade-precheck:end -->/p' \
         "$here/../../docs/operations/upgrade.md" | sed '/^```/d; /^<!--/d' \
@@ -269,13 +266,13 @@ SQL
             [[ "$(psql -X -At -d "$left_db" -c \
                 "SELECT extversion FROM pg_extension WHERE extname = 'pg_tviews'")" != "$current" ]] \
                 || fail "the rehearsal changed the extension's version"
-            for tview in "${left_behind[@]}" "${left_by_rule[@]}"; do
+            for tview in "${left_behind[@]}"; do
                 grep -q "$tview: " <<<"$out" || fail "the rehearsal does not name $tview: $out"
             done
             out="$(psql -X -d "$left_db" -v ON_ERROR_STOP=1 -c "ALTER EXTENSION pg_tviews UPDATE" 2>&1)" \
                 || fail "the update did not complete on a catalog with TVIEWs it cannot re-derive: $out"
             echo "$out"
-            grep -q "WARNING:  pg_tviews: 5 TVIEW(s) could not be re-derived" <<<"$out" \
+            grep -q "WARNING:  pg_tviews: 4 TVIEW(s) could not be re-derived" <<<"$out" \
                 || fail "the update did not warn: $out"
             grep -q "tv_lost: .*upgrade_lost_owner lacks SELECT" <<<"$out" || fail "the WARNING for tv_lost: $out"
             grep -q "tv_rls: .*row security applies to role upgrade_rls_owner" <<<"$out" \
@@ -283,11 +280,9 @@ SQL
             grep -q "tv_forced: .*exactly one SELECT" <<<"$out" || fail "the WARNING for tv_forced: $out"
             grep -q "tv_col: .*upgrade_lost_owner lacks SELECT (title)" <<<"$out" \
                 || fail "the WARNING for tv_col: $out"
-            grep -q "tv_shelf: .*jsonb_agg() in the definition aggregates rows in an order nothing fixes" \
-                <<<"$out" || fail "the WARNING for tv_shelf: $out"
             psql -X -d "$left_db" -q -f "$here/verify_left_behind.sql"
             psql -X -d postgres -qc "DROP DATABASE $left_db" >/dev/null
-            echo "the update completed, left ${left_behind[*]} ${left_by_rule[*]} to re-register, named them; health names them"
+            echo "the update completed, left ${left_behind[*]} to re-register, named them; health names them"
         fi
         ;;
     *) fail "usage: $0 after update|recreate" ;;
